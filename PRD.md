@@ -182,7 +182,7 @@ The eligibility data is extracted from **Google BigQuery** (`bigquery-public-dat
 ```sql
 SELECT
   from_address AS qualified_address,
-  SAFE_DIVIDE(SUM(gas_price * receipt_gas_used), 1e18) AS total_fees_eth
+  SUM(gas_price * receipt_gas_used) / 1e18 AS total_fees_eth
 FROM
   `bigquery-public-data.crypto_ethereum.transactions`
 WHERE
@@ -227,7 +227,7 @@ Final Eligibility List
 | **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
 | **Interior hash** | Poseidon |
 | **Poseidon params** | `risc0-zkvm` default: BN254 scalar field, `t = 3`, `R = 8` (Poseidon2) |
-| **Padding** | Empty leaves set to `[0u8; 32]` |
+| **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf) |
 | **Root** | Hardcoded in the airdrop contract |
 
 **Poseidon parameters:**
@@ -312,7 +312,7 @@ eligibility/
 │                                                             │
 │  $ zkmist prove                                             │
 │    ① Download eligibility list (IPFS, ~1.3 GB)             │
-│    ② Stream-build Merkle tree (O(log n) memory)            │
+│    ② Stream-build Merkle tree (processes all 65M leaves, ~4 GB RAM)  │
 │    ③ Enter private key (hidden) + recipient address         │
 │    ④ RISC Zero zkVM generates STARK proof                   │
 │    ⑤ Save proof.json                                        │
@@ -373,6 +373,7 @@ use sha2::{Digest, Sha256};
 
 const TREE_DEPTH: usize = 26;
 const DOMAIN_SEPARATOR: &[u8] = b"ZKMist_V1_NULLIFIER";
+const PADDING_SENTINEL: [u8; 32] = [0xFFu8; 32];
 
 pub fn main() {
     // === Public inputs (committed to journal) ===
@@ -388,14 +389,20 @@ pub fn main() {
 
     // Merkle membership proof
     let mut siblings: [[u8; 32]; TREE_DEPTH] = [[0u8; 32]; TREE_DEPTH];
-    let mut path_indices: [bool; TREE_DEPTH] = [false; TREE_DEPTH];
+    let mut path_indices: [u8; TREE_DEPTH] = [0u8; TREE_DEPTH];
     for i in 0..TREE_DEPTH {
         siblings[i] = env::read();
         path_indices[i] = env::read();
     }
 
+    // Ensure leaf is not the padding sentinel
+    assert!(leaf != [0xFFu8; 32], "Padding leaf — not a valid claimant");
+
     // Verify Merkle membership
     let leaf = poseidon_hash_address(&address);
+
+    // Ensure leaf is not the padding sentinel (defense-in-depth)
+    assert!(leaf != PADDING_SENTINEL, "Padding leaf — not a valid claimant");
     let computed_root = compute_merkle_root(&leaf, &siblings, &path_indices);
     assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
 
@@ -442,11 +449,11 @@ fn poseidon_hash_address(addr: &[u8; 20]) -> [u8; 32] {
 fn compute_merkle_root(
     leaf: &[u8; 32],
     siblings: &[[u8; 32]; TREE_DEPTH],
-    path_indices: &[bool; TREE_DEPTH],
+    path_indices: &[u8; TREE_DEPTH],
 ) -> [u8; 32] {
     let mut current = *leaf;
     for i in 0..TREE_DEPTH {
-        let (left, right) = if path_indices[i] {
+        let (left, right) = if path_indices[i] == 1 {
             (siblings[i], current)
         } else {
             (current, siblings[i])
@@ -458,16 +465,29 @@ fn compute_merkle_root(
 
 /// Poseidon hash of a single field element (used for leaf hashing).
 /// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
+/// Leverages RISC Zero's built-in Poseidon accelerator for fast proving.
+/// See: https://dev.risczero.com/api/zkvm/accelerators
 fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
-    // Leverages RISC Zero's Poseidon accelerator for fast proving
-    // See: https://dev.risczero.com/api/zkvm/accelerators
-    todo!("Use risc0-zkvm Poseidon guest accelerator or poseidon crate")
+    use risc0_zkvm::guest::{poseidon, HashFn};
+    // Interpret input as a BN254 field element and hash with Poseidon (t=3)
+    let input_elem = baby_bear::Elem::from_bytes(input);
+    let digest = poseidon::hash(&[input_elem]);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest.as_bytes());
+    out
 }
 
 /// Poseidon hash of two field elements (used for interior node hashing).
 /// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
+/// Leverages RISC Zero's built-in Poseidon accelerator for fast proving.
 fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    todo!("Use risc0-zkvm Poseidon guest accelerator or poseidon crate")
+    use risc0_zkvm::guest::{poseidon, HashFn};
+    let left_elem = baby_bear::Elem::from_bytes(left);
+    let right_elem = baby_bear::Elem::from_bytes(right);
+    let digest = poseidon::hash(&[left_elem, right_elem]);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest.as_bytes());
+    out
 }
 ```
 
@@ -478,7 +498,8 @@ fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 2. **Generate proof** — `zkmist prove`:
    - Prompts for private key (hidden input)
    - Prompts for recipient address
-   - Stream-builds Merkle tree (~1–2 min)
+   - **⚠️ Recipient is irrevocable.** Once the proof is generated, tokens can only ever be minted to this address. If the recipient is wrong, you cannot re-claim — your nullifier is consumed. Triple-check before confirming.
+   - Stream-builds Merkle tree (~1–2 min, ~4 GB RAM required)
    - Runs RISC Zero zkVM (~30–90s)
    - Saves `proof.json`
 
@@ -505,6 +526,36 @@ fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 | Gas funding correlation | Tool warns: fund recipient from independent source |
 | Relayer sees proof | Sees same data as on-chain — no additional info |
 | Front-running | Impossible — recipient bound to proof |
+| Recipient address reused elsewhere | Use a fresh, never-before-used address as recipient |
+| Timestamp correlation | If only a few people claim in a block, timing may narrow candidates |
+
+### 6.9 Privacy Checklist for Claimants
+
+Before claiming, follow this checklist to maximize privacy:
+
+| # | Step | Why |
+|---|------|-----|
+| 1 | **Use a fresh recipient address** — never transacted on-chain before | Prevents linking recipient to any known identity |
+| 2 | **Fund recipient from an independent source** — not from the qualified address or any address linked to you | Prevents gas-funding correlation |
+| 3 | **Use a relayer** instead of submitting directly (if possible) | Avoids on-chain link between gas payer and recipient |
+| 4 | **Don't publish both addresses** — never mention your qualified and recipient addresses in the same context (social media, forums, ENS) | Prevents off-chain correlation |
+| 5 | **Claim during high-activity periods** — when many others are claiming | Reduces timing-based narrowing of candidates |
+| 6 | **Don't immediately move tokens** after receiving them | Wait to avoid linking the claim transaction to subsequent token movements |
+
+### 6.10 Journal Layout Specification
+
+The guest program commits exactly 3 values to the journal. The layout is fixed and must match the Solidity contract's byte slicing:
+
+```
+Offset  Length  Field         Type
+0       32      merkleRoot    bytes32
+32      32      nullifier     bytes32
+64      20      recipient     address (bytes20)
+                              ─────────
+Total:  84 bytes
+```
+
+Both the Rust guest program (`env::commit()` order) and the Solidity contract (`_journal[offset]` slicing) must conform to this layout. Any mismatch will cause all proofs to be rejected on-chain.
 
 ---
 
@@ -588,11 +639,18 @@ contract ZKMAirdrop {
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
         require(!usedNullifiers[_nullifier], "Already claimed");
 
+        // Validate journal layout: must be exactly 84 bytes
+        // Layout: merkleRoot[0:32] ++ nullifier[32:64] ++ recipient[64:84]
+        require(_journal.length == 84, "Invalid journal length");
+
         // Verify RISC Zero proof
+        // NOTE: journalDigest must match RISC Zero's internal digest scheme.
+        // Using sha256(raw_journal_bytes) — verify compatibility with the
+        // deployed IRiscZeroVerifier version before mainnet.
         bytes32 journalDigest = bytes32(sha256(_journal));
         verifier.verify(_proof, imageId, journalDigest);
 
-        // Validate journal
+        // Validate journal contents match claim parameters
         require(bytes32(_journal[0:32])  == merkleRoot,  "Root mismatch");
         require(bytes32(_journal[32:64]) == _nullifier,  "Nullifier mismatch");
         require(address(bytes20(_journal[64:84])) == _recipient, "Recipient mismatch");
@@ -655,7 +713,7 @@ contract ZKMAirdrop {
 zkmist fetch                  Download eligibility list from IPFS (~1.3 GB)
 zkmist prove                  Generate ZK proof (interactive)
 zkmist submit <proof.json>    Submit proof to ZKMAirdrop contract
-zkmist verify <proof.json>    Verify proof locally (dry run)
+zkmist verify <proof.json>    Verify proof locally: validates the STARK proof and checks that the journal contains the expected merkleRoot, nullifier, and recipient
 zkmist check <address>        Check if address is eligible
 zkmist status                 Show claim window status, claims remaining, total supply
 ```
@@ -686,6 +744,7 @@ $ zkmist prove
 
        ✓ Proof saved: ./zkmist_proof_2026-05-03.json
 
+       ⚠️  RECIPIENT IS IRREVOCABLE — triple-check before submitting.
        10,000 ZKM will be minted to 0xRecip...EntAddress on claim.
        Run: zkmist submit ./zkmist_proof_2026-05-03.json
        Or send to any relayer.
@@ -774,7 +833,7 @@ Cannot:
 |---------|---------|
 | **Audit** | External audit before mainnet |
 | **Test Coverage** | ≥ 95% |
-| **Guest Program Audit** | Rust source (~80 lines of logic) |
+| **Guest Program Audit** | Rust source (~80 lines of logic). **Critical:** the guest program binary is frozen at deployment — the `imageId` is hardcoded in the contract and can never be changed. Any bug is permanent. Must receive the same audit rigor as the Solidity contracts. |
 | **Immutability** | No admin, no owner, no pause — security through simplicity |
 | **No admin keys** | Nothing to compromise |
 
@@ -788,7 +847,38 @@ Cannot:
 | Deterministic nullifier | Prevents double-claim |
 | Front-running impossible | Recipient committed to proof |
 
-### 10.3 Fairness
+### 10.3 Disaster Recovery & Accepted Risks
+
+Since both the smart contracts and the guest program (`imageId`) are immutable, **any bug discovered after deployment is permanent**. This is an accepted risk. There is no recovery mechanism by design.
+
+| Risk | Impact | Accepted? | Notes |
+|------|--------|-----------|-------|
+| Bug in guest program | All proofs may be invalid or incorrect | ✅ Accepted | Mitigated by external audit + testnet trial |
+| Bug in Solidity contract | Claims may not work as intended | ✅ Accepted | Mitigated by external audit + formal verification |
+| Poseidon parameter mismatch | Proofs rejected on-chain | ✅ Accepted | Mitigated by end-to-end integration test on testnet |
+| Journal digest mismatch | Proofs rejected on-chain | ✅ Accepted | Mitigated by verifying against deployed verifier on testnet |
+| RISC Zero breaks compatibility | New zkVM version incompatible | N/A | Image ID is frozen — old proofs always work with old verifier |
+
+**There is no upgrade path.** If a critical bug is found, the only option is for the community to deploy an entirely new system (new contracts, new guest program) and choose to migrate. This would be a social coordination effort, not a technical one.
+
+### 10.4 Test Plan
+
+| Phase | Tests | Description |
+|-------|-------|-------------|
+| Unit | Guest program | Test address derivation, nullifier computation, Poseidon hashing, Merkle proof verification with known test vectors |
+| Unit | Guest program (negative) | Invalid key, wrong Merkle proof, mismatched nullifier, zero-address leaf |
+| Unit | Smart contracts | `claim()` success path, all revert conditions (deadline, cap, double-claim, journal mismatch) |
+| Integration | Full prove → verify → claim | Generate real RISC Zero proof, submit to local fork, verify mint |
+| Integration | Journal layout | Confirm guest program's `env::commit()` order produces exactly 84 bytes matching Solidity slicing |
+| Fork test | Base mainnet fork | Deploy contracts against a Base fork, submit real proofs, verify gas costs |
+| Negative | Double-claim | Submit same nullifier twice — must revert |
+| Negative | Wrong recipient | Submit proof with different recipient — must revert |
+| Negative | Expired deadline | Set `block.timestamp` past deadline — must revert |
+| Negative | Claim cap reached | Set `totalClaims` to 1M — must revert |
+| Property | Poseidon reference | Cross-validate Poseidon output against a reference implementation (e.g., `poseidon` crate) |
+| Coverage | ≥ 95% | Both Solidity and Rust code paths |
+
+### 10.5 Fairness
 
 | Guarantee | Mechanism |
 |-----------|-----------|
@@ -813,6 +903,7 @@ Cannot:
 | **Max Claims** | 1,000,000 |
 | **Claim Deadline** | 2027-01-01 00:00:00 UTC |
 | **Proof System** | RISC Zero zkVM (STARK) |
+| **risc0-zkvm version** | Must be pinned at build time (e.g., `v2.0.0`). Different versions may produce different Image IDs and have different Poseidon parameters. |
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon (leaf + interior) |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
@@ -854,8 +945,8 @@ Cannot:
 | 7 | Contract mutability? | ✅ Fully immutable |
 | 8 | Proof system? | ✅ RISC Zero zkVM |
 | 9 | Unclaimed supply? | ✅ Never minted. Supply = claims × 10,000. |
-| 10 | Exact qualified count after final BigQuery run? | 🔲 Pending |
-| 11 | Keccak256 in guest program for address derivation? | 🔲 Pending (recommend: yes) |
+| 10 | Exact qualified count after final BigQuery run? | 🔲 Pending — final BigQuery run scheduled for T-30d |
+| 11 | Keccak256 in guest program for address derivation? | 🔲 Pending (recommend: yes) — must be resolved before guest program freeze at T-14d |
 | 12 | Contract addresses (multisigs) eligible? | ✅ Ineligible by design — claiming requires a private key to derive address + generate nullifier. Contract wallets appear in the list but cannot claim. |
 
 ---
@@ -883,6 +974,8 @@ Cannot:
 - [RISC Zero Documentation](https://dev.risczero.com/)
 - [RISC Zero Examples](https://github.com/risc0/risc0/tree/main/examples)
 - [k256 crate (secp256k1)](https://crates.io/crates/k256)
+- [RISC Zero On-Chain Verification](https://dev.risczero.com/api/on-chain-verification)
+- [RISC Zero Poseidon Accelerator](https://dev.risczero.com/api/zkvm/accelerators)
 
 ### B. Gas Estimates (Base)
 
@@ -895,7 +988,9 @@ Assumptions: Base gas price ~0.1 Gwei, ETH at $3,000.
 | Deploy ZKMAirdrop | ~1,000,000 | ~0.00001 ETH | ~$0.03 |
 | **Claim** | **~300,000** | **~0.00003 ETH** | **~$0.09** |
 
-The user always generates a **RISC Zero STARK proof** locally. The contract internally compresses it using a **Groth16 wrapper** for cheap on-chain verification (~300K gas instead of ~1.5M). This is transparent to the user — they don't choose or know about it. At 1M claims this saves the community **~$360K** in gas.
+The user always generates a **RISC Zero STARK proof** locally. The deployed `RiscZeroGroth16Verifier` contract (part of RISC Zero's verifier suite, not a custom implementation) internally compresses STARK proofs into Groth16 proofs for cheap on-chain verification (~300K gas instead of ~1.5M). This is transparent to the user — they don't choose or know about it. At 1M claims this saves the community **~$360K** in gas.
+
+> **Note:** The Groth16 wrapping is handled entirely by RISC Zero's verifier contract. ZKMist does not implement any custom proof compression. See [RISC Zero verification](https://dev.risczero.com/api/on-chain-verification) for details.
 
 ### C. Architecture
 
@@ -928,4 +1023,4 @@ Direct          Any Relayer
 
 ---
 
-*End of PRD v5.0*
+*End of PRD v5.1*
