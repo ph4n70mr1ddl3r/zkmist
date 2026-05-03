@@ -837,12 +837,9 @@ Assumptions: Base gas price ~0.1 Gwei, ETH at $3,000.
 | Deploy ZKMToken | ~1,200,000 | ~0.000012 ETH | ~$0.04 |
 | Deploy Verifier | ~6,000,000 | ~0.00006 ETH | ~$0.18 |
 | Deploy ZKMAirdrop | ~1,000,000 | ~0.00001 ETH | ~$0.03 |
-| **Claim (STARK)** | **~1,500,000** | **~0.00015 ETH** | **~$0.45** |
-| **Claim (Groth16 wrapper)** | **~300,000** | **~0.00003 ETH** | **~$0.09** |
+| **Claim** | **~300,000** | **~0.00003 ETH** | **~$0.09** |
 
-**Groth16 wrapper** is recommended. RISC Zero can compress its STARK proof into a Groth16 proof for cheaper on-chain verification. The Groth16 trusted setup for the wrapper is a **universal setup** (done once by RISC Zero, reused across all circuits) — not a per-circuit ceremony. The STARK proof is still generated locally with no trusted setup. Only the on-chain verification step uses Groth16 for gas savings.
-
-At 1M claims: STARK = ~$450K total gas vs Groth16 wrapper = ~$90K total gas. **$360K saved by the community.**
+The user always generates a **RISC Zero STARK proof** locally. The contract internally compresses it using a **Groth16 wrapper** for cheap on-chain verification (~300K gas instead of ~1.5M). This is transparent to the user — they don't choose or know about it. At 1M claims this saves the community **~$360K** in gas.
 
 ### C. Architecture
 
