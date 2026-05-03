@@ -1,6 +1,6 @@
 # ZKMist (ZKM) — Product Requirements Document
 
-**Version:** 5.1  
+**Version:** 6.0  
 **Date:** 2026-05-03  
 **Status:** Draft  
 **Author:** ZKMist Community  
@@ -11,9 +11,11 @@
 
 ### 1.1 Product Summary
 
-ZKMist (ticker: **ZKM**) is a **fully community-owned, fairly launched** ERC-20 token on **Base Chain**. There is no team allocation, no treasury, no investor share, and no pre-mine. Every ZKM token in existence was claimed by a member of the Ethereum community through a privacy-preserving airdrop.
+ZKMist (ticker: **ZKM**) is a **fully community-owned** ERC-20 token on **Base Chain**. There is no team allocation, no treasury, no investor share, and no pre-mine. Every ZKM token in existence was claimed by a member of the Ethereum community through a privacy-preserving airdrop.
 
 ~65 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Each claimant receives **10,000 ZKM** — no more, no less. The token supply is determined entirely by how many people claim: up to **10 billion ZKM** across up to **1 million claimants**. Claims close on 2027-01-01 or when 1 million claims are reached, whichever comes first.
+
+**With ~65 million eligible addresses and a 1-million claimant cap, only ~1.5% of eligible addresses can claim.** The claim window is first-come, first-served — those who discover ZKMist early, are technically capable of running the CLI, and are motivated to put in the effort will have a meaningful advantage. This is by design: the claiming process itself acts as a natural filter that rewards engaged community members and makes Sybil farming uneconomical.
 
 The claiming process is **anonymous** — the qualified address is never linked to the receiving address. Claimants generate zero-knowledge proofs locally using the RISC Zero zkVM and submit them to a fully immutable, adminless contract.
 
@@ -23,7 +25,7 @@ The claiming process is **anonymous** — the qualified address is never linked 
 
 | Principle | Implementation |
 |-----------|---------------|
-| **Fair** | Every claimant gets exactly 10,000 ZKM. No exceptions. No tiers. No insider allocation. |
+| **Fair allocation, open access** | Every claimant gets exactly 10,000 ZKM. No exceptions. No tiers. No insider allocation. However, with 65M eligible and 1M cap, claiming is first-come, first-served — see §4.6. |
 | **Community-owned** | 100% of supply goes to claimants. Zero team tokens. Zero investor tokens. |
 | **Anonymous** | Qualified address is never linked to receiving address on-chain. |
 | **Immutable** | Contract has no admin, no owner, no pause, no upgrade. Deploy once, run forever. |
@@ -34,6 +36,8 @@ The claiming process is **anonymous** — the qualified address is never linked 
 
 Standard airdrops are neither fair nor private. They create public links between qualifying and claiming addresses, expose user portfolios, and reserve large token allocations for teams and investors. ZKMist exists to prove that a token launch can be **entirely community-owned and privacy-preserving**.
 
+ZKMist is *not* equally accessible to all 65M eligible addresses — the 1M claim cap creates a first-come, first-served contest where technical ability, early awareness, and motivation provide a clear advantage (see §4.6). What ZKMist guarantees is **fairness of allocation** (no insider tokens, equal amounts per claimant) and **fairness of opportunity** (anyone who is eligible can participate), not fairness of outcome.
+
 ---
 
 ## 2. Goals & Non-Goals
@@ -42,12 +46,13 @@ Standard airdrops are neither fair nor private. They create public links between
 
 | # | Goal | Metric |
 |---|------|--------|
-| G1 | Deploy ZKM as a fair-launch ERC-20 on Base | 100% of supply claimable by community |
-| G2 | Enable anonymous claiming | Zero on-chain link between qualified and recipient address |
+| G1 | Deploy ZKM as a community-owned ERC-20 on Base | 100% of supply claimable by community |
+| G2 | Enable anonymous claiming | No direct on-chain link between qualified and recipient address in the protocol |
 | G3 | Prevent double-claiming | Zero double-claims |
 | G4 | Gas-efficient claim | < $0.50 per claim on Base |
 | G5 | Fully immutable contract | No admin, no owner, no pause |
-| G6 | Fair distribution | Every claimant receives exactly 10,000 ZKM |
+| G6 | Equal allocation | Every claimant receives exactly 10,000 ZKM |
+| G6.1 | Transparent scarcity dynamics | Claim cap and first-come-first-served model clearly documented and enforced on-chain |
 | G7 | Permissionless ecosystem | Anyone can build relayers, UIs, tools |
 
 ### 2.2 Non-Goals
@@ -152,6 +157,32 @@ Whichever comes first.
 | Time expires at 750K | 750,000 | 7,500,000,000 (7.5B) | 75% |
 
 > **No more ZKM will ever exist than what is claimed.** If only 300K people claim, the total supply is 3B ZKM — forever. No one can mint the remaining 7B. This is by design.
+
+### 4.6 Scarcity & Access Dynamics
+
+With ~65 million eligible addresses and a cap of 1 million claimants, ZKMist has a **first-come, first-served** claim model. This is a deliberate design choice that creates bounded scarcity while keeping the process open to anyone eligible.
+
+**What this means in practice:**
+
+| Factor | Effect |
+|--------|--------|
+| **1M claim cap** | Only ~1.5% of eligible addresses can claim. Creates scarcity and per-claimant value. |
+| **Technical barrier** | Claiming requires running a CLI, downloading ~1.3 GB, and building a Merkle tree (~4 GB RAM). This filters out casual or unmotivated participants. |
+| **Information advantage** | Those who discover ZKMist early have more time and less competition. Early claimants face a lower risk of the cap being reached. |
+| **Effort-reward structure** | The claiming process rewards technical competence and proactive engagement — qualities valued in the Ethereum community. |
+| **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier, mass Sybil farming is economically unattractive. |
+
+**This is not equally accessible to all 65M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
+
+1. **Fairness of allocation** — no insider tokens, no tiers, equal amounts per claimant.
+2. **Fairness of opportunity** — anyone eligible *can* claim; no gatekeepers decide who gets in.
+3. **Transparency** — the rules (cap, deadline, process) are public, immutable, and enforced on-chain.
+
+It does **not** guarantee fairness of outcome — not every eligible person will claim, and the 1M cap ensures most won't be able to.
+
+**Why not remove the cap?** An uncapped model (deadline only) would guarantee access to everyone but produce an unpredictable supply, diluting per-claimant value and removing the scarcity that incentivizes early participation and community building. The capped model trades universal access for economic coherence.
+
+**Why 1M and not 5M or 10M?** The 1M cap at 10,000 ZKM each produces a max supply of 10B ZKM — a psychologically round number that is easy to reason about. A higher cap would require either lowering the per-claimant amount (breaking the "10,000 ZKM" simplicity) or inflating the max supply. The current parameters are a balance between inclusivity, scarcity, and simplicity.
 
 ---
 
@@ -283,7 +314,7 @@ eligibility/
 2. **Immutable contract** — no admin, no upgrades, no pause.
 3. **Permissionless submission** — anyone can submit a valid proof or build a relayer.
 4. **No trusted setup** — STARK-based proving. No ceremony, no toxic waste.
-5. **Fair** — every claimant receives exactly 10,000 ZKM.
+5. **Equal allocation** — every claimant receives exactly 10,000 ZKM. First-come, first-served among 65M eligible (see §4.6).
 6. **Community-owned** — 100% of supply goes to claimants.
 
 ### 6.2 Why RISC Zero
@@ -926,7 +957,9 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | Property | Poseidon reference | Cross-validate Poseidon output against a reference implementation (e.g., `poseidon` crate) |
 | Coverage | ≥ 95% | Both Solidity and Rust code paths |
 
-### 10.5 Fairness
+### 10.5 Fairness & Access
+
+**Fairness of allocation** (what you receive):
 
 | Guarantee | Mechanism |
 |-----------|-----------|
@@ -936,6 +969,16 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | **Immutable rules** | Contract cannot be changed after deployment |
 | **Capped supply** | 10B ZKM max — enforced on-chain |
 | **Deadline enforced** | No claims after 2027-01-01 — enforced on-chain |
+
+**Known access asymmetries** (who gets to claim):
+
+| Asymmetry | Impact | Accepted? |
+|-----------|--------|----------|
+| First-come, first-served (1M cap) | Early claimants have guaranteed access; latecomers may be locked out | ✅ By design |
+| Technical barrier (CLI, 4 GB RAM) | Users without technical skill or adequate hardware are excluded | ✅ By design — acts as Sybil filter |
+| Bandwidth requirement (1.3 GB download) | Users with slow or expensive internet are disadvantaged | ✅ Accepted — mitigated by IPFS mirroring and relayer ecosystem |
+| Information asymmetry | Those who hear about ZKMist first have a major advantage | ✅ Accepted — community-driven discovery is part of the model |
+| Contract wallets excluded | Multisigs and Safes appear in the list but cannot claim | ✅ Accepted — see §5.1 note |
 
 ---
 
