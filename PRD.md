@@ -171,6 +171,8 @@ Whichever comes first.
 
 **Rationale:** 0.004 ETH (~$8–12 at average prices) filters out dust/spam while capturing virtually all real Ethereum users. Broad, inclusive, and Sybil-resistant — costly to fake at scale.
 
+> **Note on contract wallets:** Smart contract addresses (multisigs, Safes, etc.) may appear in the eligibility list if they sent transactions meeting the fee threshold. However, they **cannot claim** because the claim protocol requires a private key to (1) derive the Ethereum address and (2) compute the nullifier. Contract wallets do not have a single private key, so they are effectively excluded. This is by design.
+
 ### 5.2 Data Source — Google BigQuery
 
 The eligibility data is extracted from **Google BigQuery** (`bigquery-public-data.crypto_ethereum`).
@@ -223,7 +225,7 @@ Final Eligibility List
 |-----------|-------|
 | **Leaf** | `poseidon(address)` |
 | **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
-| **Interior hash** | SHA-256 |
+| **Interior hash** | Poseidon |
 | **Root** | Hardcoded in the airdrop contract |
 
 ### 5.4 Eligibility List Format
@@ -251,7 +253,8 @@ eligibility/
   "claimDeadline": "2027-01-01T00:00:00Z",
   "merkleRoot": "0x...",
   "merkleTreeDepth": 26,
-  "hashAlgorithm": "poseidon",
+  "leafHashAlgorithm": "poseidon",
+  "interiorHashAlgorithm": "poseidon",
   "files": [
     { "file": "addresses_00000001.csv", "sha256": "0x..." }
   ]
@@ -322,7 +325,7 @@ eligibility/
 │    • Validate journal (root + nullifier + recipient)        │
 │    • Check nullifier unused                                 │
 │    • Check claimCount < 1,000,000                           │
-│    • Check block.timestamp < claimDeadline                  │
+│    • Check block.timestamp < CLAIM_DEADLINE                 │
 │    • MINT 10,000 ZKM to recipient                           │
 │                                                             │
 │  On-chain:                                                  │
@@ -502,7 +505,7 @@ contract ZKMAirdrop {
     bytes32 public immutable merkleRoot;
     uint256 public constant CLAIM_AMOUNT = 10_000e18;     // 10,000 ZKM
     uint256 public constant MAX_CLAIMS = 1_000_000;
-    uint256 public immutable claimDeadline;                // 2027-01-01 00:00:00 UTC
+    uint256 public constant CLAIM_DEADLINE = 1_798_761_600;  // 2027-01-01 00:00:00 UTC
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;
@@ -511,14 +514,12 @@ contract ZKMAirdrop {
         address _token,
         address _verifier,
         bytes32 _imageId,
-        bytes32 _merkleRoot,
-        uint256 _claimDeadline
+        bytes32 _merkleRoot
     ) {
         token = ZKMToken(_token);
         verifier = IRiscZeroVerifier(_verifier);
         imageId = _imageId;
         merkleRoot = _merkleRoot;
-        claimDeadline = _claimDeadline;
     }
 
     function claim(
@@ -528,7 +529,7 @@ contract ZKMAirdrop {
         address _recipient
     ) external {
         // Check claim window
-        require(block.timestamp < claimDeadline, "Claim period ended");
+        require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
         require(!usedNullifiers[_nullifier], "Already claimed");
 
@@ -557,7 +558,7 @@ contract ZKMAirdrop {
         return MAX_CLAIMS - totalClaims;
     }
     function isClaimWindowOpen() external view returns (bool) {
-        return block.timestamp < claimDeadline && totalClaims < MAX_CLAIMS;
+        return block.timestamp < CLAIM_DEADLINE && totalClaims < MAX_CLAIMS;
     }
 
     event Claimed(
@@ -573,7 +574,7 @@ contract ZKMAirdrop {
 - Tokens are **minted on claim** — no pre-mine, no leftover tokens.
 - `totalClaims` is public — anyone can see how many have claimed.
 - `MAX_CLAIMS = 1,000,000` — enforced on-chain. After 1M claims, no more ZKM can ever exist.
-- `claimDeadline` — enforced on-chain. After 2027-01-01, no more ZKM can ever be minted.
+- `CLAIM_DEADLINE` — hardcoded constant. After 2027-01-01, no more ZKM can ever be minted.
 - `MAX_SUPPLY = 10,000,000,000 ZKM` on the token contract — hard cap, can never be exceeded.
 - `msg.sender` is not used for verification — anyone can submit.
 - No admin, owner, pause, or upgrade functions exist.
@@ -758,7 +759,7 @@ Cannot:
 | **Claim Deadline** | 2027-01-01 00:00:00 UTC |
 | **Proof System** | RISC Zero zkVM (STARK) |
 | **Trusted Setup** | **None** |
-| **Merkle Tree** | 26 levels, Poseidon leaf, SHA-256 interior |
+| **Merkle Tree** | 26 levels, Poseidon (leaf + interior) |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
 | **Gas per claim** | ~300,000 (~0.00003 ETH / ~$0.09) via Groth16 wrapper |
 | **Contract** | Fully immutable, no admin |
@@ -800,7 +801,7 @@ Cannot:
 | 9 | Unclaimed supply? | ✅ Never minted. Supply = claims × 10,000. |
 | 10 | Exact qualified count after final BigQuery run? | 🔲 Pending |
 | 11 | Keccak256 in guest program for address derivation? | 🔲 Pending (recommend: yes) |
-| 12 | Contract addresses (multisigs) eligible? | 🔲 Pending (recommend: yes) |
+| 12 | Contract addresses (multisigs) eligible? | ✅ Ineligible by design — claiming requires a private key to derive address + generate nullifier. Contract wallets appear in the list but cannot claim. |
 
 ---
 
