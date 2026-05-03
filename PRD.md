@@ -236,7 +236,9 @@ Final Eligibility List
 - **S-box:** x^5
 - **Leaf hash:** `poseidon(address_as_field_element)` — t=2, R_F=8, R_P=56 (`light-poseidon` Circom nr_inputs=1)
 - **Interior hash:** `poseidon(left_child, right_child)` — t=3, R_F=8, R_P=57 (`light-poseidon` Circom nr_inputs=2)
-- **Implementation:** `light-poseidon` crate (v0.4.x) with `ark-bn254` backend. Same crate used in both guest program and CLI tree builder. Pure Rust, `no_std`, compiles for `riscv32im` target.
+- **Implementation:** `light-poseidon` crate (v0.4.x) with `ark-bn254` backend. Same crate used in both guest program and CLI tree builder. Pure Rust, compiles for `riscv32im-risc0-zkvm-elf` target (validated — see §13, #15).
+- **Leaf encoding convention:** A 20-byte Ethereum address is converted to a 32-byte big-endian buffer by zero-padding on the LEFT (high-order bytes): `buffer = 0x00…00 || address` (12 zero bytes + 20 address bytes). The resulting 32 bytes are interpreted as a BN254 field element via `Fr::from_be_bytes_mod_order()`. Since the address is at most 160 bits and the BN254 field modulus is ~2^254, no modular reduction occurs. This convention MUST be identical in the guest program, CLI tree builder, and any third-party Merkle tree reconstruction.
+- **Guest build configuration:** Building for `riscv32im-risc0-zkvm-elf` requires (1) the RISC Zero custom toolchain (`rzup install rust`), (2) `getrandom_backend="custom"` in `.cargo/config.toml` rustflags for the target, and (3) an atomic shim providing `__atomic_store_1` (riscv32 lacks native 1-byte atomics required by `tracing_core`). See §13, #15 for details.
 
 ### 5.4 Eligibility List Format
 
@@ -929,7 +931,7 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon (leaf: t=2/R_P=56, interior: t=3/R_P=57, BN254) |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
-| **Gas per claim** | ~300,000 (~0.00003 ETH / ~$0.09) via Groth16 wrapper |
+| **Gas per claim** | ~500,000–520,000 (~0.00005 ETH / ~$0.15) via Groth16 wrapper (validated — see §13, #16) |
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
 | **Qualified** | ~65,000,000 addresses |
@@ -972,6 +974,9 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | 12 | Contract addresses (multisigs) eligible? | ✅ Ineligible by design — claiming requires a private key to derive address + generate nullifier. Contract wallets appear in the list but cannot claim. |
 | 13 | Poseidon API: does the guest program's Poseidon output match the off-chain Merkle tree builder? | ✅ **Resolved** — RISC Zero's Poseidon accelerator uses BabyBear (wrong field). Use `light-poseidon` crate (pure Rust, BN254, `no_std`) in BOTH guest program and CLI tree builder. Leaf: t=2 (R_F=8, R_P=56). Interior: t=3 (R_F=8, R_P=57). ~2.7M cycles total — negligible. Must still validate with end-to-end testnet test before T-14d. |
 | 14 | Journal digest: does `sha256(raw_journal_bytes)` match the deployed `IRiscZeroVerifier`'s expected digest scheme? | ✅ **Resolved** — Confirmed correct by reading RISC Zero source. Rust `Journal::digest()` = `Sha256::hash_bytes(&self.bytes)`. Solidity `bytes32(sha256(_journal))` matches. The `RiscZeroGroth16Verifier.verify(seal, imageId, journalDigest)` takes the digest as-is and wraps it in `ReceiptClaimLib.ok(imageId, journalDigest).digest()`. End-to-end testnet test still recommended before mainnet. |
+| 15 | Do `light-poseidon` + `ark-bn254` compile for `riscv32im-risc0-zkvm-elf`? | ✅ **Resolved** — Validated by building a full guest program (address derivation + Poseidon hashing + Merkle proof + nullifier verification) for `riscv32im-risc0-zkvm-elf` using the RISC Zero toolchain (rzup v1.94.1, cargo-risczero 3.0.5). All crates compile successfully. Three issues required fixes: (1) `getrandom` 0.3 needs `getrandom_backend="custom"` cfg flag in `.cargo/config.toml`, (2) `tracing_core` requires an atomic shim for `__atomic_store_1` (riscv32 limitation), (3) the PRD's guest program code has API mismatches with current crate versions (see #17). Binary size: 442K ELF. |
+| 16 | Gas per claim estimate accuracy? | ✅ **Resolved** — Measured with Foundry gas benchmarks. Airdrop contract overhead (with noop verifier): 111,637 gas for first claim, 58,264 for subsequent. Groth16 verification (calculated): ~404,500 gas (5× ECMUL @ 32K + 5× ECADD @ 500 + 2× BN254 pairing @ 80K+77K + overhead). **Total: ~516,000 gas for first claim, ~463,000 for subsequent.** PRD's original estimate of ~300K was too low. Updated §11, Appendix B. At Base prices (0.1 Gwei, $3K ETH): ~$0.15/claim. |
+| 17 | Guest program API compatibility with current crate versions? | ✅ **Resolved** — The PRD's Rust code has 5 API mismatches with current crate versions that must be fixed in the actual implementation: (1) `Fr::from_be_bytes()` → `Fr::from_be_bytes_mod_order()` (ark-ff 0.5 removed `from_be_bytes`), (2) `into_bigint().to_bytes_be(&mut out[..])` → `into_bigint().to_bytes_be()` returns `Vec<u8>` (no in-place write), (3) `tiny_keccak::keccak256(data)` → must use `Keccak::v256()` hasher API (tiny-keccak v2 removed the direct function), (4) `k256::ecdsa::SigningKey::from_bytes(key)` → must use `SigningKey::from_slice(key)` (k256 0.13 changed the API), (5) `env::read()` → must use `risc0_zkvm::guest::env::read()` or import `use risc0_zkvm::guest::env`. These are all straightforward API updates, not design issues. |
 
 ---
 
@@ -1010,9 +1015,9 @@ Assumptions: Base gas price ~0.1 Gwei, ETH at $3,000.
 | Deploy ZKMToken | ~1,200,000 | ~0.000012 ETH | ~$0.04 |
 | Deploy Verifier | ~6,000,000 | ~0.00006 ETH | ~$0.18 |
 | Deploy ZKMAirdrop | ~1,000,000 | ~0.00001 ETH | ~$0.03 |
-| **Claim** | **~300,000** | **~0.00003 ETH** | **~$0.09** |
+| **Claim** | **~510,000** | **~0.000051 ETH** | **~$0.15** |
 
-The user always generates a **RISC Zero STARK proof** locally. The deployed `RiscZeroGroth16Verifier` contract (part of RISC Zero's verifier suite, not a custom implementation) internally compresses STARK proofs into Groth16 proofs for cheap on-chain verification (~300K gas instead of ~1.5M). This is transparent to the user — they don't choose or know about it. At 1M claims this saves the community **~$360K** in gas.
+The user always generates a **RISC Zero STARK proof** locally. The deployed `RiscZeroGroth16Verifier` contract (part of RISC Zero's verifier suite, not a custom implementation) internally compresses STARK proofs into Groth16 proofs for cheap on-chain verification (~510K gas instead of ~1.5M for raw STARK). This is transparent to the user — they don't choose or know about it. Gas breakdown: ~400K for Groth16 verification (5x ECMUL + 2x BN254 pairing + RiscZero overhead) + ~110K for airdrop logic (sha256, SSTORE nullifier, SSTORE totalClaims, ERC20 _mint, event). At 1M claims this saves the community **~$270K** vs raw STARK verification.
 
 > **Note:** The Groth16 wrapping is handled entirely by RISC Zero's verifier contract. ZKMist does not implement any custom proof compression. See [RISC Zero verification](https://dev.risczero.com/api/on-chain-verification) for details.
 
