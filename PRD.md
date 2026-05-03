@@ -223,21 +223,20 @@ Final Eligibility List
 
 | Parameter | Value |
 |-----------|-------|
-| **Leaf** | `poseidon(address)` |
+| **Leaf** | `poseidon(address)` — t=2, R_F=8, R_P=56 |
 | **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
-| **Interior hash** | Poseidon |
-| **Poseidon params** | `risc0-zkvm` default: BN254 scalar field, `t = 3`, `R = 8` (Poseidon2) |
+| **Interior hash** | Poseidon — t=3, R_F=8, R_P=57 |
+| **Poseidon params** | BN254 scalar field, x^5 S-box. Leaf: `light-poseidon` Circom t=2 (1 input). Interior: `light-poseidon` Circom t=3 (2 inputs). |
 | **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf) |
 | **Root** | Hardcoded in the airdrop contract |
 
 **Poseidon parameters:**
 
 - **Field:** BN254 scalar field (`p = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001`)
-- **t (width):** 3 (2 inputs per round for interior nodes: `hash(left, right)`)
-- **R (rounds):** 8 full rounds + 57 partial rounds (RISC Zero default)
-- **Leaf hash:** `poseidon(address_as_field_element)` — the 20-byte address is zero-padded to 32 bytes and interpreted as a field element
-- **Interior hash:** `poseidon(left_child, right_child)` — each node is the Poseidon hash of its two children
-- **Implementation:** Use the `risc0-zkvm` built-in Poseidon accelerator or the `poseidon` crate compatible with RISC Zero's parameters
+- **S-box:** x^5
+- **Leaf hash:** `poseidon(address_as_field_element)` — t=2, R_F=8, R_P=56 (`light-poseidon` Circom nr_inputs=1)
+- **Interior hash:** `poseidon(left_child, right_child)` — t=3, R_F=8, R_P=57 (`light-poseidon` Circom nr_inputs=2)
+- **Implementation:** `light-poseidon` crate (v0.4.x) with `ark-bn254` backend. Same crate used in both guest program and CLI tree builder. Pure Rust, `no_std`, compiles for `riscv32im` target.
 
 ### 5.4 Eligibility List Format
 
@@ -395,13 +394,8 @@ pub fn main() {
         path_indices[i] = env::read();
     }
 
-    // Ensure leaf is not the padding sentinel
-    assert!(leaf != [0xFFu8; 32], "Padding leaf — not a valid claimant");
-
-    // Verify Merkle membership
+    // Compute leaf and verify Merkle membership
     let leaf = poseidon_hash_address(&address);
-
-    // Ensure leaf is not the padding sentinel (defense-in-depth)
     assert!(leaf != PADDING_SENTINEL, "Padding leaf — not a valid claimant");
     let computed_root = compute_merkle_root(&leaf, &siblings, &path_indices);
     assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
@@ -435,11 +429,10 @@ fn compute_nullifier(key: &[u8; 32]) -> [u8; 32] {
 
 /// Hash a 20-byte Ethereum address into a 32-byte Poseidon leaf.
 /// The address is zero-padded to 32 bytes and interpreted as a BN254 field element.
+/// Uses light-poseidon (t=2, R_F=8, R_P=56) — same crate as CLI tree builder.
 fn poseidon_hash_address(addr: &[u8; 20]) -> [u8; 32] {
     let mut padded = [0u8; 32];
     padded[12..32].copy_from_slice(addr);
-    // Use RISC Zero's built-in Poseidon accelerator (single-input preimage)
-    // Equivalent to: poseidon(padded_as_field_element)
     poseidon_hash_single(&padded)
 }
 
@@ -464,29 +457,53 @@ fn compute_merkle_root(
 }
 
 /// Poseidon hash of a single field element (used for leaf hashing).
-/// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
-/// Leverages RISC Zero's built-in Poseidon accelerator for fast proving.
-/// See: https://dev.risczero.com/api/zkvm/accelerators
+/// Uses BN254 scalar field, x^5 S-box, t=2 (1 input), R_F=8 + R_P=56 rounds.
+///
+/// ⚠️  RESOLVED (Open Question #13): RISC Zero's built-in Poseidon accelerator
+/// operates over BabyBear (the recursion field), NOT BN254. It cannot be used
+/// for Merkle tree hashing. Instead, use a pure-Rust BN254 Poseidon crate.
+///
+/// Recommended crate: `light-poseidon` (v0.4.x)
+///   - BN254 (ark-bn254::Fr), x^5 S-box, Circom-compatible parameters
+///   - Supports t=2 (nr_inputs=1) for leaves and t=3 (nr_inputs=2) for interior
+///   - `no_std` compatible via `ark-ff` (pure Rust, compiles for riscv32im)
+///   - Use `PoseidonHasher::hash()` for field-element API
+///   - Use `PoseidonBytesHasher::hash_bytes_be()` for byte-level API
+///
+/// Key invariant: the SAME Poseidon implementation must be used in both:
+///   1. The guest program (this code) — for proof generation
+///   2. The CLI Merkle tree builder (off-chain) — for root computation
+/// Import from a shared crate to guarantee parameter consistency.
+///
+/// Performance: ~50K–100K RISC-V cycles per Poseidon hash. With 27 hashes
+/// per claim (1 leaf + 26 Merkle path), total ~1.4–2.7M cycles. Negligible
+/// vs. the address derivation (~2M cycles for secp256k1).
 fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
-    use risc0_zkvm::guest::{poseidon, HashFn};
-    // Interpret input as a BN254 field element and hash with Poseidon (t=3)
-    let input_elem = baby_bear::Elem::from_bytes(input);
-    let digest = poseidon::hash(&[input_elem]);
+    use ark_bn254::Fr;
+    use light_poseidon::{Poseidon, PoseidonHasher, parameters::bn254_x5};
+
+    let input_elem = Fr::from_be_bytes(input).expect("Invalid field element");
+    let mut hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
+    let result = hasher.hash(&[input_elem]).expect("Hash failed");
     let mut out = [0u8; 32];
-    out.copy_from_slice(&digest.as_bytes());
+    result.into_bigint().to_bytes_be(&mut out[..]);
     out
 }
 
 /// Poseidon hash of two field elements (used for interior node hashing).
-/// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
-/// Leverages RISC Zero's built-in Poseidon accelerator for fast proving.
+/// Uses BN254 scalar field, x^5 S-box, t=3 (2 inputs), R_F=8 + R_P=57 rounds.
+///
+/// Same implementation notes as poseidon_hash_single.
 fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    use risc0_zkvm::guest::{poseidon, HashFn};
-    let left_elem = baby_bear::Elem::from_bytes(left);
-    let right_elem = baby_bear::Elem::from_bytes(right);
-    let digest = poseidon::hash(&[left_elem, right_elem]);
+    use ark_bn254::Fr;
+    use light_poseidon::{Poseidon, PoseidonHasher, parameters::bn254_x5};
+
+    let left_elem = Fr::from_be_bytes(left).expect("Invalid field element");
+    let right_elem = Fr::from_be_bytes(right).expect("Invalid field element");
+    let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+    let result = hasher.hash(&[left_elem, right_elem]).expect("Hash failed");
     let mut out = [0u8; 32];
-    out.copy_from_slice(&digest.as_bytes());
+    result.into_bigint().to_bytes_be(&mut out[..]);
     out
 }
 ```
@@ -644,9 +661,13 @@ contract ZKMAirdrop {
         require(_journal.length == 84, "Invalid journal length");
 
         // Verify RISC Zero proof
-        // NOTE: journalDigest must match RISC Zero's internal digest scheme.
-        // Using sha256(raw_journal_bytes) — verify compatibility with the
-        // deployed IRiscZeroVerifier version before mainnet.
+        // RESOLVED: The journal digest scheme is sha256(raw_journal_bytes), confirmed by:
+        //   1. Rust: Journal::digest() = S::hash_bytes(&self.bytes) = SHA-256 of raw bytes
+        //   2. Solidity: bytes32(sha256(_journal)) = SHA-256 of raw bytes
+        //   3. RiscZeroGroth16Verifier.verify() internally calls
+        //      ReceiptClaimLib.ok(imageId, journalDigest).digest() which constructs
+        //      the full ReceiptClaim and verifies the Groth16 proof against it.
+        // See: https://github.com/risc0/risc0-ethereum/blob/main/contracts/src/IRiscZeroVerifier.sol
         bytes32 journalDigest = bytes32(sha256(_journal));
         verifier.verify(_proof, imageId, journalDigest);
 
@@ -805,7 +826,7 @@ Cannot:
 | zkVM | RISC Zero (risc0-zkvm) |
 | Guest Program | Rust (RISC-V) |
 | Proof System | STARK (RISC Zero) |
-| Crypto | `k256`, `sha2`, `tiny-keccak` |
+| Crypto | `k256`, `sha2`, `tiny-keccak`, `light-poseidon`, `ark-bn254` |
 | CLI | Rust |
 | Chain | Base (8453) |
 | Data | IPFS + GitHub |
@@ -903,9 +924,10 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | **Max Claims** | 1,000,000 |
 | **Claim Deadline** | 2027-01-01 00:00:00 UTC |
 | **Proof System** | RISC Zero zkVM (STARK) |
-| **risc0-zkvm version** | Must be pinned at build time (e.g., `v2.0.0`). Different versions may produce different Image IDs and have different Poseidon parameters. |
+| **risc0-zkvm version** | Must be pinned at build time (e.g., `v5.0.0`). Different versions may produce different Image IDs. |
+| **Poseidon crate** | `light-poseidon` v0.4.x — same version in guest program and CLI tree builder |
 | **Trusted Setup** | **None** |
-| **Merkle Tree** | 26 levels, Poseidon (leaf + interior) |
+| **Merkle Tree** | 26 levels, Poseidon (leaf: t=2/R_P=56, interior: t=3/R_P=57, BN254) |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
 | **Gas per claim** | ~300,000 (~0.00003 ETH / ~$0.09) via Groth16 wrapper |
 | **Contract** | Fully immutable, no admin |
@@ -948,6 +970,8 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | 10 | Exact qualified count after final BigQuery run? | 🔲 Pending — final BigQuery run scheduled for T-30d |
 | 11 | Keccak256 in guest program for address derivation? | 🔲 Pending (recommend: yes) — must be resolved before guest program freeze at T-14d |
 | 12 | Contract addresses (multisigs) eligible? | ✅ Ineligible by design — claiming requires a private key to derive address + generate nullifier. Contract wallets appear in the list but cannot claim. |
+| 13 | Poseidon API: does the guest program's Poseidon output match the off-chain Merkle tree builder? | ✅ **Resolved** — RISC Zero's Poseidon accelerator uses BabyBear (wrong field). Use `light-poseidon` crate (pure Rust, BN254, `no_std`) in BOTH guest program and CLI tree builder. Leaf: t=2 (R_F=8, R_P=56). Interior: t=3 (R_F=8, R_P=57). ~2.7M cycles total — negligible. Must still validate with end-to-end testnet test before T-14d. |
+| 14 | Journal digest: does `sha256(raw_journal_bytes)` match the deployed `IRiscZeroVerifier`'s expected digest scheme? | ✅ **Resolved** — Confirmed correct by reading RISC Zero source. Rust `Journal::digest()` = `Sha256::hash_bytes(&self.bytes)`. Solidity `bytes32(sha256(_journal))` matches. The `RiscZeroGroth16Verifier.verify(seal, imageId, journalDigest)` takes the digest as-is and wraps it in `ReceiptClaimLib.ok(imageId, journalDigest).digest()`. End-to-end testnet test still recommended before mainnet. |
 
 ---
 
