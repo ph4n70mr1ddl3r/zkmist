@@ -760,8 +760,8 @@ Cannot:
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon leaf, SHA-256 interior |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
-| **Gas (STARK)** | ~1,500,000 |
-| **Gas (Groth16 wrapper)** | ~300,000 (optional) |
+| **Gas (STARK)** | ~1,500,000 (~0.00015 ETH / ~$0.45) |
+| **Gas (Groth16 wrapper)** | ~300,000 (~0.00003 ETH / ~$0.09) — optional |
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
 | **Qualified** | ~65,000,000 addresses |
@@ -832,13 +832,15 @@ Cannot:
 
 ### B. Gas Estimates (Base)
 
-| Operation | Gas | Cost |
-|-----------|-----|------|
-| Deploy ZKMToken | ~1,200,000 | ~$0.05 |
-| Deploy Verifier | ~6,000,000 | ~$0.25 |
-| Deploy ZKMAirdrop | ~1,000,000 | ~$0.04 |
-| Claim (STARK) | ~1,500,000 | ~$0.07 |
-| Claim (Groth16 wrapper) | ~300,000 | ~$0.015 |
+Assumptions: Base gas price ~0.1 Gwei, ETH at $3,000.
+
+| Operation | Gas | ETH | USD |
+|-----------|-----|-----|-----|
+| Deploy ZKMToken | ~1,200,000 | ~0.000012 ETH | ~$0.04 |
+| Deploy Verifier | ~6,000,000 | ~0.00006 ETH | ~$0.18 |
+| Deploy ZKMAirdrop | ~1,000,000 | ~0.00001 ETH | ~$0.03 |
+| Claim (STARK) | ~1,500,000 | ~0.00015 ETH | ~$0.45 |
+| Claim (Groth16 wrapper) | ~300,000 | ~0.00003 ETH | ~$0.09 |
 
 ### C. Architecture
 
