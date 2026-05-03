@@ -760,7 +760,7 @@ Cannot:
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon leaf, SHA-256 interior |
 | **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
-| **Gas per claim** | ~1,500,000 (~0.00015 ETH / ~$0.45) |
+| **Gas per claim** | ~300,000 (~0.00003 ETH / ~$0.09) via Groth16 wrapper |
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
 | **Qualified** | ~65,000,000 addresses |
@@ -837,7 +837,12 @@ Assumptions: Base gas price ~0.1 Gwei, ETH at $3,000.
 | Deploy ZKMToken | ~1,200,000 | ~0.000012 ETH | ~$0.04 |
 | Deploy Verifier | ~6,000,000 | ~0.00006 ETH | ~$0.18 |
 | Deploy ZKMAirdrop | ~1,000,000 | ~0.00001 ETH | ~$0.03 |
-| **Claim** | **~1,500,000** | **~0.00015 ETH** | **~$0.45** |
+| **Claim (STARK)** | **~1,500,000** | **~0.00015 ETH** | **~$0.45** |
+| **Claim (Groth16 wrapper)** | **~300,000** | **~0.00003 ETH** | **~$0.09** |
+
+**Groth16 wrapper** is recommended. RISC Zero can compress its STARK proof into a Groth16 proof for cheaper on-chain verification. The Groth16 trusted setup for the wrapper is a **universal setup** (done once by RISC Zero, reused across all circuits) — not a per-circuit ceremony. The STARK proof is still generated locally with no trusted setup. Only the on-chain verification step uses Groth16 for gas savings.
+
+At 1M claims: STARK = ~$450K total gas vs Groth16 wrapper = ~$90K total gas. **$360K saved by the community.**
 
 ### C. Architecture
 
