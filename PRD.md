@@ -1,6 +1,6 @@
 # ZKMist (ZKM) — Product Requirements Document
 
-**Version:** 1.1  
+**Version:** 2.0  
 **Date:** 2026-05-03  
 **Status:** Draft  
 **Author:** ZKMist Team  
@@ -11,7 +11,9 @@
 
 ### 1.1 Product Summary
 
-ZKMist (ticker: **ZKM**) is an ERC-20 token deployed on **Base Chain** featuring a **privacy-preserving airdrop** mechanism. A predefined list of qualified Ethereum addresses are eligible to claim ZKM tokens, but the claiming process is designed so that **the qualified address is never publicly linked to the receiving address**. This is achieved through zero-knowledge proof technology, allowing claimants to prove eligibility without revealing their identity.
+ZKMist (ticker: **ZKM**) is an ERC-20 token deployed on **Base Chain** featuring a **privacy-preserving airdrop** mechanism. A predefined list of ~65 million qualified Ethereum addresses are eligible to claim ZKM tokens, but the claiming process is designed so that **the qualified address is never publicly linked to the receiving address**.
+
+The claimant generates a **zero-knowledge proof** entirely on their local machine using only three things: the **published eligibility list**, the **private key** to their qualified address, and a **recipient address** they choose. No server, no API, no third party is involved in proof generation. The resulting proof is submitted on-chain and reveals nothing about which address is claiming — only a deterministic nullifier (preventing double-claims) and the recipient address.
 
 ### 1.2 Problem Statement
 
@@ -23,11 +25,13 @@ Standard airdrops create a permanent, public on-chain link between a user's qual
 
 ### 1.3 Solution
 
-ZKMist uses a **Merkle-tree-based anonymous claim protocol** with **nullifiers**. Qualified addresses generate a zero-knowledge proof (or an off-chain Merkle proof + nullifier scheme) that:
+ZKMist uses a **zero-knowledge proof system** (circom + Groth16) where claimants generate proofs entirely locally. The proof proves:
 
-1. Proves they control an address in the eligibility Merkle tree.
-2. Reveals only a **nullifier** (a unique, one-time-use derived value) to prevent double-claiming.
-3. Specifies a **separate receiving address** that has no on-chain link to the original qualified address.
+1. **Membership** — "I know a private key whose derived Ethereum address is in the published eligibility Merkle tree."
+2. **Nullifier uniqueness** — a deterministic nullifier derived from the private key prevents double-claiming.
+3. **Recipient binding** — the proof specifies a recipient address that receives the tokens.
+
+**No server, API, or third party** is needed to generate the proof. The claimant only needs the published eligibility list, their private key, and a recipient address.
 
 ---
 
@@ -230,124 +234,186 @@ The list is published on **IPFS** (pinned via Pinata/estuary) and mirrored on Gi
 
 ## 6. Anonymous Claim Protocol
 
-### 6.1 High-Level Architecture
+### 6.1 Design Principles
+
+1. **Local-only proof generation** — the claimant never sends their private key, qualified address, or any identifying information to any server.
+2. **Three inputs suffice** — the published eligibility list + private key + recipient address are all that's needed.
+3. **On-chain reveals nothing** — only a nullifier (derived from the private key) and the recipient address appear on-chain.
+4. **No trusted third party** — the eligibility list is public, the Merkle root is on-chain, and anyone can verify.
+
+### 6.2 High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         OFF-CHAIN                            │
-│                                                              │
-│  Google BigQuery ──► Eligibility List (~65M addresses)       │
-│                            │                                 │
-│                            ▼                                 │
-│                  Merkle Tree Builder (server)                │
-│                  • 65M leaves, depth 26                      │
-│                  • Sorted lexicographically                 │
-│                  • Root stored on-chain                      │
-│                  • Tree stored in database / KV store        │
-│                            │                                 │
-│         ┌─────────────────┼──────────────────┐              │
-│         ▼                 ▼                   ▼              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │  Proof API   │  │  Eligibility │  │  Relayer     │       │
-│  │  (per-addr   │  │  Checker     │  │  Service     │       │
-│  │   Merkle     │  │  (lookup)    │  │  (submits    │       │
-│  │   proof)     │  │              │  │   claims)    │       │
-│  └──────┬───────┘  └──────────────┘  └──────┬───────┘       │
-│         │                                   │               │
-└─────────┼───────────────────────────────────┼───────────────┘
-          │                                   │
-          ▼                                   ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       ON-CHAIN (Base)                        │
-│                                                              │
-│  ┌───────────────┐      ┌──────────────────────┐            │
-│  │  ZKM Token    │◄─────│  ZKMAirdrop Claim    │            │
-│  │  (ERC-20)     │      │  Contract            │            │
-│  └───────────────┘      └──────────────────────┘            │
-│                              │                               │
-│         Verifies:            │                               │
-│          • Merkle proof      │                               │
-│            (26 levels)       │                               │
-│          • Nullifier not     │                               │
-│            previously used   │                               │
-│          • Transfers tokens  │                               │
-│            to receiving addr │                               │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        PUBLISHED DATA                            │
+│                                                                  │
+│  Google BigQuery ──► Eligibility List (~65M addresses)           │
+│                            │                                     │
+│                            ▼                                     │
+│                  Published to IPFS (chunked CSV)                 │
+│                  Merkle Root stored on-chain                     │
+│                                                                  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                   CLAIMANT'S LOCAL MACHINE                        │
+│                                                                  │
+│  Inputs:                                                         │
+│    ① Published eligibility list (downloaded from IPFS)           │
+│    ② Private key to qualified Ethereum address                   │
+│    ③ Recipient address (not linked to qualified address)         │
+│                                                                  │
+│  Local proof generation (CLI tool or desktop app):               │
+│    a. Load eligibility list, build Merkle tree (streaming)       │
+│    b. Derive address from private key                            │
+│    c. Find address in tree → extract Merkle proof (26 levels)    │
+│    d. Compute nullifier = poseidon(privateKey, domainSeparator)  │
+│    e. Generate ZK proof (Groth16) using circom circuit           │
+│                                                                  │
+│  Output:                                                         │
+│    • ZK proof (π)                                                │
+│    • Public signals: [merkleRoot, nullifier, recipientAddress]   │
+│                                                                  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+                           ▼  (submit via any wallet or relayer)
+┌──────────────────────────────────────────────────────────────────┐
+│                       ON-CHAIN (Base)                             │
+│                                                                  │
+│  ┌───────────────┐      ┌──────────────────────┐                 │
+│  │  ZKM Token    │◄─────│  ZKMAirdrop Claim    │                 │
+│  │  (ERC-20)     │      │  Contract            │                 │
+│  └───────────────┘      └──────────────────────┘                 │
+│                              │                                   │
+│         Receives:            │                                   │
+│          • ZK proof (π)      │                                   │
+│          • nullifier         │                                   │
+│          • recipientAddress  │                                   │
+│                              │                                   │
+│         Verifies:            │                                   │
+│          • ZK proof is valid │                                   │
+│          • nullifier unused  │                                   │
+│          • transfers ZKM     │                                   │
+│            to recipient      │                                   │
+│                                                                  │
+│  On-chain visibility:                                            │
+│    ✗ qualified address — HIDDEN (private input to ZK circuit)    │
+│    ✗ private key — HIDDEN                                        │
+│    ✓ nullifier (opaque hash, not linkable to address)            │
+│    ✓ recipient address                                           │
+│    ✓ ZK proof                                                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Privacy Mechanism — Nullifier Design
+### 6.3 Privacy Mechanism — ZK Proof + Deterministic Nullifier
 
-The core privacy guarantee relies on a **nullifier** — a one-way derived value that:
+The core of the protocol is a **zero-knowledge circuit** (circom) that takes the claimant's private key as a **private input** and produces a proof that reveals nothing about which address is claiming.
 
-- **Uniquely identifies a qualified address** without revealing it.
-- **Prevents double-claiming** — once a nullifier is used, it cannot be reused.
-- **Cannot be reversed** to recover the original qualified address.
+#### Why ZK (not hash-based nullifiers)?
 
-#### Nullifier Derivation (Option A — Hash-based)
+Previous versions considered a simpler hash-based nullifier scheme (`keccak256(address, salt)`). This had a fatal flaw: a user could generate unlimited salts and claim multiple times. A ZK proof with a **deterministic nullifier derived from the private key** solves this — the same private key always produces the same nullifier, making double-claiming impossible regardless of how many proofs are generated.
 
-```
-nullifier = keccak256(abi.encodePacked(qualifiedAddress, secretSalt))
-```
-
-- The claimant generates a random `secretSalt` (32 bytes).
-- The contract stores `usedNullifiers[nullifier] = true` after a claim.
-- The Merkle proof proves that `qualifiedAddress` is in the tree.
-- **On-chain, only the `nullifier` and `receivingAddress` are visible.**
-- An observer cannot map `nullifier` → `qualifiedAddress` without knowing the salt.
-
-#### Nullifier Derivation (Option B — ZK Proof / Semaphore-style)
+#### ZK Circuit Design
 
 ```
-nullifier = hash(secret, merkleRoot)
+Circuit: ZKMAirdropClaim (treeDepth = 26)
+
+PRIVATE INPUTS (never leave the claimant's machine):
+  • privateKey        — the Ethereum private key of the qualified address
+  • merkleProof[26]   — 26 sibling hashes for Merkle membership proof
+  • pathIndices[26]   — 0/1 direction bits for each level
+
+PUBLIC INPUTS (submitted on-chain):
+  • merkleRoot        — the on-chain Merkle root (verified by contract)
+  • nullifier         — deterministic hash derived from privateKey
+  • recipientAddress  — the address receiving ZKM tokens
+
+CIRCUIT LOGIC:
+  1. Derive ethereum address from privateKey
+     (secp256k1 scalar multiplication → keccak256(pubKey) → lower 20 bytes)
+
+  2. Compute leaf = poseidon(address)
+     (or keccak256(address) — must match the hash used in tree construction)
+
+  3. Verify Merkle proof:
+     Verify that `leaf` at `pathIndices` with `merkleProof` produces `merkleRoot`
+
+  4. Compute nullifier = poseidon(privateKey, domainSeparator)
+     where domainSeparator is a protocol-specific constant
+
+  5. Enforce nullifier === public input nullifier
+
+  6. Enforce recipientAddress === public input recipientAddress
+
+OUTPUT: ZK proof (π) that all constraints are satisfied
 ```
 
-- Uses a full zero-knowledge circuit (e.g., circom/Semaphore).
-- The ZK proof proves membership in the Merkle tree without revealing which leaf.
-- **Stronger privacy** but higher implementation complexity.
+#### Nullifier Properties
 
-> **Recommendation:** Start with Option A (hash-based nullifier) for speed and lower gas cost. Upgrade to Option B (ZK circuit) in a future version if stronger privacy guarantees are needed.
->
-> **At 65M addresses**, Option B (ZK circuit) would require proving membership in a 2²⁶-leaf Merkle tree inside a ZK circuit — this is feasible (Semaphore supports large trees) but adds significant complexity and proof generation time (~10–30s on consumer hardware). Option A is strongly recommended for v1.
+| Property | Explanation |
+|----------|-------------|
+| **Deterministic** | `nullifier = poseidon(privateKey, domainSeparator)` — same key always produces the same nullifier |
+| **Unique per address** | Different private keys → different nullifiers (collision-resistant) |
+| **Not precomputable** | Cannot compute nullifier from the published address list — requires the private key |
+| **Prevents double-claim** | Same private key → same nullifier → contract rejects second claim |
+| **Not linkable** | Nullifier reveals nothing about the Ethereum address (no known relation between poseidon(privateKey) and keccak256(pubKey)) |
 
-### 6.3 Claim Flow (Step-by-Step)
+### 6.4 Claim Flow (Step-by-Step)
 
-1. **Connect Wallet** — Claimant connects the wallet containing their qualified Ethereum address to the ZKMist claim dApp.
+1. **Download eligibility list** — The claimant downloads the published eligibility list from IPFS (~1.3 GB, chunked CSV). This is a one-time download; subsequent claims reuse the cached data.
 
-2. **Generate Nullifier** — The dApp generates a random `secretSalt` locally and derives the `nullifier`. The salt is stored in the browser's `localStorage` (and optionally encrypted with a password for backup).
+2. **Build Merkle tree locally** — The CLI/desktop tool builds the Merkle tree in a **streaming fashion** using O(log n) memory. As it streams through the 65M sorted addresses, it finds the claimant's address and extracts its Merkle proof (26 siblings).
 
-3. **Fetch Merkle Proof** — The dApp (or a backend API) looks up the claimant's `qualifiedAddress` in the published eligibility list and generates the corresponding Merkle proof (sibling hashes from leaf to root).
+   > **Performance:** Streaming through 65M leaves takes ~1–2 minutes on a modern computer. The tree can be cached locally for future use.
 
-4. **Specify Receiving Address** — The claimant enters or connects a **different** Base address where they want to receive ZKM tokens. This can be a fresh, never-used address for maximum privacy.
+3. **Provide inputs** — The claimant provides:
+   - Their Ethereum **private key** (or signs via connected wallet — the key never leaves the machine)
+   - A **recipient address** (any Base address they control, preferably fresh and not linked to the qualified address)
 
-5. **Submit Claim Transaction** — The dApp calls `claim(merkleProof, nullifier, amount, receivingAddress)` on the ZKMAirdrop contract on Base.
+4. **Generate ZK proof** — The tool runs the circom circuit via snarkjs:
+   - Private inputs: private key, Merkle proof (26 hashes), path indices
+   - Public inputs: Merkle root, nullifier, recipient address
+   - Output: Groth16 proof (~128 bytes) + public signals
 
-6. **Contract Verification:**
-   - Verify `merkleProof` is valid for `merkleRoot` and corresponds to `keccak256(qualifiedAddress, amount)`. *(Note: the qualifiedAddress is reconstructed from the proof and verified but never emitted in an event.)*
+   > **Performance:** ZK proof generation takes ~10–30 seconds on a modern computer (WASM-accelerated).
+
+5. **Submit on-chain** — The claimant submits the proof to the `ZKMAirdrop` contract on Base. This can be done via:
+   - **Any wallet** — `msg.sender` is irrelevant (could be anyone, including the recipient address)
+   - **A relayer** — for gasless claims (the recipient address doesn't even need ETH on Base)
+
+6. **Contract verification:**
+   - Verify the Groth16 proof against the on-chain verifier contract.
+   - Verify `merkleRoot` matches the immutable on-chain root.
    - Check `usedNullifiers[nullifier] == false`.
    - Set `usedNullifiers[nullifier] = true`.
-   - Transfer `amount` ZKM to `receivingAddress`.
+   - Transfer `CLAIM_AMOUNT` ZKM to `recipientAddress`.
 
-7. **Completion** — Tokens arrive in the receiving address. On-chain, observers see only: a nullifier, a receiving address, and a token transfer — **no link to the original qualified address**.
+7. **Completion** — Tokens arrive in the recipient address. On-chain observers see: a ZK proof, a nullifier, and a recipient address. **Nothing links to the original qualified address.**
 
-### 6.4 Privacy Guarantees
+### 6.5 Privacy Guarantees
 
 | What is public on-chain | What is NOT public on-chain |
 |--------------------------|-----------------------------|
-| Nullifier hash | Qualified (original) address |
-| Receiving address | Secret salt |
-| Claim amount (uniform — 7.69 ZKM for all) | Merkle proof details (calculated off-chain) |
-| Claim timestamp | Link between qualified ↔ receiving address |
+| ZK proof (reveals nothing beyond validity) | Qualified (original) address |
+| Nullifier (opaque, not precomputable from address) | Private key |
+| Recipient address | Merkle proof / tree position |
+| Claim amount (uniform — same for all 65M) | Link between qualified ↔ recipient |
 
-**Uniform amount = strongest anonymity set.** With 65M addresses all receiving the same amount, the claim amount reveals nothing. Every claim looks identical on-chain except for the nullifier and receiving address.
+**Uniform amount = strongest anonymity set.** With 65M addresses all receiving the same amount, the claim amount reveals nothing. Every claim looks identical on-chain except for the nullifier and recipient address.
 
-### 6.5 Privacy Caveats & Edge Cases
+**msg.sender is irrelevant.** The transaction submitter can be anyone — the qualified address is never `msg.sender` and is never revealed in any calldata. This is true end-to-end anonymity.
+
+### 6.6 Privacy Caveats & Edge Cases
 
 | Risk | Mitigation |
 |------|------------|
-| **Time correlation** — if a claimant transfers ETH for gas from their qualified address to their receiving address in the same timeframe, the addresses can be linked. | dApp should warn users to fund the receiving address from an independent source (e.g., a CEX withdrawal, bridge). |
-| **Uniform amounts eliminate this vector entirely.** All 65M addresses receive the same 7.69 ZKM. No deanonymization via amount. | ✅ Resolved by uniform allocation. |
-| **Nullifier collision** — theoretical chance of two addresses generating the same nullifier. | Use 256-bit hash; probability is negligible. |
-| **Front-running** — an observer sees the pending tx and could try to extract info. | The nullifier and receiving address are the only visible parameters; no useful info is leaked. |
+| **Time correlation** — if a claimant transfers ETH for gas from their qualified address to their recipient address, the addresses can be linked. | Tool should warn users to fund the recipient address from an independent source (CEX withdrawal, bridge). |
+| **Uniform amounts eliminate amount-based deanonymization.** | ✅ All 65M addresses receive the same 7.69 ZKM. |
+| **Nullifier cannot be precomputed** — requires private key, which is not in the published list. | ✅ Resolved by `nullifier = poseidon(privateKey, domainSeparator)`. |
+| **No double-claim via new salt** — nullifier is deterministic from the private key. | ✅ Resolved. Same key → same nullifier. |
+| **Front-running** — observer sees pending tx. | Only nullifier + recipient visible. A front-runner cannot steal the claim (nullifier is bound to the private key). |
+| **Relayer sees the proof** — but cannot link it to a qualified address. | Relayer sees {proof, nullifier, recipient} — same as on-chain. No additional info leaked. |
 
 ---
 
@@ -358,7 +424,8 @@ nullifier = hash(secret, merkleRoot)
 | Contract | Description |
 |----------|-------------|
 | `ZKMToken` | Standard ERC-20 token contract for ZKMist |
-| `ZKMAirdrop` | Claim contract with Merkle verification + nullifier tracking |
+| `ZKMAirdropVerifier` | Auto-generated Groth16 verifier contract (from snarkjs) |
+| `ZKMAirdrop` | Claim contract — verifies ZK proof + nullifier uniqueness |
 | (optional) `Timelock` | For treasury/team token vesting |
 
 ### 7.2 ZKMToken Contract
@@ -379,6 +446,7 @@ Standard ERC-20:
 
 ```solidity
 IERC20 public immutable zkmToken;
+IVerifier public immutable verifier;   // Groth16 verifier contract
 bytes32 public immutable merkleRoot;
 mapping(bytes32 => bool) public usedNullifiers;
 uint256 public claimStart;
@@ -391,7 +459,7 @@ bool public paused;
 
 | Function | Access | Description |
 |----------|--------|-------------|
-| `claim(bytes32[] proof, bytes32 nullifier, uint256 amount, address receiving)` | Public | Claim tokens. Verifies Merkle proof + nullifier uniqueness. |
+| `claim(uint[2] _proofA, uint[2][2] _proofB, uint[2] _proofC, bytes32 _nullifier, address _recipient)` | Public | Claim tokens. Verifies ZK proof + nullifier uniqueness. |
 | `pause()` | Admin | Pause claims (emergency). |
 | `unpause()` | Admin | Unpause claims. |
 | `withdrawUnclaimed()` | Admin | After claim period ends, withdraw remaining tokens to treasury. |
@@ -401,204 +469,224 @@ bool public paused;
 #### Claim Function Pseudocode
 
 ```solidity
-// The claim amount is a constant — same for all 65M addresses
 uint256 public constant CLAIM_AMOUNT = 7_692_307_000_000_000_000; // ~7.69 ZKM
 
 function claim(
-    bytes32[] calldata _proof,
-    bytes32 _nullifier,
-    address _receiving
+    uint256[2] calldata _pA,         // Groth16 proof part A
+    uint256[2][2] calldata _pB,       // Groth16 proof part B
+    uint256[2] calldata _pC,          // Groth16 proof part C
+    bytes32 _nullifier,               // Public signal: nullifier
+    address _recipient                // Public signal: recipient address
 ) external {
     require(!paused, "Claims paused");
     require(block.timestamp >= claimStart, "Not started");
     require(block.timestamp <= claimEnd, "Claim period ended");
     require(!usedNullifiers[_nullifier], "Already claimed");
 
-    // Reconstruct leaf: hash of (qualifiedAddress, CLAIM_AMOUNT)
-    // The qualifiedAddress is msg.sender
-    bytes32 leaf = keccak256(abi.encodePacked(msg.sender, CLAIM_AMOUNT));
+    // Prepare public signals for ZK verification
+    // The circuit outputs: [merkleRoot, nullifier, recipientAddress]
+    uint256[3] memory publicSignals = [
+        uint256(merkleRoot),
+        uint256(_nullifier),
+        uint256(uint160(_recipient))
+    ];
 
-    // Verify Merkle proof (26 levels for 65M leaves)
-    require(MerkleProof.verify(_proof, merkleRoot, leaf), "Invalid proof");
-
-    // Mark nullifier as used
-    usedNullifiers[_nullifier] = true;
-
-    // Transfer tokens to receiving address
-    zkmToken.transfer(_receiving, CLAIM_AMOUNT);
-
-    emit Claimed(_nullifier, CLAIM_AMOUNT, _receiving);
-}
-```
-
-> **Important Design Note:** In the above, `msg.sender` must be the qualified address. The claim transaction is submitted **from** the qualified address **on Base Chain**. This means:
-> - The qualified address must have ETH on Base for gas.
-> - The transaction origin (`msg.sender`) is visible on Base — but Base is a separate chain from Ethereum mainnet, so the linkage is cross-chain and not trivially discoverable.
-> - For **maximum anonymity**, use the nullifier-based design where the qualified address merely signs an EIP-712 message off-chain, and a **relayer** submits the claim on-chain. The contract verifies the signature, not `msg.sender`.
-
-#### Enhanced Privacy — EIP-712 Signed Claim (Recommended)
-
-```solidity
-uint256 public constant CLAIM_AMOUNT = 7_692_307_000_000_000_000; // ~7.69 ZKM
-
-function claim(
-    bytes32[] calldata _proof,
-    bytes32 _nullifier,
-    address _receiving,
-    bytes32 _salt,
-    bytes calldata _signature  // EIP-712 sig from qualified address
-) external {
-    require(!paused, "Claims paused");
-    require(block.timestamp >= claimStart, "Not started");
-    require(block.timestamp <= claimEnd, "Claim period ended");
-    require(!usedNullifiers[_nullifier], "Already claimed");
-
-    // Recover signer from EIP-712 typed signature
-    // The signed message includes: nullifier, receiving, salt, claimAmount
-    address signer = ECDSA.recover(_hashTypedDataV4(structHash), _signature);
-
-    // Verify signer is in the Merkle tree
-    bytes32 leaf = keccak256(abi.encodePacked(signer, CLAIM_AMOUNT));
-    require(MerkleProof.verify(_proof, merkleRoot, leaf), "Invalid proof");
-
-    // Verify nullifier was derived correctly from signer + salt
-    bytes32 expectedNullifier = keccak256(abi.encodePacked(signer, _salt));
-    require(_nullifier == expectedNullifier, "Invalid nullifier");
+    // Verify the ZK proof
+    require(verifier.verifyProof(_pA, _pB, _pC, publicSignals), "Invalid proof");
 
     // Mark nullifier as used
     usedNullifiers[_nullifier] = true;
 
-    // Transfer tokens to receiving address
-    zkmToken.transfer(_receiving, CLAIM_AMOUNT);
+    // Transfer tokens to recipient
+    zkmToken.transfer(_recipient, CLAIM_AMOUNT);
 
-    emit Claimed(_nullifier, CLAIM_AMOUNT, _receiving);
+    emit Claimed(_nullifier, CLAIM_AMOUNT, _recipient);
 }
 ```
 
-With this design, **anyone (a relayer) can submit the claim tx**, and `msg.sender` on Base is the relayer — **not the qualified address**. The qualified address only needs to sign a message off-chain (free, no gas).
+**Key design properties:**
+- `msg.sender` is **not used** for verification — anyone can submit the claim.
+- The qualified address is **never visible** on-chain — it's a private input to the ZK circuit.
+- The nullifier is verified inside the ZK proof (circuit enforces it's correctly derived from the private key).
+- The Merkle root is verified inside the ZK proof (circuit enforces the address is in the tree).
+- The recipient address is a public signal, bound to the proof.
 
 ### 7.4 Events
 
 ```solidity
-event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed receiving);
+event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient);
 event Paused();
 event Unpaused();
 event Withdrawn(address to, uint256 amount);
 ```
 
-### 7.5 Merkle Proof Serving Infrastructure
+### 7.5 Published Data Artifacts
 
-With **65M addresses**, the Merkle tree has **26 levels** and the raw tree data is ~**2–4 GB**. Merkle proofs **cannot** be generated client-side from a downloaded file — the data is too large for browsers. A dedicated proof-serving infrastructure is required.
+All data needed for proof generation is **published and publicly verifiable**. No server interaction is required.
 
-| Component | Description |
-|-----------|------------|
-| **Tree Storage** | Merkle tree stored in a key-value store (LevelDB / RocksDB / PostgreSQL). Indexed by address → leaf index. |
-| **Proof API** | REST endpoint: `GET /api/proof/:address` → returns the 26-element Merkle proof array. Response: ~832 bytes. |
-| **Caching** | CDN-cached (Cloudflare) proof responses. Proofs are static and immutable. |
-| **Redundancy** | Proof data + tree published to IPFS. Community can run independent proof servers. |
-| **Fallback** | Pre-computed proof dump as chunked files on IPFS for fully trustless offline verification. |
-
-#### Proof API Specification
+#### Published Files (IPFS + GitHub mirror)
 
 ```
-GET /api/proof/0xAbC...123
-
-Response (200 OK):
-{
-  "address": "0xAbC...123",
-  "eligible": true,
-  "claimAmount": "7692307000000000000",
-  "proof": [
-    "0x...sibling1",
-    "0x...sibling2",
-    ...  (26 elements)
-    "0x...sibling26"
-  ],
-  "leaf": "0x...",
-  "merkleRoot": "0x..."
-}
-
-Response (404):
-{
-  "address": "0xDeF...789",
-  "eligible": false
-}
+zkmist-airdrop/
+├── manifest.json                 # Metadata (see §5.4)
+├── addresses_00000001.csv         # Sorted address list (1M rows each, ~65 files)
+├── addresses_00000002.csv
+├── ...
+├── merkle_root.txt               # The Merkle root (also on-chain)
+├── proving_key.zkey              # Groth16 proving key (for CLI tool)
+├── verification_key.json         # Verification key (for contract generation)
+├── circuit.wasm                  # Compiled circom circuit (for CLI tool)
+└── trusted_setup_attestation.txt # Ceremony attestation for trusted setup
 ```
 
-#### Merkle Tree Construction
+#### Local Merkle Tree Construction (Streaming)
+
+The claimant's CLI/desktop tool builds the Merkle tree locally from the published address list using a **streaming algorithm** that requires only O(log n) memory:
+
+```
+Streaming Merkle Tree Builder:
+
+1. Download sorted address list from IPFS (stream, don't load all at once)
+2. For each address (in sorted order):
+   a. Compute leaf = hash(address)
+   b. Push leaf onto stack
+   c. While top 2 elements on stack are at the same level:
+      - Pop both, compute parent = hash(left, right)
+      - Push parent
+   d. If current address matches claimant's address:
+      - Record the sibling at each level (the Merkle proof)
+3. After processing all leaves:
+   - Stack contains the Merkle root
+   - Proof is extracted
+
+Memory: O(tree_depth) = O(26) hash values = ~832 bytes
+Time: O(n) where n = 65M → ~1–2 minutes
+```
+
+> **No server needed.** The tree is deterministically reconstructed from the published list. Anyone can verify the root matches the on-chain value.
+
+#### ZK Proof Generation (Local)
+
+```
+1. Load the compiled circuit (circuit.wasm)
+2. Provide inputs:
+   - Private: privateKey, merkleProof[26], pathIndices[26]
+   - Public: merkleRoot, nullifier (computed), recipientAddress
+3. Compute witness via circuit.wasm
+4. Generate Groth16 proof via snarkjs + proving_key.zkey
+5. Output: proof (π) + public signals
+```
+
+> **Performance:** ~10–30 seconds on a modern computer. Purely local computation.
+
+#### Merkle Tree Construction Details
 
 ```
 1. Sort all 65M addresses lexicographically.
 2. Pad to next power of 2 (2^26 = 67,108,864) with zero-value leaves.
-3. Leaf = keccak256(abi.encodePacked(address, claimAmount))
+3. Leaf = poseidon(address) or keccak256(address)
 4. Build binary tree bottom-up:
-   node = keccak256(abi.encodePacked(leftChild, rightChild))
+   node = hash(leftChild, rightChild)
 5. Root = top-level hash → hardcoded in smart contract.
-6. Store tree in DB with address → (leafIndex, proof[]) mapping.
+6. Claimant extracts proof path for their specific leaf index.
 ```
 
-> **Estimated resources:** Building the 65M-leaf tree takes ~2–5 minutes on a modern server (32GB RAM). Storage: ~4GB on disk. Proof generation per query: <1ms.
+> **Estimated resources:** Building the 65M-leaf tree takes ~1–2 minutes streaming on a modern computer with <100MB RAM. Proof generation adds ~10–30 seconds.
 
 ---
 
-## 8. Frontend / dApp
+## 8. Claimant Tool & dApp
 
-### 8.1 Pages
+### 8.1 Two Claim Modes
 
-| Page | Description |
-|------|-------------|
-| **Landing** | Overview, token info, links |
-| **Check Eligibility** | Enter address → see if qualified + claim amount |
-| **Claim** | Step-by-step anonymous claim flow (connect wallet → generate nullifier → specify receiving address → submit) |
-| **Dashboard** | Live stats: total claimed, unique nullifiers, time remaining |
-| **FAQ** | Privacy explanation, troubleshooting |
+| Mode | Description | Target User |
+|------|-------------|-------------|
+| **CLI / Desktop App** (primary) | Downloads full list, builds tree, generates ZK proof locally. Maximum trustlessness. | Power users, privacy-conscious users |
+| **Web dApp** (convenience) | Same ZK proof generation in browser (WASM). Downloads pre-computed Merkle proof from published artifacts (no full list download needed). | Casual users |
 
-### 8.2 Claim Flow UX
+### 8.2 CLI / Desktop App — Claim Flow
+
+```
+$ zkmist claim --key <PRIVATE_KEY> --recipient 0xRecip...
+
+[1/4] Downloading eligibility list from IPFS...
+       ████████████████████████████████ 100%  (1.3 GB)
+
+[2/4] Building Merkle tree (streaming)...
+       Processing 65,000,000 addresses...
+       Found your address at index 42,317,891
+       Merkle proof extracted (26 levels)
+       ✓ Root matches on-chain value
+
+[3/4] Generating ZK proof...
+       Circuit: ZKMAirdropClaim (depth=26)
+       Proof system: Groth16
+       ████████████████████████████████ done  (12s)
+       Nullifier: 0x4a7f...e2c1
+
+[4/4] Submit claim?
+       Recipient: 0xRecip...EntAddress
+       Amount:    7.69 ZKM
+       Gas cost:  ~$0.01 (Base)
+
+       [Y/n] Y
+
+       Transaction submitted: 0xabc123...
+       ✓ Claimed! 7.69 ZKM → 0xRecip...EntAddress
+
+       On-chain: qualified address is NOT visible.
+```
+
+### 8.3 Web dApp — Claim Flow
 
 ```
 Step 1: "Connect Qualified Wallet"
-        └─ Connects the wallet holding the eligible Ethereum mainnet address
-        └─ dApp queries Proof API: GET /api/proof/:connectedAddress
-        └─ If 404 → "This address is not eligible" (paid < 0.004 ETH in fees)
+        └─ Connect the wallet holding the eligible Ethereum mainnet address
+        └─ dApp checks eligibility via local lookup of published address list
+        └─ If not found → "This address is not eligible"
 
 Step 2: "Verify Eligibility" ✓
         └─ Shows: "You are eligible for ~7.69 ZKM tokens"
-        └─ Shows: "Your address paid X ETH in cumulative fees on Ethereum mainnet"
-        └─ Generates nullifier (random 32-byte salt, stored in localStorage)
+        └─ Generates deterministic nullifier (computed from private key via wallet sign)
 
-Step 3: "Choose Receiving Address"
+Step 3: "Choose Recipient Address"
         └─ Option A: Connect a different wallet (on Base)
         └─ Option B: Paste any Base address manually
         └─ ⚠️ Warning: "Do not fund this address from your qualified wallet"
-        └─ ⚠️ Warning: "Do not send ETH from your qualified address to this address"
 
-Step 4: "Submit Claim"
-        └─ Option A (recommended): Sign EIP-712 message (free) + relayer submits
-           └─ User signs: {nullifier, receivingAddress, salt, claimAmount}
-           └─ Relayer submits tx on Base — msg.sender is the relayer, not user
-        └─ Option B: Pay gas on Base directly (~$0.005)
-           └─ User must have ETH on Base in their qualified address
+Step 4: "Download Merkle Proof"
+        └─ Downloads only the relevant proof chunk from IPFS (~few MB)
+        └─ Proof is verified against the on-chain Merkle root client-side
 
-Step 5: "Claim Complete!" ✓
+Step 5: "Generate ZK Proof" (runs in browser via WASM)
+        └─ ~10–30 seconds progress bar
+        └─ All computation is local — nothing leaves the browser
+
+Step 6: "Submit Claim"
+        └─ Option A: Submit directly (recipient address needs ETH on Base)
+        └─ Option B: Submit via relayer (gasless)
+
+Step 7: "Claim Complete!" ✓
         └─ Shows tx hash, link to BaseScan
-        └─ Shows: "Your qualified address is NOT linked to your receiving address"
-        └─ Shows: "Keep your secret salt safe — it's needed to prove you claimed"
+        └─ "Your qualified address is NOT linked to your recipient address"
 ```
 
-### 8.3 Technology Stack
+### 8.4 Technology Stack
 
 | Layer | Choice |
 |-------|--------|
-| Framework | Next.js / React |
-| Wallet Connect | RainbowKit / wagmi / viem |
-| Chain | Base (Chain ID: 8453) |
-| Merkle Proofs | Fetched from Proof API (not client-side — tree is too large for browsers) |
-| Proof API | Node.js / Go REST API backed by LevelDB / PostgreSQL |
-| Relayer (optional) | Gelato / OpenZeppelin Defender / custom |
-| Hosting (dApp) | Vercel / IPFS |
-| Hosting (Proof API) | Cloudflare Workers / Railway / dedicated VPS |
-| CDN | Cloudflare (cache proof responses) |
-| Style | TailwindCSS |
+| **ZK Circuit** | circom 2.1.x |
+| **Proof System** | Groth16 (via snarkjs) |
+| **Proof Generation** | snarkjs + WASM (runs locally in CLI or browser) |
+| **Tree Hash** | Poseidon (for ZK-friendliness) or keccak256 |
+| **CLI Tool** | Node.js / Rust |
+| **Web dApp** | Next.js / React + WASM |
+| **Wallet Connect** | RainbowKit / wagmi / viem |
+| **Chain** | Base (Chain ID: 8453) |
+| **Data Publishing** | IPFS (Pinata) + GitHub mirror |
+| **Relayer (optional)** | Gelato / custom |
+| **Hosting** | Vercel / IPFS |
+| **Style** | TailwindCSS |
 
 ---
 
@@ -632,10 +720,11 @@ Step 5: "Claim Complete!" ✓
 
 | Measure | Details |
 |---------|---------|
-| **Client-side Salt Generation** | Nullifier salt is generated in-browser, never sent to a server |
-| **No Server-Side Logging** | dApp makes no API calls that link qualified address to nullifier |
-| **CORS / CSP Headers** | Strict security headers on dApp |
-| **Relayer Privacy** | Relayer does not log IP addresses or request parameters |
+| **Private key never leaves local machine** | ZK proof generation is entirely local (CLI or browser WASM). No server receives the private key. |
+| **No server dependency** | No Proof API, no backend. All data is published on IPFS. |
+| **No server-side logging** | Not applicable — there is no server. |
+| **Deterministic nullifier** | Derived from private key, not random salt. Prevents double-claim without requiring server-side state. |
+| **CORS / CSP Headers** | Strict security headers on web dApp |
 | **User Guidance** | Clear warnings about not linking addresses via on-chain transfers |
 
 ### 10.3 Operational Security
@@ -659,19 +748,24 @@ Step 5: "Claim Complete!" ✓
 | **Token Symbol** | ZKM |
 | **Token Decimals** | 18 |
 | **Total Supply** | 1,000,000,000 (1B) |
-| **Merkle Tree Hash** | keccak256 (double) |
+| **Merkle Tree Hash** | Poseidon (ZK-friendly) for tree; keccak256 for leaf pre-image |
 | **Merkle Tree Depth** | 26 levels (65M leaves, padded to 2²⁶) |
 | **Merkle Proof Size** | 26 × 32 bytes = 832 bytes per claim |
-| **Nullifier Scheme** | keccak256(qualifiedAddress ∥ secretSalt) |
+| **Nullifier Scheme** | poseidon(privateKey, domainSeparator) — deterministic, non-precomputable |
 | **Claim Amount** | 7.69 ZKM (constant — uniform for all 65M addresses) |
-| **Claim Verification** | Merkle proof (26 levels) + nullifier uniqueness |
-| **Claim Method** | EIP-712 signature + relayer (recommended) |
+| **Claim Verification** | Groth16 ZK proof verification (on-chain) + nullifier uniqueness |
+| **Proof System** | Groth16 (circom + snarkjs) |
+| **Proof Generation** | Local (CLI or browser WASM), ~10–30 seconds |
+| **Proof Size** | ~128 bytes (Groth16) + 3 public signals |
+| **Claim Method** | Anyone submits proof (wallet, relayer, CLI) — msg.sender irrelevant |
 | **Claim Period** | 90 days |
-| **Gas Target** | < $0.50 per claim |
+| **Gas Target** | < $0.50 per claim (~300K gas for Groth16 verification) |
 | **Solidity Version** | ^0.8.24 |
 | **Contract Size Target** | < 24KB (deployment limit) |
 | **Eligibility Data Source** | Google BigQuery (`bigquery-public-data.crypto_ethereum`) |
 | **Qualified Addresses** | ~65,000,000 |
+| **Data Distribution** | IPFS (chunked CSV) + GitHub mirror |
+| **Trusted Setup** | Groth16 ceremony required (per-circuit) |
 
 ---
 
@@ -680,17 +774,19 @@ Step 5: "Claim Complete!" ✓
 | # | Milestone | Estimated Duration |
 |---|-----------|---------------------|
 | 1 | Run final BigQuery extraction & validate ~65M address list | Week 1 |
-| 2 | Build Merkle tree (26-level, 65M leaves), store to DB, compute root | Week 2 |
-| 3 | Develop & test smart contracts (ZKMToken + ZKMAirdrop with constant claim amount) | Weeks 2–3 |
-| 4 | Build Proof API + deploy to production with CDN caching | Week 3 |
-| 5 | Internal security review + testnet deployment | Week 4 |
-| 6 | External audit | Weeks 4–6 |
-| 7 | Build frontend dApp (eligibility checker + claim flow) | Weeks 3–5 (parallel) |
-| 8 | Set up relayer service (if applicable) | Week 5 |
-| 9 | Deploy to Base mainnet | Week 7 |
-| 10 | Open claim window | Week 7 |
-| 11 | Close claim window + withdraw unclaimed | Week 20 |
-| 12 | Renounce admin / decentralize | Week 21 |
+| 2 | Build Merkle tree (26-level, 65M leaves), publish to IPFS, compute root | Week 2 |
+| 3 | Write circom circuit (ZKMAirdropClaim) + test with small tree | Week 2 |
+| 4 | Groth16 trusted setup ceremony (per-circuit) | Week 3 |
+| 5 | Develop & test smart contracts (ZKMToken + Verifier + ZKMAirdrop) | Weeks 3–4 |
+| 6 | Build CLI tool (download list → stream tree → generate proof → submit) | Weeks 3–4 |
+| 7 | Build web dApp (WASM-based proof generation in browser) | Weeks 4–5 |
+| 8 | Internal security review + testnet deployment | Week 5 |
+| 9 | External audit (circuit + contracts) | Weeks 5–7 |
+| 10 | Set up relayer service (if applicable) | Week 6 |
+| 11 | Deploy to Base mainnet | Week 8 |
+| 12 | Open claim window | Week 8 |
+| 13 | Close claim window + withdraw unclaimed | Week 21 |
+| 14 | Renounce admin / decentralize | Week 22 |
 
 ---
 
@@ -700,19 +796,21 @@ Step 5: "Claim Complete!" ✓
 |---|----------|--------|
 | 1 | What is the exact eligibility criteria / snapshot source? | ✅ **Resolved** — ≥ 0.004 ETH cumulative gas fees on Ethereum mainnet before 2026-01-01 UTC. Data from Google BigQuery. ~65M addresses. |
 | 2 | Will claim amounts be uniform or tiered? | ✅ **Resolved** — Uniform (~7.69 ZKM per address). Uniform amounts maximize privacy by eliminating amount-based deanonymization. |
-| 3 | Should we implement full ZK circuits (circom/Semaphore) or hash-based nullifiers? | 🔲 Pending (strongly recommend hash-based for v1 given 65M-address tree — ZK circuit would require proving 2²⁶ membership) |
+| 3 | Hash-based nullifiers vs ZK proofs? | ✅ **Resolved** — ZK proofs (circom + Groth16). Hash-based nullifiers had a fatal double-claim vulnerability (new salt = new nullifier). ZK + deterministic nullifier from private key is the only design that provides both privacy and double-claim prevention. |
 | 4 | Will a relayer service be built or use an existing one (Gelato)? | 🔲 Pending |
 | 5 | Should the eligibility list be updatable (e.g., to fix errors)? | 🔲 Pending (recommend no — fixed list) |
 | 6 | What happens to unclaimed tokens after the claim window? | 🔲 Pending (recommend → treasury) |
 | 7 | Will the admin role be fully renounced post-claim? | 🔲 Pending (recommend yes) |
-| 8 | Do we need Sybil resistance beyond the 0.004 ETH fee threshold? | ✅ **Mostly resolved** — 0.004 ETH (~$8–12) is a meaningful Sybil filter. Attacker would need to spend 0.004 ETH per address to qualify, making large-scale Sybil attacks economically prohibitive at 65M addresses. |
+| 8 | Sybil resistance beyond the 0.004 ETH fee threshold? | ✅ **Resolved** — 0.004 ETH (~$8–12) is a meaningful Sybil filter. |
 | 9 | Token listing strategy — DEX liquidity pool at launch or after claim period? | 🔲 Pending |
 | 10 | Legal / compliance review needed for the airdrop? | 🔲 Pending |
-| 11 | Exact snapshot block number for 2025-12-31 23:59:59 UTC? | 🔲 Pending (need to look up block at that timestamp) |
-| 12 | How to handle addresses that are contracts (smart contracts / multisigs)? | 🔲 Pending (recommend: include all `from_address` values regardless of whether EOA or contract — contracts are eligible too) |
-| 13 | Should the Proof API log requests? (Privacy implications) | 🔲 Pending (recommend: no logging of IP addresses or queried addresses) |
-| 14 | Infrastructure budget for Proof API + CDN + relayer at 65M scale? | 🔲 Pending |
+| 11 | Exact snapshot block number for 2025-12-31 23:59:59 UTC? | 🔲 Pending |
+| 12 | How to handle addresses that are contracts (smart contracts / multisigs)? | 🔲 Pending (recommend: include all — contracts are eligible too) |
+| 13 | Tree hash: Poseidon (ZK-friendly) or keccak256? | 🔲 Pending (recommend Poseidon for efficient ZK proofs, but keccak256 is more standard. Trade-off: Poseidon requires a Poseidon-based tree build; keccak256 is standard but expensive in circom.) |
+| 14 | Groth16 trusted setup: who participates? How is it run? | 🔲 Pending (recommend: use a multi-party ceremony with public attestations, or use a universal setup like KZG) |
 | 15 | What if the actual qualified count differs slightly from 65M after final query? | 🔲 Pending (adjust CLAIM_AMOUNT to ensure total = 500M ZKM) |
+| 16 | ECDSA in circom: use existing circom-ecdsa library or alternative identity scheme? | 🔲 Pending (circom-ecdsa is well-tested but adds ~10s to proof generation; alternative: use Ethereum address directly as public input with ECDSA verification) |
+| 17 | Should the web dApp also support full-list download + streaming tree build (heavy but trustless), or only pre-computed proof download (lighter but requires publishing proof artifacts)? | 🔲 Pending (recommend both options) |
 
 ---
 
@@ -734,22 +832,82 @@ Step 5: "Claim Complete!" ✓
 
 ### A. Reference Implementations
 
-- [Merkle Airdrop — OpenZeppelin](https://docs.openzeppelin.com/contracts/4.x/utilities#merkle-proofs)
+- [circom-ecdsa — ECDSA verification in circom](https://github.com/0xPARC/circom-ecdsa)
 - [Semaphore Protocol — Privacy-preserving group proofs](https://semaphore.pse.dev/)
-- [Worldcoin Airdrop — Nullifier-based claims](https://github.com/worldcoin)
+- [Tornado Cash — ZK-based private transactions](https://github.com/tornadocash)
+- [Merkle Airdrop — OpenZeppelin](https://docs.openzeppelin.com/contracts/4.x/utilities#merkle-proofs)
+- [snarkjs — ZK proof generation and verification](https://github.com/iden3/snarkjs)
+
+### D. ZK Circuit Pseudocode (circom)
+
+```circom
+pragma circom 2.1.0;
+
+include "circomlib/poseidon.circom";
+include "../node_modules/circom-ecdsa/circuits/ecdsa.circom";
+
+// Verify ECDSA signature and recover Ethereum address,
+// then prove Merkle membership and derive nullifier.
+
+template ZKMAirdropClaim(treeDepth) {
+    // === PUBLIC INPUTS ===
+    signal input merkleRoot;
+    signal input nullifier;
+    signal input recipientAddress;
+
+    // === PRIVATE INPUTS ===
+    signal input privateKey;              // Ethereum private key
+    signal input merkleSiblings[treeDepth]; // 26 sibling hashes
+    signal input pathIndices[treeDepth];   // 0/1 direction bits
+
+    // 1. Derive nullifier from private key (deterministic)
+    component nullifierHasher = Poseidon(2);
+    nullifierHasher.inputs[0] <== privateKey;
+    nullifierHasher.inputs[1] <== 7528515253103; // domain separator
+    nullifierHasher.out === nullifier; // enforce correct nullifier
+
+    // 2. Derive Ethereum address from private key
+    //    (secp256k1 scalar mult → keccak256(pubkey) → address)
+    //    Uses circom-ecdsa library for on-circuit ECDSA verification.
+    //    Alternative: precompute address off-chain and pass as private input,
+    //    then verify a signature inside the circuit.
+    component addrDeriver = EthereumAddressDeriver();
+    addrDeriver.privateKey <== privateKey;
+    signal address;
+    address <== addrDeriver.address;
+
+    // 3. Compute Merkle leaf = hash(address)
+    component leafHasher = Poseidon(1);
+    leafHasher.inputs[0] <== address;
+    signal leaf;
+    leaf <== leafHasher.out;
+
+    // 4. Verify Merkle membership proof
+    component tree = MerkleTreeChecker(treeDepth);
+    tree.leaf <== leaf;
+    for (var i = 0; i < treeDepth; i++) {
+        tree.siblings[i] <== merkleSiblings[i];
+        tree.pathIndices[i] <== pathIndices[i];
+    }
+    tree.root === merkleRoot; // enforce correct membership
+}
+
+component main { public [merkleRoot, nullifier, recipientAddress] } =
+    ZKMAirdropClaim(26);
+```
 
 ### B. Gas Estimation (Base Chain)
 
 | Operation | Estimated Gas | Estimated Cost (Base) |
 |-----------|---------------|------------------------|
 | Deploy ZKMToken | ~1,200,000 | ~$0.05 |
+| Deploy ZKMAirdropVerifier | ~4,500,000 | ~$0.20 |
 | Deploy ZKMAirdrop | ~800,000 | ~$0.03 |
-| Claim Transaction (26-level proof) | ~160,000 | ~$0.008 |
+| Claim Transaction (Groth16 verify) | ~300,000 | ~$0.015 |
 | Nullifier Storage (SSTORE cold) | ~20,000 | ~$0.001 |
-| Nullifier Storage (SSTORE warm) | ~2,900 | ~$0.0001 |
 
 > *Gas estimates based on Base average gas price of ~0.1 Gwei & ETH at $3,000.*
-> *26-level Merkle proof verification is ~33% more gas than a typical 20-level proof.*
+> *Groth16 verification is a fixed-cost operation (~300K gas) regardless of tree depth. This is significantly more expensive than a plain Merkle proof verification (~160K gas) but provides true zero-knowledge privacy.*
 
 ### C. Architecture Diagram
 
@@ -762,34 +920,42 @@ Step 5: "Claim Complete!" ✓
                                ▼
                     ┌──────────────────────────┐
                     │  Eligibility List         │
-                    │  (CSV on GCS / IPFS)      │
+                    │  (CSV on IPFS + GitHub)   │
                     └──────────┬───────────────┘
                                │
                                ▼
                     ┌──────────────────────────┐
-                    │  Merkle Tree Builder      │
-                    │  (server, depth=26)       │
+                    │  Claimant's Local Machine  │
+                    │                            │
+                    │  CLI / Desktop App:        │
+                    │   ① Download list (IPFS)  │
+                    │   ② Stream-build tree     │
+                    │   ③ Extract Merkle proof   │
+                    │   ④ Generate ZK proof      │
+                    │      (circom + snarkjs)    │
+                    │                            │
+                    │  OR Web dApp (WASM):       │
+                    │   ① Download proof chunk   │
+                    │   ② Generate ZK proof      │
+                    │                            │
                     └──────────┬───────────────┘
-                               │
-                    ┌──────────▼───────────────┐
-                    │  Merkle Root              │
-                    │  (stored in contract)     │
-                    └──────────┬───────────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          │                    │                     │
-          ▼                    ▼                     ▼
-   ┌──────────────┐   ┌──────────────┐    ┌──────────────┐
-   │  Proof API   │   │  Frontend    │    │  Relayer     │
-   │  (LevelDB)   │◄──│  dApp        │───►│  Service     │
-   │              │   │  (React)     │    │  (optional)  │
-   └──────────────┘   └──────────────┘    └──────┬───────┘
-        │                                        │
-        │  Merkle proof (26 siblings)            │
-        └────────────────────────────────────────┼───► Base Chain
-                                               │     (ZKM + Airdrop)
+                               │ ZK proof + nullifier + recipient
+                               ▼
+                    ┌──────────────────────────┐
+                    │  Base Chain               │
+                    │                            │
+                    │  ZKMAirdrop Contract:      │
+                    │   • Verify Groth16 proof   │
+                    │   • Check nullifier        │
+                    │   • Transfer ZKM tokens    │
+                    │                            │
+                    │  On-chain:                 │
+                    │   ✓ nullifier (opaque)     │
+                    │   ✓ recipient address      │
+                    │   ✗ qualified address      │
+                    └──────────────────────────┘
 ```
 
 ---
 
-*End of PRD v1.1*
+*End of PRD v2.0*
