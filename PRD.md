@@ -111,7 +111,7 @@ ZKMist is *not* equally accessible to all 65M eligible addresses — the 1M clai
 | **Chain** | Base (Ethereum L2) |
 | **Standard** | ERC-20 |
 | **Mintable** | Yes — algorithmically, only by the airdrop contract |
-| **Burnable** | No |
+| **Burnable** | Yes — any token holder can burn their own ZKM via `burn()` / `burnFrom()` |
 | **Owner/Admin** | **None** |
 
 ### 4.2 Token Allocation
@@ -157,6 +157,8 @@ Whichever comes first.
 | Time expires at 750K | 750,000 | 7,500,000,000 (7.5B) | 75% |
 
 > **No more ZKM will ever exist than what is claimed.** If only 300K people claim, the total supply is 3B ZKM — forever. No one can mint the remaining 7B. This is by design.
+>
+> **Token holders can burn ZKM at any time** via `burn()` or `burnFrom()`, permanently reducing the total supply. Burned tokens are destroyed — they cannot be recovered or re-minted. The `MAX_SUPPLY` cap refers to the upper bound on *minted* tokens; the circulating supply can only decrease through burning. After the claim window closes, no new ZKM can ever be minted, and the supply can only go down.
 
 ### 4.6 Scarcity & Access Dynamics
 
@@ -170,7 +172,7 @@ With ~65 million eligible addresses and a cap of 1 million claimants, ZKMist has
 | **Technical barrier** | Claiming requires running a CLI, downloading ~1.3 GB, and building a Merkle tree (~4 GB RAM). This filters out casual or unmotivated participants. |
 | **Information advantage** | Those who discover ZKMist early have more time and less competition. Early claimants face a lower risk of the cap being reached. |
 | **Effort-reward structure** | The claiming process rewards technical competence and proactive engagement — qualities valued in the Ethereum community. |
-| **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier, mass Sybil farming is economically unattractive. |
+| **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier (1.3 GB download, 4 GB RAM, ~90s proving time per claim), mass Sybil farming is inconvenient but not impossible for a well-funded actor. The design raises the cost sufficiently to deter casual farming. |
 
 **This is not equally accessible to all 65M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
 
@@ -224,7 +226,7 @@ GROUP BY
 HAVING
   total_fees_eth >= 0.004
 ORDER BY
-  total_fees_eth DESC;
+  total_fees_eth DESC;  -- optional, for audit convenience only; not needed for eligibility list
 ```
 
 #### Query Notes
@@ -639,7 +641,7 @@ Both the Rust guest program (`env::commit()` order) and the Solidity contract (`
 
 | Contract | Description | Mutability |
 |----------|-------------|------------|
-| `ZKMToken` | ERC-20 with max supply, mintable only by airdrop | Immutable owner (no admin functions) |
+| `ZKMToken` | ERC-20 with max supply, mintable only by airdrop, burnable by holders | Immutable owner (no admin functions) |
 | `RiscZeroVerifier` | RISC Zero STARK verifier | Immutable |
 | `ZKMAirdrop` | Claim contract — verify proof + mint tokens | **Immutable** (no admin, no owner, no pause) |
 
@@ -653,7 +655,9 @@ ERC-20:
   - maxSupply: 10,000,000,000e18
   - initialSupply: 0 (minted on claim)
   - mint(): only callable by ZKMAirdrop contract
-  - No burn, no owner functions
+  - burn(): any holder can burn their own tokens
+  - burnFrom(): approved spenders can burn tokens from another address
+  - No owner functions
 ```
 
 ```solidity
@@ -669,6 +673,19 @@ contract ZKMToken is ERC20 {
         require(msg.sender == minter, "Only airdrop contract");
         require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
         _mint(to, amount);
+    }
+
+    /// @notice Burn tokens from the caller's balance. Permanently reduces total supply.
+    function burn(uint256 amount) external {
+        _burn(msg.sender, amount);
+    }
+
+    /// @notice Burn tokens from an approved address. Permanently reduces total supply.
+    function burnFrom(address account, uint256 amount) external {
+        uint256 currentAllowance = allowance(account, msg.sender);
+        require(currentAllowance >= amount, "ERC20: insufficient allowance");
+        _approve(account, msg.sender, currentAllowance - amount);
+        _burn(account, amount);
     }
 }
 ```
@@ -770,6 +787,7 @@ contract ZKMAirdrop {
 - `MAX_SUPPLY = 10,000,000,000 ZKM` on the token contract — hard cap, can never be exceeded.
 - `msg.sender` is not used for verification — anyone can submit.
 - No admin, owner, pause, or upgrade functions exist.
+- `totalClaims++` is safe from overflow — maximum value is 1,000,000 (enforced by the `require(totalClaims < MAX_CLAIMS)` guard), which is well within `uint256` bounds. No SafeMath needed.
 
 ### 7.4 On-Chain Read Queries
 
@@ -781,6 +799,7 @@ contract ZKMAirdrop {
 | Has this nullifier claimed? | `isClaimed(bytes32)` | `bool` |
 | Total ZKM supply? | `token.totalSupply()` | `uint256` |
 | Max ZKM supply? | `token.MAX_SUPPLY` | `uint256` |
+| ZKM burned total? | `token.MAX_SUPPLY - (claims × 10,000 + remaining_mintable)` or track via `Transfer` events to `address(0)` | `uint256` |
 
 ---
 
@@ -793,7 +812,7 @@ zkmist fetch                  Download eligibility list from IPFS (~1.3 GB)
 zkmist prove                  Generate ZK proof (interactive)
 zkmist submit <proof.json>    Submit proof to ZKMAirdrop contract
 zkmist verify <proof.json>    Verify proof locally: validates the STARK proof and checks that the journal contains the expected merkleRoot, nullifier, and recipient
-zkmist check <address>        Check if address is eligible
+zkmist check <address>        Check if address is eligible (requires downloaded eligibility list — see §8.7)
 zkmist status                 Show claim window status, claims remaining, total supply
 ```
 
@@ -889,6 +908,10 @@ Cannot:
 | Chain | Base (8453) |
 | Data | IPFS + GitHub |
 
+### 8.7 `zkmist check` Privacy Note
+
+`zkmist check <address>` requires the full eligibility list to be downloaded locally first (same ~1.3 GB dataset used by `zkmist prove`). The check is performed entirely offline against the local Merkle tree — no data is sent to any server, and no external API is queried. If the eligibility list is not cached, `zkmist check` will prompt the user to run `zkmist fetch` first.
+
 ---
 
 ## 9. Timeline
@@ -947,6 +970,8 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | Unit | Guest program | Test address derivation, nullifier computation, Poseidon hashing, Merkle proof verification with known test vectors |
 | Unit | Guest program (negative) | Invalid key, wrong Merkle proof, mismatched nullifier, zero-address leaf |
 | Unit | Smart contracts | `claim()` success path, all revert conditions (deadline, cap, double-claim, journal mismatch) |
+| Unit | ZKMToken `burn()` | Holder burns own tokens, supply decreases, event emitted |
+| Unit | ZKMToken `burnFrom()` | Approved spender burns from another address, insufficient allowance reverts |
 | Integration | Full prove → verify → claim | Generate real RISC Zero proof, submit to local fork, verify mint |
 | Integration | Journal layout | Confirm guest program's `env::commit()` order produces exactly 84 bytes matching Solidity slicing |
 | Fork test | Base mainnet fork | Deploy contracts against a Base fork, submit real proofs, verify gas costs |
@@ -967,7 +992,7 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | **Equal amounts** | 10,000 ZKM per claimant — hardcoded constant |
 | **Transparent eligibility** | Published list, auditable Merkle tree |
 | **Immutable rules** | Contract cannot be changed after deployment |
-| **Capped supply** | 10B ZKM max — enforced on-chain |
+| **Capped supply** | 10B ZKM max mint — enforced on-chain. Circulating supply can only decrease via burning. |
 | **Deadline enforced** | No claims after 2027-01-01 — enforced on-chain |
 
 **Known access asymmetries** (who gets to claim):
@@ -980,6 +1005,31 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | Information asymmetry | Those who hear about ZKMist first have a major advantage | ✅ Accepted — community-driven discovery is part of the model |
 | Contract wallets excluded | Multisigs and Safes appear in the list but cannot claim | ✅ Accepted — see §5.1 note |
 
+### 10.6 Threat Model
+
+This section consolidates the security-relevant adversaries, their capabilities, and the protocol's defenses.
+
+**Adversaries in scope:**
+
+| Adversary | Capabilities | Attack Goal | Defense |
+|-----------|-------------|-------------|----------|
+| **Double-claimer** | Holds one eligible private key, attempts to claim twice | Receive 20,000 ZKM instead of 10,000 | Nullifier is deterministic (sha256 of private key). Contract rejects duplicate nullifiers. | 
+| **Impersonator** | Does NOT hold the eligible private key, but knows the address | Claim someone else's allocation | Must produce a valid ZK proof: address derivation from private key + valid Merkle membership proof. Without the private key, no valid proof exists. |
+| **Front-runner** | Observes pending claim transactions in the mempool | Submit the same proof first to steal tokens | Recipient address is committed inside the ZK proof (journal). Front-runner cannot change recipient without invalidating the proof. |
+| **Relayer** | Submits proofs on behalf of claimants, sees proof.json | Learn the qualified address or steal tokens | proof.json contains no qualified address — only a nullifier, recipient, and STARK proof. Relayer sees exactly what's on-chain, nothing more. |
+| **Sybil farmer** | Controls many eligible addresses, automates claiming at scale | Claim disproportionate share of the 1M cap | Each claim requires a unique private key + ~90s proving time + 4 GB RAM. Amortizable across addresses but still costly at scale (~10 concurrent proofs per 40 GB machine). The 1M cap limits total damage. |
+| **Privacy attacker** | Analyzes on-chain data to link qualified → recipient addresses | De-anonymize claimants | Mitigated by: nullifier is sha256(privateKey), not address-derived; no on-chain link between qualified and recipient; user controls gas-funding path. See §6.8 for residual risks. |
+| **Malicious verifier** | Deploys a modified verifier contract | Accept invalid proofs, mint tokens without eligibility | The verifier contract address and image ID are immutable at deployment. Community must verify these match the audited, published source before claiming. |
+
+**Adversaries explicitly out of scope:**
+
+| Adversary | Why out of scope |
+|-----------|-----------------|
+| **Compromised claimant machine** | If malware runs on the claimant's machine, no protocol-level defense exists. The private key is exposed at OS level. Mitigated by recommending verification of CLI binary checksums. |
+| **IPFS censorship / unavailability** | Eligibility list is mirrored on GitHub. Community can re-pin on IPFS. No single point of failure. |
+| **Base chain liveness** | ZKMist relies on Base for transaction ordering and execution. If Base is down, claims cannot be submitted, but the claim window deadline is based on block timestamps, not wall-clock time. |
+| **Network-level surveillance** | Claimants should use Tor/VPN if they want to hide their IP from IPFS gateways or RPC providers. This is a user-side concern, not a protocol concern. |
+
 ---
 
 ## 11. Technical Specifications
@@ -991,10 +1041,11 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 | **Max Supply** | 10,000,000,000 ZKM (10 billion) |
 | **Initial Supply** | 0 (minted on claim) |
 | **Claim Amount** | 10,000 ZKM (fixed) |
+| **Burnable** | Yes — `burn()` and `burnFrom()` on ZKMToken |
 | **Max Claims** | 1,000,000 |
 | **Claim Deadline** | 2027-01-01 00:00:00 UTC |
 | **Proof System** | RISC Zero zkVM (STARK) |
-| **risc0-zkvm version** | Must be pinned at build time (e.g., `v5.0.0`). Different versions may produce different Image IDs. |
+| **risc0-zkvm version** | Must be pinned at build time (e.g., `v5.0.0`). Different versions may produce different Image IDs. Note: `cargo-risczero` (CLI tool, currently v3.0.5) and `risc0-zkvm` (the zkVM crate) are versioned independently. The image ID depends on the zkVM crate version, not the CLI version. |
 | **Poseidon crate** | `light-poseidon` v0.4.x — same version in guest program and CLI tree builder |
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon (leaf: t=2/R_P=56, interior: t=3/R_P=57, BN254) |
@@ -1118,6 +1169,86 @@ Direct          Any Relayer
   └──────────────────────┘
 ```
 
+### D. End-to-End Test Vector
+
+The following test vector allows independent verification of the entire claim pipeline. All implementations (guest program, CLI tree builder, Solidity contract) must reproduce these exact outputs.
+
+**Test private key:**
+```
+0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+**Derived Ethereum address:**
+```
+0x{computed by: secp256k1 public key → keccak256 → last 20 bytes}
+```
+
+> ⚠️ The full test vector (derived address, leaf hash, Merkle path, nullifier, expected journal) must be computed by the implementation during development and published before the audit. The values below are placeholders until the actual computation is performed.
+
+**Expected nullifier:**
+```
+nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
+         = sha256(0x0123...cdef || 0x5a4b4d6973745f56315f4e554c4c4946494552)
+         = 0x{to be computed}
+```
+
+**Leaf computation:**
+```
+address = 0x{derived}
+padded  = 0x000000000000000000000000{derived}  // 12 zero bytes + 20 address bytes
+leaf    = poseidon(Fr::from_be_bytes_mod_order(padded))
+        = 0x{to be computed}
+```
+
+**Verification steps:**
+1. Compute `derive_address(privateKey)` → must match expected address
+2. Compute `compute_nullifier(privateKey)` → must match expected nullifier
+3. Compute `poseidon_hash_address(address)` → must match expected leaf
+4. Build a test Merkle tree containing the leaf → verify root matches
+5. Run the full guest program with these inputs → verify journal is exactly 84 bytes:
+   - `[0:32]` = merkleRoot
+   - `[32:64]` = nullifier
+   - `[64:84]` = recipient (padded to 32 bytes in the field element representation)
+6. Submit to a local Base fork → verify `claim()` succeeds and mints 10,000 ZKM
+
+**Field element edge case test:**
+An address like `0x0000000000000000000000000000000000000001` produces a very small field element. Verify that `field_element_to_bytes()` correctly zero-pads the output to 32 bytes (since `into_bigint().to_bytes_be()` may return fewer than 32 bytes for small values).
+
+### E. Guest Program Build Configuration
+
+The RISC Zero guest program requires specific build configuration to compile for the `riscv32im-risc0-zkvm-elf` target. The following files must be present in the guest program's Cargo workspace.
+
+**`.cargo/config.toml`** (in the guest program crate root):
+```toml
+[target.riscv32im-risc0-zkvm-elf]
+runner = "cargo run --bin zkmist-guest-runner"
+
+[build]
+target = "riscv32im-risc0-zkvm-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
+
+# Required for getrandom 0.3+ on riscv32 targets without OS support.
+# RISC Zero provides a custom entropy source via the zkVM environment.
+rustflags = ["-C", "getrandom_backend=custom"]
+```
+
+**Atomic shim** (required because `riscv32im` lacks native 1-byte atomics needed by `tracing_core`):
+
+```rust
+// src/atomics.rs (or inline in main)
+#![no_mangle]
+pub extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32) {
+    unsafe { core::ptr::write_volatile(ptr, val) }
+}
+```
+
+**Toolchain requirements:**
+- Install via `rzup install rust` (RISC Zero custom toolchain, currently rzup v1.94.1 / cargo-risczero v3.0.5)
+- `risc0-zkvm` crate version must be pinned (e.g., `v5.0.0`) — the image ID changes between versions
+- `light-poseidon` v0.4.x — same version in both guest program and CLI tree builder
+
 ---
 
-*End of PRD v5.1*
+*End of PRD v6.0*
