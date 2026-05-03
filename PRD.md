@@ -1,6 +1,6 @@
 # ZKMist (ZKM) — Product Requirements Document
 
-**Version:** 3.0  
+**Version:** 4.0  
 **Date:** 2026-05-03  
 **Status:** Draft  
 **Author:** ZKMist Team  
@@ -11,34 +11,29 @@
 
 ### 1.1 Product Summary
 
-ZKMist (ticker: **ZKM**) is an ERC-20 token deployed on **Base Chain** featuring a **privacy-preserving airdrop** mechanism. A predefined list of ~65 million qualified Ethereum addresses are eligible to claim ZKM tokens, but the claiming process is designed so that **the qualified address is never publicly linked to the receiving address**.
+ZKMist (ticker: **ZKM**) is an ERC-20 token deployed on **Base Chain** featuring a **privacy-preserving airdrop**. ~65 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible to claim ZKM tokens anonymously.
 
-The claimant generates a **zero-knowledge proof** entirely on their local machine. The proof system uses **RISC Zero** — a zkVM that executes a Rust "guest program" inside a RISC-V virtual machine and produces a STARK proof of correct execution. This means the "circuit" is just **readable, auditable Rust code**, not inscrutable constraint systems.
+The claimant generates a **zero-knowledge proof** locally using the **RISC Zero zkVM** — a Rust guest program that proves membership in the eligibility Merkle tree without revealing which address is claiming. The proof is submitted directly to the immutable on-chain contract. Anyone can also build relayer services that submit proofs on behalf of claimants and cover gas costs.
 
-The claimant needs only three things:
-1. The **published eligibility list** (downloaded from IPFS)
-2. Their **qualified Ethereum address** (via raw private key in CLI, or wallet signature in browser)
-3. A **recipient address** they choose (not linked to the qualified address)
-
-No server, no API, no trusted third party, and **no trusted setup ceremony** is required.
+**Key properties:**
+- **Fully immutable contract** — deployed once, never modified, no admin, no pausability.
+- **Permissionless** — anyone can submit a valid claim proof; anyone can build tools or relayers on top.
+- **No trusted setup** — RISC Zero is STARK-based. No ceremony, no toxic waste.
+- **No web dApp needed** — the contract is the interface. Anyone can build a UI on top.
 
 ### 1.2 Problem Statement
 
-Standard airdrops create a permanent, public on-chain link between a user's qualifying activity (original address) and their claiming address. This:
-
-- **Exposes user portfolios** — anyone can trace a claim back to the qualifying address and inspect its full history and holdings.
-- **Creates targeting risk** — whales or early adopters become visible targets for phishing, social engineering, or legal scrutiny.
-- **Discourages participation** — privacy-conscious users may avoid claiming airdrops they are entitled to.
+Standard airdrops create a permanent, public on-chain link between a user's qualifying address and their claiming address. This exposes portfolios, creates phishing targets, and discourages participation.
 
 ### 1.3 Solution
 
-ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by running a Rust guest program. The proof proves:
+The claimant runs a local CLI tool with three inputs:
 
-1. **Membership** — "My Ethereum address (derived from my private key, or recovered from my wallet signature) is in the published eligibility Merkle tree."
-2. **Nullifier uniqueness** — a deterministic nullifier prevents double-claiming.
-3. **Recipient binding** — the proof is cryptographically bound to a specific recipient address (front-running impossible).
+1. The **published eligibility list** (from IPFS)
+2. The **private key** to their qualified Ethereum address
+3. A **recipient address** of their choice
 
-**No trusted setup is required.** RISC Zero uses STARK-based proving, which has no toxic waste or ceremony dependency.
+The CLI tool builds the Merkle tree locally, generates a ZK proof via RISC Zero, and outputs the proof data. The proof is then submitted to the immutable `ZKMAirdrop` contract on Base — either directly by the claimant or by any third-party relayer. On-chain, only an opaque nullifier and the recipient address are visible. The qualified address is never revealed.
 
 ---
 
@@ -52,16 +47,17 @@ ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by runn
 | G2 | Enable anonymous claiming for all qualified addresses | Zero on-chain link between qualified and recipient address |
 | G3 | Prevent double-claiming | Zero double-claims |
 | G4 | Gas-efficient claim process | Claim tx cost < $0.50 USD on Base |
-| G5 | Accessible to non-technical users | Web dApp claim flow (wallet signature, no CLI required) |
-| G6 | Fully auditable & verifiable eligibility list | Merkle root & eligibility list published openly |
-| G7 | No trusted setup | STARK-based proving — no ceremony, no toxic waste |
+| G5 | Fully immutable contract | No admin functions, no upgradeability, no pausability |
+| G6 | Auditable & verifiable | Published eligibility list, Merkle root on-chain, Rust guest program source public |
+| G7 | Permissionless ecosystem | Anyone can build relayers, UIs, or tools on top of the contract |
 
 ### 2.2 Non-Goals
 
 - ZKMist is **not** a governance token (at launch).
 - No staking, farming, or DeFi mechanics at launch.
+- No web dApp built by the ZKMist team — the contract is the interface.
 - No dynamic/incremental eligibility list — the list is **fixed** at deployment.
-- Not building a custom L1 or L2 — purely Base Chain.
+- No admin recovery of unclaimed tokens — unclaimed tokens remain in the contract permanently.
 
 ---
 
@@ -70,23 +66,23 @@ ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by runn
 ### 3.1 Claimant (Primary User)
 
 - Holds a qualified Ethereum address.
-- Wants to claim ZKM tokens to a fresh or existing Base address.
-- Values privacy — does not want their qualified address linked to their receiving address.
-- May or may not be technically sophisticated.
-- Prefers a browser-based experience (wallet connection) over CLI.
+- Runs the CLI tool locally to generate a ZK proof.
+- Submits the proof to the contract directly, or via a relayer.
+- Values privacy — qualified address must not be linked to recipient address.
 
-### 3.2 Admin (Operator)
+### 3.2 Relayer Operator
 
-- Manages the eligibility list, Merkle tree, and claim contract.
-- Responsible for deployment, monitoring, and any post-launch support.
-- May need to handle edge cases (e.g., stuck claims, support).
+- Builds a service (web app, bot, API) that accepts ZK proofs from claimants and submits them on-chain.
+- Pays gas on behalf of claimants (may charge a fee or offer it free).
+- Cannot tamper with claims (proof is bound to recipient).
+- Operates permissionlessly — no relationship with the ZKMist team.
 
 ### 3.3 Observer / Auditor
 
-- Wants to verify that the airdrop was conducted fairly.
-- Can independently reconstruct the Merkle tree from the published eligibility list.
-- Can read and audit the Rust guest program source code.
-- Can verify on-chain that no double-claims occurred.
+- Verifies the airdrop was conducted fairly.
+- Reconstructs the Merkle tree from the published eligibility list.
+- Reads and audits the Rust guest program source code.
+- Verifies on-chain that no double-claims occurred.
 
 ---
 
@@ -104,24 +100,26 @@ ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by runn
 | **Standard** | ERC-20 |
 | **Mintable** | No |
 | **Burnable** | No (at launch) |
-| **Owner/Admin** | Renounceable after claim period |
+| **Owner/Admin** | **None** (fully immutable after deployment) |
 
 ### 4.2 Token Allocation
 
 | Allocation | % of Supply | Amount (ZKM) | Notes |
 |------------|-------------|--------------|-------|
-| Airdrop Claims | 50% | 500,000,000 | Distributed to qualified addresses |
+| Airdrop Claims | 50% | 500,000,000 | Sent to ZKMAirdrop contract at deployment |
 | Treasury / DAO | 20% | 200,000,000 | Time-locked; future community allocation |
 | Team & Advisors | 15% | 150,000,000 | Vested over 24 months |
 | Liquidity Provision | 10% | 100,000,000 | Paired in DEX LP on Base |
 | Reserve | 5% | 50,000,000 | Emergency / partnerships |
 
+> The airdrop allocation (500M ZKM) is sent to the `ZKMAirdrop` contract at deployment. Any tokens not claimed remain in the contract permanently. There is no admin function to withdraw them.
+
 ### 4.3 Per-Address Claim Amount
 
-- **Uniform allocation per qualified address:** `claimAmount = 500,000,000 / ~65,000,000 ≈ 7.69 ZKM`
-- All qualified addresses receive the **same amount** to preserve anonymity.
-- Uniform amounts ensure the claim amount reveals nothing about which address is claiming.
-- Exact `CLAIM_AMOUNT` is computed after final BigQuery extraction and hardcoded in the airdrop contract at deployment.
+- **Uniform allocation:** `CLAIM_AMOUNT = 500,000,000 / exactQualifiedCount`
+- With ~65M qualified addresses: **~7.69 ZKM per address**
+- All qualified addresses receive the **same amount** (strongest anonymity).
+- `CLAIM_AMOUNT` is hardcoded in the airdrop contract at deployment.
 
 ---
 
@@ -129,7 +127,7 @@ ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by runn
 
 ### 5.1 Eligibility Criteria
 
-> **Any Ethereum mainnet address that has paid a cumulative total of at least 0.004 ETH in transaction fees before the end of 2025 (UTC) is qualified.**
+> **Any Ethereum mainnet address that has paid a cumulative total of at least 0.004 ETH in transaction fees before 2026-01-01 00:00:00 UTC is qualified.**
 
 | Parameter | Value |
 |-----------|-------|
@@ -139,11 +137,11 @@ ZKMist uses a **RISC Zero zkVM** where claimants generate proofs locally by runn
 | **Qualifying Action** | `from_address` on successful transactions (`receipt_status = 1`) |
 | **Qualified Addresses** | **~65,000,000** (estimated from BigQuery) |
 
-**Rationale:** 0.004 ETH (~$8–12 at average prices) represents a meaningful on-chain activity threshold that filters out dust/spam addresses while capturing virtually all real users, DeFi participants, NFT traders, and anyone who has genuinely used Ethereum. It is a broad, inclusive, and Sybil-resistant criterion — costly to fake at scale.
+**Rationale:** 0.004 ETH (~$8–12 at average prices) filters out dust/spam addresses while capturing virtually all real users. Broad, inclusive, and Sybil-resistant — costly to fake at scale.
 
 ### 5.2 Data Source — Google BigQuery
 
-The eligibility data is extracted from the **Google BigQuery Ethereum dataset** (`bigquery-public-data.crypto_ethereum`).
+The eligibility data is extracted from **Google BigQuery** (`bigquery-public-data.crypto_ethereum`).
 
 #### BigQuery SQL
 
@@ -166,10 +164,9 @@ ORDER BY
 
 #### Query Notes
 
-- `receipt_status = 1` — only counts **successful** transactions (reverts excluded).
-- `gas_price × receipt_gas_used` — actual gas fee paid per tx (pre-EIP-1559 and post-EIP-1559 compatible since `gas_price` is the effective price paid).
-- For **EIP-1559 transactions**, BigQuery's `gas_price` already reflects the effective `baseFeePerGas + maxPriorityFeePerGas` paid, making the query accurate across both transaction types.
-- The query processes **~2.5 billion rows** (all Ethereum transactions up to end of 2025). Expected BigQuery cost: ~$25–50 USD.
+- `receipt_status = 1` — only **successful** transactions (reverts excluded).
+- `gas_price × receipt_gas_used` — actual gas fee paid. Accurate for both pre-EIP-1559 and EIP-1559 transactions (BigQuery's `gas_price` is the effective price paid).
+- The query processes **~2.5 billion rows**. Expected BigQuery cost: ~$25–50 USD.
 
 #### Export Pipeline
 
@@ -192,29 +189,27 @@ Final Eligibility List
 
 ### 5.3 Claim Amount — Uniform Allocation
 
-With **~65M qualified addresses** and **500,000,000 ZKM** allocated to the airdrop:
-
 ```
-claimAmount = 500,000,000 / 65,000,000 ≈ 7.69 ZKM per address
+claimAmount = 500,000,000 / ~65,000,000 ≈ 7.69 ZKM per address
 ```
 
 | Parameter | Value |
 |-----------|-------|
 | **Total Airdrop Supply** | 500,000,000 ZKM |
 | **Qualified Addresses** | ~65,000,000 |
-| **ZKM per Address** | **~7.69 ZKM** (uniform, exact amount set at deployment) |
-| **Merkle Leaf** | `poseidon(address)` — ZK-friendly hash |
+| **ZKM per Address** | **~7.69 ZKM** (exact amount set at deployment) |
+| **Merkle Leaf** | `poseidon(address)` |
 
-> **Why uniform?** Uniform amounts provide the strongest privacy guarantee — the claim amount reveals nothing about which address is claiming. Tiered amounts would create a deanonymization vector (an observer could narrow candidates by tier).
+> **Why uniform?** Tiered amounts would create a deanonymization vector (observer narrows candidates by tier). Uniform amounts ensure the claim amount reveals nothing.
 
 ### 5.4 Eligibility List Format
 
-The list is published as a set of chunked files for practical distribution:
+The list is published as chunked files on IPFS + GitHub mirror:
 
 ```
 eligibility/
 ├── manifest.json              # Metadata: count, merkleRoot, hash algorithm
-├── addresses_00000001.csv     # address (1M rows each, sorted)
+├── addresses_00000001.csv     # address (1M rows each, sorted lexicographically)
 ├── addresses_00000002.csv
 ├── ...
 └── addresses_00000065.csv
@@ -238,141 +233,118 @@ eligibility/
 }
 ```
 
-The list is published on **IPFS** (pinned via Pinata/estuary) and mirrored on GitHub so anyone can audit it.
-
 ---
 
 ## 6. Anonymous Claim Protocol
 
 ### 6.1 Design Principles
 
-1. **Local-only proof generation** — the claimant never sends their private key, qualified address, or any identifying information to any server.
-2. **Two claim modes, one verifier** — CLI mode (private key) and web dApp mode (wallet signature) both produce the same public signals, verified by the same on-chain contract.
-3. **On-chain reveals nothing** — only a nullifier and the recipient address appear on-chain. The qualified address is never visible.
-4. **No trusted third party** — the eligibility list is public, the Merkle root is on-chain, and anyone can verify.
-5. **No trusted setup** — RISC Zero uses STARK-based proving. No ceremony, no toxic waste.
-6. **Auditable code** — the "circuit" is a Rust program. Anyone can read it.
+1. **Local-only proof generation** — the private key never leaves the claimant's machine.
+2. **Immutable contract** — deployed once, no admin, no upgrades, no pause.
+3. **Permissionless submission** — anyone can submit a valid proof. Anyone can build a relayer.
+4. **No trusted setup** — STARK-based proving. No ceremony, no toxic waste.
+5. **Auditable code** — the "circuit" is a Rust program anyone can read.
 
-### 6.2 Why RISC Zero (not circom + Groth16)
+### 6.2 Why RISC Zero
 
 | Factor | circom + Groth16 | RISC Zero zkVM |
 |--------|------------------|----------------|
-| **Ethereum address derivation** | ~400K constraints (secp256k1 + keccak256 gadgets) | Native Rust: `k256` crate |
-| **Web dApp (wallet sign)** | ❌ MetaMask won't expose private key | ✅ Wallet signs message → ecrecover in Rust |
-| **Trusted setup** | ❌ Required (per-circuit ceremony, toxic waste) | ✅ **None** (STARK-based) |
-| **Code readability** | Constraint signals (nearly unreadable) | Regular Rust code |
+| **Address derivation** | ~400K constraints (secp256k1 + keccak256) | Native Rust: `k256` crate |
+| **Trusted setup** | ❌ Required (ceremony, toxic waste) | ✅ **None** |
+| **Code readability** | Constraint signals | Regular Rust code |
 | **Front-running protection** | Must manually add constraints | Just hash recipient in code |
-| **Audit surface** | Custom circom gadgets + circom-ecdsa | Standard Rust crypto libraries (`k256`, `sha2`) |
-| **Proof generation** | ~30–120s (ECDSA constraints dominate) | ~30–90s (zkVM overhead, simpler ops) |
-| **On-chain verification** | ~300K gas (Groth16 verifier) | ~300K gas (Groth16 wrapper) or ~1.5M gas (STARK) |
+| **Audit surface** | Custom circom gadgets | Standard Rust crypto libraries |
 
 ### 6.3 High-Level Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        PUBLISHED DATA                            │
-│                                                                  │
-│  Google BigQuery ──► Eligibility List (~65M addresses)           │
-│                            │                                     │
-│                            ▼                                     │
-│                  Published to IPFS (chunked CSV)                 │
-│                  Merkle Root stored on-chain                     │
-│                                                                  │
-└──────────────────────────┬───────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      PUBLISHED DATA                         │
+│                                                             │
+│  Google BigQuery ──► Eligibility List (~65M addresses)      │
+│                            │                                │
+│                            ▼                                │
+│                  Published to IPFS (chunked CSV)            │
+│                  Merkle Root hardcoded in contract           │
+│                                                             │
+└──────────────────────────┬──────────────────────────────────┘
                            │
-            ┌──────────────┴──────────────┐
-            ▼                             ▼
-┌─────────────────────────┐  ┌──────────────────────────────┐
-│  CLI / Desktop App       │  │  Web dApp (Browser + WASM)    │
-│                          │  │                                │
-│  Inputs:                 │  │  Inputs:                       │
-│   ① Eligibility list     │  │   ① Eligibility list (partial) │
-│   ② Raw private key      │  │   ② Wallet signature           │
-│   ③ Recipient address    │  │   ③ Recipient address          │
-│                          │  │                                │
-│  Mode 0: Private Key     │  │  Mode 1: Signature             │
-│   • Derive address       │  │   • Recover address from       │
-│     from private key     │  │     ECDSA signature             │
-│   • Nullifier from key   │  │   • Nullifier from sig r-value  │
-│                          │  │                                │
-│  RISC Zero zkVM:         │  │  RISC Zero zkVM:               │
-│   • Build Merkle tree    │  │   • Download proof chunk        │
-│     (streaming)          │  │   • Generate proof (WASM)       │
-│   • Generate proof       │  │     or use Bonsai (cloud)       │
-│   • Submit on-chain      │  │   • Submit on-chain             │
-└────────────┬─────────────┘  └──────────────┬─────────────────┘
-             │                               │
-             └───────────────┬───────────────┘
-                             │
-                             ▼  ZK proof + nullifier + recipient
-┌──────────────────────────────────────────────────────────────────┐
-│                       ON-CHAIN (Base)                             │
-│                                                                  │
-│  ┌───────────────┐      ┌──────────────────────┐                 │
-│  │  ZKM Token    │◄─────│  ZKMAirdrop Claim    │                 │
-│  │  (ERC-20)     │      │  Contract            │                 │
-│  └───────────────┘      └──────────────────────┘                 │
-│                              │                                   │
-│         Receives:            │                                   │
-│          • RISC Zero proof   │                                   │
-│          • journal (outputs) │                                   │
-│          • nullifier         │                                   │
-│          • recipientAddress  │                                   │
-│                              │                                   │
-│         Verifies:            │                                   │
-│          • STARK proof valid │                                   │
-│          • journal matches   │                                   │
-│          • nullifier unused  │                                   │
-│          • transfers ZKM     │                                   │
-│            to recipient      │                                   │
-│                                                                  │
-│  On-chain visibility:                                            │
-│    ✗ qualified address — HIDDEN (private input to zkVM)          │
-│    ✗ private key — HIDDEN                                       │
-│    ✓ nullifier (opaque, not linkable to address)                 │
-│    ✓ recipient address                                           │
-│    ✓ zkVM proof + journal                                        │
-└──────────────────────────────────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  CLAIMANT'S LOCAL MACHINE                    │
+│                                                             │
+│  CLI Tool:                                                  │
+│    ① Download eligibility list from IPFS (~1.3 GB)         │
+│    ② Stream-build Merkle tree (O(log n) memory)            │
+│    ③ Find address in tree → extract 26-level proof          │
+│    ④ Enter private key (hidden prompt)                      │
+│    ⑤ RISC Zero zkVM generates STARK proof                   │
+│    ⑥ Output: proof + journal + nullifier + recipient        │
+│                                                             │
+│  Output can be:                                             │
+│    • Submitted directly to the contract by the claimant     │
+│    • Sent to a relayer who submits on the claimant's behalf │
+│    • Saved to file for later submission                     │
+│                                                             │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+           ┌───────────────┴───────────────┐
+           ▼                               ▼
+  ┌─────────────────┐            ┌──────────────────┐
+  │  Direct submit   │            │  Relayer          │
+  │  (any wallet)    │            │  (anyone)         │
+  └────────┬────────┘            └────────┬──────────┘
+           │                              │
+           └──────────────┬───────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     ON-CHAIN (Base)                          │
+│                                                             │
+│  ZKMAirdrop Contract (IMMUTABLE):                            │
+│                                                             │
+│    function claim(proof, journal, nullifier, recipient)      │
+│      1. Verify RISC Zero STARK proof                        │
+│      2. Validate journal (merkleRoot, nullifier, recipient) │
+│      3. Check nullifier not used                            │
+│      4. Transfer CLAIM_AMOUNT ZKM to recipient              │
+│                                                             │
+│    On-chain visibility:                                     │
+│      ✗ qualified address — HIDDEN                           │
+│      ✗ private key — HIDDEN                                 │
+│      ✓ nullifier (opaque, not linkable to address)           │
+│      ✓ recipient address                                    │
+│      ✓ STARK proof + journal                                │
+│                                                             │
+│    No admin functions. No pause. No upgrade. No owner.       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 6.4 Nullifier Design — Deterministic, Two Modes
+### 6.4 Nullifier Design
 
-The nullifier is a unique, opaque value that prevents double-claiming without revealing the qualified address. It is **deterministic** — the same inputs always produce the same nullifier.
-
-#### Mode 0 (CLI — Private Key)
+The nullifier prevents double-claiming without revealing the qualified address.
 
 ```
 nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
 ```
 
-- Same private key → same nullifier → double-claim prevented.
-- Cannot be computed from the published address list (requires private key).
-- Cannot be reversed to recover the private key or address.
+| Property | Explanation |
+|----------|-------------|
+| **Deterministic** | Same private key → same nullifier → double-claim impossible |
+| **Not precomputable** | Cannot compute from the published address list — requires the private key |
+| **Not reversible** | Cannot recover the private key or address from the nullifier |
+| **Unique per address** | Different private keys → different nullifiers (collision-resistant) |
 
-#### Mode 1 (Web dApp — Wallet Signature)
+### 6.5 Guest Program (Rust)
 
-```
-signedMessage = EIP-191("\x19Ethereum Signed Message:\n32" + sha256("ZKMist_V1_CLAIM" + recipientAddress))
-signature = wallet.sign(signedMessage)
-r = signature.r  // deterministic per RFC 6979
-nullifier = sha256(r || "ZKMist_V1_NULLIFIER")
-```
+The RISC Zero guest program is the zkVM equivalent of a ZK circuit. It is a regular Rust program that proves:
 
-- The `r` value of an ECDSA signature is deterministic (RFC 6979) — the same private key signing the same message always produces the same `r`.
-- Cannot be computed from the published address list (requires the private key to produce the signature).
-- The `recipientAddress` is bound into the signed message, preventing front-running (changing the recipient changes the message, changes `r`, changes the nullifier).
-
-> **Both modes produce the same on-chain format** — a `bytes32` nullifier. The contract does not know or care which mode was used.
-
-### 6.5 Guest Program (Rust) — The "Circuit"
-
-The RISC Zero guest program is the zkVM equivalent of a ZK circuit. It is a **regular Rust program** that runs inside the RISC-V VM. The VM produces a proof that the program executed correctly with the given inputs.
+1. "I know a private key whose Ethereum address is in the eligibility Merkle tree."
+2. "The nullifier is correctly derived from my private key."
+3. "The recipient address is committed to the proof."
 
 ```rust
 //! ZKMist Airdrop Claim — RISC Zero Guest Program
-//!
-//! This program proves that the claimant's Ethereum address is in the
-//! eligibility Merkle tree, without revealing which address.
 
 #![no_main]
 risc0_zkvm::guest::entry!(main);
@@ -389,29 +361,12 @@ pub fn main() {
     let recipient: [u8; 20] = env::read();
 
     // === Private inputs (never leave the claimant's machine) ===
-    let mode: u8 = env::read(); // 0 = private key, 1 = signature
+    let private_key: [u8; 32] = env::read();
 
-    // --- Derive Ethereum address from private input ---
-    let address: [u8; 20] = match mode {
-        0 => {
-            // CLI mode: derive address from raw private key
-            let private_key: [u8; 32] = env::read();
-            derive_address_from_private_key(&private_key)
-        }
-        1 => {
-            // Web dApp mode: recover address from wallet signature
-            let message_hash: [u8; 32] = env::read();
-            let signature_r: [u8; 32] = env::read();
-            let signature_s: [u8; 32] = env::read();
-            let signature_v: u8 = env::read();
-            recover_address_from_signature(
-                &message_hash, &signature_r, &signature_s, signature_v
-            )
-        }
-        _ => panic!("Invalid mode"),
-    };
+    // --- Derive Ethereum address from private key ---
+    let address = derive_address(&private_key);
 
-    // --- Merkle membership proof (private) ---
+    // --- Merkle membership proof ---
     let mut siblings: [[u8; 32]; TREE_DEPTH] = [[0u8; 32]; TREE_DEPTH];
     let mut path_indices: [bool; TREE_DEPTH] = [false; TREE_DEPTH];
     for i in 0..TREE_DEPTH {
@@ -422,23 +377,10 @@ pub fn main() {
     // --- Verify Merkle membership ---
     let leaf = poseidon_hash_address(&address);
     let computed_root = compute_merkle_root(&leaf, &siblings, &path_indices);
-    assert_eq!(
-        computed_root, merkle_root,
-        "Address not found in eligibility tree"
-    );
+    assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
 
-    // --- Verify nullifier (computed differently per mode) ---
-    let expected_nullifier = match mode {
-        0 => {
-            let pk: [u8; 32] = env::read();
-            compute_nullifier_from_key(&pk)
-        }
-        1 => {
-            let sig_r: [u8; 32] = env::read();
-            compute_nullifier_from_r(&sig_r)
-        }
-        _ => unreachable!(),
-    };
+    // --- Verify nullifier ---
+    let expected_nullifier = compute_nullifier(&private_key);
     assert_eq!(nullifier, expected_nullifier, "Invalid nullifier");
 
     // === Commit public outputs to journal ===
@@ -447,62 +389,26 @@ pub fn main() {
     env::commit(&recipient);
 }
 
-/// Derive Ethereum address from secp256k1 private key.
-/// Uses the k256 crate (audited, standard Rust crypto).
-fn derive_address_from_private_key(key: &[u8; 32]) -> [u8; 20] {
+fn derive_address(key: &[u8; 32]) -> [u8; 20] {
     let signing_key = k256::ecdsa::SigningKey::from_bytes(key)
         .expect("Invalid private key");
     let verifying_key = k256::ecdsa::VerifyingKey::from(&signing_key);
     let encoded = verifying_key.to_encoded_point(false);
     let pub_key_bytes = encoded.as_bytes(); // 65 bytes: 0x04 || x || y
-    let hash = Sha256::digest(&pub_key_bytes[1..65]); // keccak256 ideally
-    let mut address = [0u8; 20];
-    address.copy_from_slice(&hash[12..32]);
-    address
+    // Use keccak256 for Ethereum address derivation
+    let hash = keccak256(&pub_key_bytes[1..65]);
+    let mut addr = [0u8; 20];
+    addr.copy_from_slice(&hash[12..32]);
+    addr
 }
 
-/// Recover Ethereum address from ECDSA signature.
-fn recover_address_from_signature(
-    msg_hash: &[u8; 32],
-    r: &[u8; 32],
-    s: &[u8; 32],
-    v: u8,
-) -> [u8; 20] {
-    let sig = k256::ecdsa::Signature::from_scalars(
-        k256::elliptic_curve::ScalarPrimitive::from_slice(r).unwrap(),
-        k256::elliptic_curve::ScalarPrimitive::from_slice(s).unwrap(),
-    ).unwrap();
-    let recovery_id = k256::ecdsa::RecoveryId::try_from(v).unwrap();
-    let verifying_key = k256::ecdsa::VerifyingKey::recover_from_digest(
-        k256::elliptic_curve::FieldBytes::from_slice(msg_hash),
-        &sig,
-        recovery_id,
-    ).unwrap();
-    let encoded = verifying_key.to_encoded_point(false);
-    let pub_key_bytes = encoded.as_bytes();
-    let hash = Sha256::digest(&pub_key_bytes[1..65]);
-    let mut address = [0u8; 20];
-    address.copy_from_slice(&hash[12..32]);
-    address
-}
-
-/// Compute deterministic nullifier from private key.
-fn compute_nullifier_from_key(key: &[u8; 32]) -> [u8; 32] {
+fn compute_nullifier(key: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(key);
     hasher.update(DOMAIN_SEPARATOR);
     hasher.finalize().into()
 }
 
-/// Compute deterministic nullifier from signature r-value.
-fn compute_nullifier_from_r(r: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(r);
-    hasher.update(DOMAIN_SEPARATOR);
-    hasher.finalize().into()
-}
-
-/// Compute Merkle root from leaf + proof.
 fn compute_merkle_root(
     leaf: &[u8; 32],
     siblings: &[[u8; 32]; TREE_DEPTH],
@@ -512,11 +418,11 @@ fn compute_merkle_root(
     for i in 0..TREE_DEPTH {
         let mut hasher = Sha256::new();
         if indices[i] {
-            hasher.update(siblings[i]);
-            hasher.update(current);
+            hasher.update(&siblings[i]);
+            hasher.update(&current);
         } else {
-            hasher.update(current);
-            hasher.update(siblings[i]);
+            hasher.update(&current);
+            hasher.update(&siblings[i]);
         }
         current = hasher.finalize().into();
     }
@@ -524,92 +430,43 @@ fn compute_merkle_root(
 }
 ```
 
-> **Key insight:** The `recipient` address is a public input that is committed to the journal. The guest program does not need to constrain it further — the RISC Zero proof is bound to the journal contents. If anyone changes the recipient in the on-chain calldata, the journal hash won't match the proof, and verification fails. **Front-running is impossible.**
+> **Front-running is impossible.** The `recipient` is committed to the journal. The journal hash is part of the STARK proof. Changing the recipient in calldata invalidates the proof.
 
-### 6.6 Claim Flow — CLI Mode (Step-by-Step)
+### 6.6 Claim Flow (Step-by-Step)
 
-1. **Download eligibility list** — The claimant downloads the published list from IPFS (~1.3 GB, chunked CSV). One-time download; cached locally.
+1. **Download eligibility list** — `zkmist fetch` downloads the published list from IPFS (~1.3 GB, chunked CSV). Cached locally after first download.
 
-2. **Build Merkle tree locally** — The CLI tool builds the tree in a **streaming fashion** using O(log n) memory. As it streams through the 65M sorted addresses, it finds the claimant's address and extracts its Merkle proof (26 siblings).
+2. **Generate proof** — `zkmist prove` does the following:
+   - Prompts for private key (hidden input, never in shell history)
+   - Prompts for recipient address
+   - Stream-builds the Merkle tree (~1–2 minutes)
+   - Finds the address in the tree, extracts 26-level Merkle proof
+   - Runs RISC Zero zkVM (~30–90 seconds)
+   - Outputs proof data to a file
 
-   > **Performance:** Streaming 65M leaves takes ~1–2 minutes on a modern computer.
+3. **Submit claim** — One of:
+   - **Direct:** `zkmist submit proof.json` — submits via any connected wallet. The claimant pays gas on Base (~$0.01–0.07).
+   - **Via relayer:** Send the proof file to any relayer service. The relayer submits on-chain and pays gas. The relayer cannot modify the claim (proof is bound to recipient).
+   - **Manual:** Copy the proof data and submit via any Base block explorer (BaseScan) or contract interaction tool.
 
-3. **Provide inputs** — The claimant provides:
-   - Their Ethereum **private key** (entered via interactive hidden prompt — never in shell history)
-   - A **recipient address** (any Base address, preferably fresh)
+4. **Completion** — Tokens arrive in the recipient address. On-chain observers see only: a nullifier, a recipient address, and a ZK proof. **Nothing links to the qualified address.**
 
-4. **Generate proof** — The tool runs the RISC Zero zkVM locally:
-   - The guest program derives the address, verifies Merkle membership, computes the nullifier
-   - Output: STARK proof + journal (merkleRoot, nullifier, recipient)
-
-   > **Performance:** ~30–90 seconds on a modern computer.
-
-5. **Submit on-chain** — The claimant submits the proof + journal to the ZKMAirdrop contract on Base via any wallet. `msg.sender` is irrelevant.
-
-6. **Contract verification:**
-   - Verify the STARK proof against the on-chain verifier.
-   - Verify the journal's `merkleRoot` matches the immutable on-chain root.
-   - Check `usedNullifiers[journal.nullifier] == false`.
-   - Set `usedNullifiers[journal.nullifier] = true`.
-   - Transfer `CLAIM_AMOUNT` ZKM to `journal.recipient`.
-
-7. **Completion** — Tokens arrive in the recipient address. **Nothing on-chain links to the qualified address.**
-
-### 6.7 Claim Flow — Web dApp Mode (Step-by-Step)
-
-1. **Connect qualified wallet** — The claimant connects the wallet holding their eligible Ethereum mainnet address (MetaMask, Rainbow, Coinbase Wallet, etc.).
-
-2. **Check eligibility** — The dApp downloads the proof index (~520 MB, or a partial chunk) from IPFS and checks if the connected address is in the list.
-
-   > If not found → "This address is not eligible (paid < 0.004 ETH in fees)."
-
-3. **Choose recipient address** — The claimant enters or connects a **different** Base address.
-
-   > ⚠️ "Do not fund this address from your qualified wallet."
-
-4. **Sign message** — The dApp prompts the wallet to sign a ZKMist claim message:
-   ```
-   ZKMist Claim
-   Recipient: 0xRecipientAddress
-   ```
-   The wallet signs this via `personal_sign` or `eth_signTypedData_v4`. The signature's `r` value is deterministic (RFC 6979).
-
-5. **Generate proof** — The dApp runs the RISC Zero zkVM in the browser (WASM) or delegates to **Bonsai** (RISC Zero's cloud proving service):
-   - Private inputs: signature components, Merkle proof
-   - The guest program recovers the address from the signature, verifies Merkle membership
-   - Output: STARK proof + journal
-
-   > **Performance:** WASM proving ~60–180s in browser. Bonsai proving ~5–15s (but requires sending the signature to RISC Zero's servers — see §6.9).
-
-6. **Submit on-chain** — The dApp submits the proof via the connected wallet or a relayer (gasless).
-
-7. **Completion** — Tokens arrive. **Nothing on-chain links to the qualified address.**
-
-### 6.8 Privacy Guarantees
+### 6.7 Privacy Guarantees
 
 | What is public on-chain | What is NOT public on-chain |
 |--------------------------|-----------------------------|
-| STARK proof (reveals nothing beyond validity) | Qualified (original) address |
-| Nullifier (opaque, not precomputable from address) | Private key / signature components |
+| STARK proof | Qualified (original) address |
+| Nullifier (opaque hash) | Private key |
 | Recipient address | Merkle proof / tree position |
-| Claim amount (uniform — 7.69 ZKM for all 65M) | Link between qualified ↔ recipient |
-| Journal (merkleRoot, nullifier, recipient only) | Mode (CLI vs web dApp) |
+| Claim amount (uniform for all 65M) | Link between qualified ↔ recipient |
 
-**Uniform amount = strongest anonymity set.** Every claim looks identical on-chain except for the nullifier and recipient address.
-
-**msg.sender is irrelevant.** The transaction submitter can be anyone.
-
-**Front-running is impossible.** The recipient address is committed to the journal, and the journal hash is part of the STARK proof. Changing the recipient invalidates the proof.
-
-### 6.9 Privacy Caveats & Edge Cases
+### 6.8 Privacy Caveats & Edge Cases
 
 | Risk | Mitigation |
 |------|------------|
-| **Time correlation** — transferring ETH for gas from qualified → recipient. | Tool warns users to fund recipient from independent source (CEX, bridge). |
-| **Bonsai (cloud proving) sees signature** — if the web dApp uses Bonsai, RISC Zero's servers see the signature and can recover the address. | Bonsai is optional. Users who want maximum privacy use local WASM proving (slower but fully private). Bonsai mode should display a privacy warning. |
-| **Nullifier cannot be precomputed** — requires private key or signature. | ✅ Inherent in the design. |
-| **No double-claim** — nullifier is deterministic per mode. | ✅ Same key → same nullifier. Same signature `r` → same nullifier. |
-| **Signature replay across modes** — could a user claim in CLI mode AND web mode? | The nullifiers differ because they're derived from different sources (private key vs signature `r`). A single address could produce two different nullifiers. **This must be addressed** — see Open Question #16. |
+| **Gas funding correlation** — if claimant sends ETH from qualified address to recipient for gas, addresses are linked. | Tool warns: "Fund your recipient address from an independent source (CEX, bridge)." |
+| **Relayer sees proof** — but cannot link it to a qualified address. | Relayer sees {proof, nullifier, recipient} — same as on-chain. No additional info. |
+| **Front-running** — observer sees pending tx. | Impossible — recipient is committed to the proof. Changing recipient invalidates the proof. |
 
 ---
 
@@ -617,12 +474,11 @@ fn compute_merkle_root(
 
 ### 7.1 Contracts Overview
 
-| Contract | Description |
-|----------|-------------|
-| `ZKMToken` | Standard ERC-20 token contract for ZKMist |
-| `ZKMAirdropVerifier` | RISC Zero STARK verifier contract (auto-generated) |
-| `ZKMAirdrop` | Claim contract — verifies proof + journal + nullifier uniqueness |
-| (optional) `Timelock` | For treasury/team token vesting |
+| Contract | Description | Mutability |
+|----------|-------------|------------|
+| `ZKMToken` | Standard ERC-20 token | Immutable (no owner after deploy) |
+| `RiscZeroVerifier` | RISC Zero STARK verifier (auto-generated) | Immutable |
+| `ZKMAirdrop` | Claim contract — verify proof + transfer tokens | **Immutable** (no owner, no admin, no pause) |
 
 ### 7.2 ZKMToken Contract
 
@@ -632,122 +488,135 @@ Standard ERC-20:
   - symbol: "ZKM"
   - decimals: 18
   - totalSupply: 1,000,000,000e18
-  - No mint/burn functions after deployment
-  - All tokens minted to deployer at construction
+  - No mint/burn functions
+  - No owner after deployment
+  - 500,000,000 ZKM transferred to ZKMAirdrop at deployment
+  - Remaining allocated per §4.2
 ```
 
 ### 7.3 ZKMAirdrop Contract
+
+**This contract is fully immutable.** No admin functions, no owner, no pausability, no upgradeability. Deployed once and never touched again.
 
 #### State Variables
 
 ```solidity
 IERC20 public immutable zkmToken;
-IRiscZeroVerifier public immutable verifier;  // RISC Zero verifier
-bytes32 public immutable imageId;             // Guest program image ID
+IRiscZeroVerifier public immutable verifier;
+bytes32 public immutable imageId;         // Guest program identity
 bytes32 public immutable merkleRoot;
+uint256 public immutable claimAmount;
+uint256 public immutable claimDeadline;   // Timestamp after which claims are rejected
 mapping(bytes32 => bool) public usedNullifiers;
-uint256 public claimStart;
-uint256 public claimEnd;
-address public admin;
-bool public paused;
 ```
 
 #### Functions
 
-| Function | Access | Description |
-|----------|--------|-------------|
-| `claim(bytes calldata proof, bytes calldata journal, bytes32 _nullifier, address _recipient)` | Public | Claim tokens. Verifies RISC Zero proof + nullifier uniqueness. |
-| `pause()` | Admin | Pause claims (emergency). |
-| `unpause()` | Admin | Unpause claims. |
-| `withdrawUnclaimed()` | Admin | After claim period ends, withdraw remaining tokens to treasury. |
-| `usedNullifiers(bytes32)` | View | Check if a nullifier has been used. |
-| `isClaimed(bytes32)` | View | Alias for nullifier check. |
+The contract has **one public function**:
 
-#### Claim Function Pseudocode
+| Function | Description |
+|----------|-------------|
+| `claim(bytes proof, bytes journal, bytes32 nullifier, address recipient)` | Verify proof, check nullifier, transfer tokens. Callable by anyone. |
+
+Plus standard view functions:
+
+| Function | Description |
+|----------|-------------|
+| `usedNullifiers(bytes32)` | Check if a nullifier has been used |
+| `isClaimed(bytes32)` | Alias for nullifier check |
+
+#### Claim Function
 
 ```solidity
-uint256 public constant CLAIM_AMOUNT = 7_692_307_000_000_000_000; // ~7.69 ZKM
+contract ZKMAirdrop {
+    IERC20 public immutable zkmToken;
+    IRiscZeroVerifier public immutable verifier;
+    bytes32 public immutable imageId;
+    bytes32 public immutable merkleRoot;
+    uint256 public immutable claimAmount;
+    uint256 public immutable claimDeadline;
 
-function claim(
-    bytes calldata _proof,        // RISC Zero STARK proof
-    bytes calldata _journal,      // Journal: [merkleRoot, nullifier, recipient]
-    bytes32 _nullifier,
-    address _recipient
-) external {
-    require(!paused, "Claims paused");
-    require(block.timestamp >= claimStart, "Not started");
-    require(block.timestamp <= claimEnd, "Claim period ended");
-    require(!usedNullifiers[_nullifier], "Already claimed");
+    mapping(bytes32 => bool) public usedNullifiers;
 
-    // Verify the RISC Zero proof
-    // This checks: proof is valid, imageId matches our guest program,
-    // and the journal was honestly computed from the private inputs
-    bytes32 journalRoot = bytes32(sha256(_journal));
-    verifier.verify(_proof, imageId, journalRoot);
+    constructor(
+        address _zkmToken,
+        address _verifier,
+        bytes32 _imageId,
+        bytes32 _merkleRoot,
+        uint256 _claimAmount,
+        uint256 _claimDeadline
+    ) {
+        zkmToken = IERC20(_zkmToken);
+        verifier = IRiscZeroVerifier(_verifier);
+        imageId = _imageId;
+        merkleRoot = _merkleRoot;
+        claimAmount = _claimAmount;
+        claimDeadline = _claimDeadline;
+    }
 
-    // Decode journal and validate public outputs
-    bytes32 journalMerkleRoot = abi.decode(_journal[0:32], (bytes32));
-    bytes32 journalNullifier = abi.decode(_journal[32:64], (bytes32));
-    address journalRecipient = abi.decode(_journal[64:84], (address));
+    function claim(
+        bytes calldata _proof,
+        bytes calldata _journal,
+        bytes32 _nullifier,
+        address _recipient
+    ) external {
+        require(block.timestamp <= claimDeadline, "Claim period ended");
+        require(!usedNullifiers[_nullifier], "Already claimed");
 
-    require(journalMerkleRoot == merkleRoot, "Root mismatch");
-    require(journalNullifier == _nullifier, "Nullifier mismatch");
-    require(journalRecipient == _recipient, "Recipient mismatch");
+        // Verify the RISC Zero STARK proof
+        bytes32 journalRoot = bytes32(sha256(_journal));
+        verifier.verify(_proof, imageId, journalRoot);
 
-    // Mark nullifier as used
-    usedNullifiers[_nullifier] = true;
+        // Decode and validate journal
+        bytes32 journalMerkleRoot = bytes32(_journal[0:32]);
+        bytes32 journalNullifier  = bytes32(_journal[32:64]);
+        address journalRecipient  = address(bytes20(_journal[64:84]));
 
-    // Transfer tokens to recipient
-    zkmToken.transfer(_recipient, CLAIM_AMOUNT);
+        require(journalMerkleRoot == merkleRoot, "Root mismatch");
+        require(journalNullifier == _nullifier, "Nullifier mismatch");
+        require(journalRecipient == _recipient, "Recipient mismatch");
 
-    emit Claimed(_nullifier, CLAIM_AMOUNT, _recipient);
+        // Mark nullifier and transfer
+        usedNullifiers[_nullifier] = true;
+        zkmToken.transfer(_recipient, claimAmount);
+
+        emit Claimed(_nullifier, claimAmount, _recipient);
+    }
+
+    event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient);
 }
 ```
 
-**Key design properties:**
-- `msg.sender` is **not used** for verification — anyone can submit the claim.
-- The qualified address is **never visible** on-chain — it's a private input to the zkVM.
-- The guest program image ID is immutable — only proofs from the published Rust program are accepted.
-- The journal is validated inside the STARK proof — tampering with the recipient invalidates the proof.
-- The nullifier is verified inside the zkVM (guest program asserts `nullifier == expectedNullifier`).
+**Key properties:**
+- `msg.sender` is **not used** — anyone can call `claim`.
+- No admin, owner, or pause functions.
+- The guest program `imageId` is immutable — only proofs from the published Rust program are accepted.
+- Unclaimed tokens remain in the contract permanently. No withdrawal function exists.
+- `claimDeadline` prevents claims after the deadline. No way to extend.
 
-### 7.4 Events
+### 7.4 Published Data Artifacts
 
-```solidity
-event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient);
-event Paused();
-event Unpaused();
-event Withdrawn(address to, uint256 amount);
-```
-
-### 7.5 Published Data Artifacts
-
-All data and artifacts needed for proof generation are **published and publicly verifiable**. No server interaction is required.
-
-#### Published Files (IPFS + GitHub mirror)
+All data and artifacts are published on IPFS + GitHub mirror:
 
 ```
 zkmist-airdrop/
 ├── manifest.json                      # Metadata (see §5.4)
-├── addresses_00000001.csv              # Sorted address list (1M rows each, ~65 files)
-├── addresses_00000002.csv
+├── addresses_00000001.csv              # Sorted address list (1M rows each)
 ├── ...
-├── merkle_root.txt                    # The Merkle root (also on-chain)
-├── guest_program.elf                  # Compiled RISC Zero guest program (RISC-V binary)
+├── guest_program.elf                  # Compiled RISC Zero guest program (RISC-V)
 ├── image_id.txt                       # Guest program image ID (also on-chain)
 ├── guest_program_source.tar.gz        # Full Rust source code (auditable)
-└── risc_zero_verifier.sol             # Auto-generated verifier contract
+├── risc_zero_verifier.sol             # Auto-generated verifier contract
+└── CONTRACTS.md                       # Deployed contract addresses on Base
 ```
 
-> **No proving key.** Unlike Groth16, RISC Zero does not require a proving key or trusted setup. The guest program binary and image ID are all that's needed.
+> **No proving key or trusted setup artifacts.** RISC Zero doesn't need them.
 
 #### Local Merkle Tree Construction (Streaming)
 
-The claimant's CLI tool builds the Merkle tree locally from the published address list using a **streaming algorithm** that requires only O(log n) memory:
+The CLI tool builds the Merkle tree locally in a streaming pass:
 
 ```
-Streaming Merkle Tree Builder:
-
 1. Download sorted address list from IPFS (stream, don't load all at once)
 2. For each address (in sorted order):
    a. Compute leaf = poseidon(address)
@@ -757,121 +626,133 @@ Streaming Merkle Tree Builder:
       - Push parent
    d. If current address matches claimant's address:
       - Record the sibling at each level (the Merkle proof)
-3. After processing all leaves:
-   - Stack contains the Merkle root
+3. After processing all 65M leaves:
+   - Stack contains the Merkle root (verify against on-chain value)
    - Proof is extracted
 
 Memory: O(tree_depth) = O(26) hash values = ~832 bytes
-Time: O(n) where n = 65M → ~1–2 minutes
+Time: ~1–2 minutes on a modern computer
 ```
-
-> **No server needed.** The tree is deterministically reconstructed from the published list. Anyone can verify the root matches the on-chain value.
 
 ---
 
-## 8. Claimant Tool & dApp
+## 8. CLI Tool
 
-### 8.1 Two Claim Modes
-
-| Mode | Input | Target User | Privacy |
-|------|-------|-------------|---------|
-| **CLI / Desktop App** (Mode 0) | Raw private key (hidden prompt) | Power users | Maximum — no third party involved |
-| **Web dApp** (Mode 1) | Wallet signature (MetaMask, etc.) | All users | High — signature stays local (or Bonsai sees it) |
-
-Both modes produce proofs verified by the **same on-chain contract** with the **same public signals**.
-
-### 8.2 CLI / Desktop App — Claim Flow
+### 8.1 Commands
 
 ```
-$ zkmist claim --recipient 0xRecip...
+zkmist fetch              Download eligibility list from IPFS (~1.3 GB)
+zkmist prove              Generate ZK proof (interactive)
+zkmist submit <proof.json> Submit proof to ZKMAirdrop contract on Base
+zkmist verify <proof.json> Verify a proof locally (dry run)
+zkmist check <address>     Check if an address is in the eligibility list
+```
 
-[1/5] Downloading eligibility list from IPFS...
-       ████████████████████████████████ 100%  (1.3 GB)
+### 8.2 `zkmist prove` — Interactive Flow
 
-[2/5] Building Merkle tree (streaming)...
+```
+$ zkmist prove
+
+[1/4] Loading eligibility list...
+       Using cached list: ~/.zkmist/eligibility/ (1.3 GB)
+
+[2/4] Building Merkle tree (streaming)...
        Processing 65,000,000 addresses...
        Found your address at index 42,317,891
        Merkle proof extracted (26 levels)
-       ✓ Root matches on-chain value
+       ✓ Root matches on-chain value: 0xabc123...
 
-[3/5] Enter private key (hidden):
+[3/4] Enter your private key (hidden):
        ********
+       → Derived address: 0x742d...35Cc
+       → Nullifier: 0x4a7f...e2c1
 
-[4/5] Generating RISC Zero proof...
-       Guest program: zkmist-claim (image_id: 0xabc...)
+       Enter recipient address: 0xRecip...EntAddress
+
+[4/4] Generating RISC Zero proof...
+       Guest program: zkmist-claim-v1
+       Image ID: 0xdef456...
        zkVM execution: 2,847,331 cycles
        ████████████████████████████████ done  (45s)
-       Nullifier: 0x4a7f...e2c1
 
-[5/5] Submit claim?
-       Recipient: 0xRecip...EntAddress
-       Amount:    7.69 ZKM
-       Gas cost:  ~$0.01 (Base)
+       ✓ Proof saved to: ./zkmist_proof_2026-05-03.json
 
-       [Y/n] Y
+To claim, run:
+  zkmist submit ./zkmist_proof_2026-05-03.json
 
-       Transaction submitted: 0xabc123...
-       ✓ Claimed! 7.69 ZKM → 0xRecip...EntAddress
-
-       Your qualified address is NOT visible on-chain.
+Or submit via any relayer service. The proof file contains everything needed.
+Your qualified address (0x742d...35Cc) is NOT visible on-chain.
 ```
 
-### 8.3 Web dApp — Claim Flow
+### 8.3 Proof File Format
 
-```
-Step 1: "Connect Qualified Wallet"
-        └─ Connect MetaMask / Rainbow / Coinbase Wallet
-        └─ dApp checks eligibility via proof index download from IPFS
-        └─ If not found → "This address is not eligible"
-
-Step 2: "Verify Eligibility" ✓
-        └─ Shows: "You are eligible for ~7.69 ZKM tokens"
-
-Step 3: "Choose Recipient Address"
-        └─ Option A: Connect a different wallet (on Base)
-        └─ Option B: Paste any Base address manually
-        └─ ⚠️ "Do not fund this address from your qualified wallet"
-
-Step 4: "Sign Claim Message"
-        └─ Wallet prompts: "Sign ZKMist Claim for 0xRecipient..."
-        └─ User clicks "Sign" (free, no gas)
-        └─ dApp extracts deterministic signature r-value
-
-Step 5: "Download Merkle Proof"
-        └─ Downloads the relevant proof chunk from IPFS (~few MB)
-        └─ Verified against the on-chain Merkle root
-
-Step 6: "Generate Proof"
-        └─ Option A: Local (WASM) — ~60–180s, fully private
-        └─ Option B: Bonsai (cloud) — ~5–15s, ⚠️ Bonsai sees your signature
-        └─ Progress bar
-
-Step 7: "Submit Claim"
-        └─ Option A: Submit directly (recipient needs ETH on Base)
-        └─ Option B: Submit via relayer (gasless)
-
-Step 8: "Claim Complete!" ✓
-        └─ Shows tx hash, link to BaseScan
-        └─ "Your qualified address is NOT linked to your recipient address"
+```json
+{
+  "version": 1,
+  "proof": "0x...stark_proof_hex",
+  "journal": "0x...journal_hex",
+  "nullifier": "0x4a7f...e2c1",
+  "recipient": "0xRecip...EntAddress",
+  "claimAmount": "7692307000000000000",
+  "contractAddress": "0xAirdrop...Contract",
+  "chainId": 8453,
+  "claimDeadline": 1767225600
+}
 ```
 
-### 8.4 Technology Stack
+> The proof file is self-contained. Anyone can submit it to the contract. The relayer cannot modify any field without invalidating the proof.
+
+### 8.4 `zkmist submit` — On-Chain Submission
+
+```
+$ zkmist submit ./zkmist_proof_2026-05-03.json
+
+Contract:  0xAirdrop...Contract (Base)
+Recipient: 0xRecip...EntAddress
+Amount:    7.69 ZKM
+Gas cost:  ~$0.01–0.07 (Base)
+Nullifier: 0x4a7f...e2c1
+
+Submit? [Y/n] Y
+
+Transaction: 0xabc123...
+Block:       12345678
+Gas used:    1,520,000
+Cost:        $0.07
+
+✓ Claimed! 7.69 ZKM → 0xRecip...EntAddress
+```
+
+### 8.5 Relayer Ecosystem
+
+The contract is permissionless. Anyone can build a relayer:
+
+```
+Relayer service (built by anyone):
+
+1. User sends proof.json to the relayer (API, Telegram bot, web form, etc.)
+2. Relayer validates the proof locally (optional but recommended)
+3. Relayer submits the claim on Base, paying gas
+4. Relayer may charge a fee (deducted from the claim, or paid separately)
+
+The relayer CANNOT:
+  - Modify the recipient (proof would be invalid)
+  - Modify the nullifier (proof would be invalid)
+  - Claim the tokens for themselves (recipient is bound to the proof)
+  - Learn the qualified address (it's a private input to the zkVM)
+```
+
+### 8.6 Technology Stack
 
 | Layer | Choice |
 |-------|--------|
 | **zkVM** | RISC Zero (risc0-zkvm) |
 | **Guest Program** | Rust (compiled to RISC-V) |
-| **Proof System** | STARK (RISC Zero) with optional Groth16 wrapper for gas reduction |
-| **Crypto Libraries** | `k256` (secp256k1), `sha2` (SHA-256), `poseidon` |
+| **Proof System** | STARK (RISC Zero native) |
+| **Crypto Libraries** | `k256` (secp256k1), `sha2`, `tiny-keccak` |
 | **CLI Tool** | Rust |
-| **Web dApp** | Next.js / React + RISC Zero WASM |
-| **Cloud Proving** | Bonsai (RISC Zero) — optional |
-| **Wallet Connect** | RainbowKit / wagmi / viem |
 | **Chain** | Base (Chain ID: 8453) |
 | **Data Publishing** | IPFS (Pinata) + GitHub mirror |
-| **Relayer (optional)** | Gelato / custom |
-| **Hosting** | Vercel / IPFS |
-| **Style** | TailwindCSS |
 
 ---
 
@@ -881,10 +762,10 @@ Step 8: "Claim Complete!" ✓
 |-------|-------|-------------|
 | **Snapshot** | T-30 days | BigQuery extraction finalized; eligibility list published |
 | **Publication** | T-14 days | Eligibility list + Merkle root + guest program source published for audit |
-| **Contract Deployment** | T-7 days | ZKM + Airdrop contracts deployed on Base; tokens funded |
-| **Claim Window Opens** | T+0 | Claim period begins |
-| **Claim Window Closes** | T+90 days | No more claims accepted |
-| **Unclaimed Withdrawal** | T+97 days | Admin withdraws unclaimed tokens to treasury |
+| **Contract Deployment** | T-7 days | ZKM + Verifier + Airdrop contracts deployed on Base; tokens funded |
+| **Claim Window Opens** | T+0 | `block.timestamp >= deployment` — claims accepted |
+| **Claim Window Closes** | T+90 days | `block.timestamp > claimDeadline` — claims rejected |
+| **Post-close** | Indefinite | Contract sits with unclaimed tokens. No admin. Immutable. |
 
 ---
 
@@ -894,33 +775,32 @@ Step 8: "Claim Complete!" ✓
 
 | Measure | Details |
 |---------|---------|
-| **Audit** | Engage a reputable auditor (e.g., Trail of Bits, Spearbit, Cyfrin) before mainnet deployment |
-| **Test Coverage** | ≥ 95% line coverage on all contracts |
-| **Guest Program Audit** | Audit the Rust guest program source code (readable, not constraints) |
-| **Pause Mechanism** | Admin can pause claims if vulnerability discovered |
-| **No Upgradeability** | Immutable contracts (no proxy pattern) — simplicity is security |
-| **Renounce Admin** | Admin role can be renounced after claim period |
+| **Audit** | External audit (Trail of Bits, Spearbit, Cyfrin) before mainnet deployment |
+| **Test Coverage** | ≥ 95% line coverage |
+| **Guest Program Audit** | Audit the Rust source (readable, ~80 lines of logic) |
+| **Immutability** | No admin, no owner, no pause, no upgrade — maximum security through simplicity |
+| **No admin keys** | No keys to lose, compromise, or abuse |
 
 ### 10.2 Privacy Security
 
 | Measure | Details |
 |---------|--------|
-| **Private key never leaves local machine** | zkVM execution is entirely local (CLI or browser WASM). |
-| **No server dependency** | No Proof API, no backend. All data is published on IPFS. |
-| **No trusted setup** | STARK-based proving — no ceremony, no toxic waste. |
-| **Deterministic nullifier** | Prevents double-claim without requiring server-side state. |
-| **Front-running impossible** | Recipient is committed to the journal, which is part of the STARK proof. |
-| **Bonsai privacy trade-off** | Bonsai (cloud proving) sees the signature. Display warning. Local proving is fully private. |
-| **User Guidance** | Clear warnings about not linking addresses via on-chain transfers. |
+| **Private key never leaves machine** | zkVM execution is entirely local |
+| **No server dependency** | All data on IPFS. No API, no backend. |
+| **No trusted setup** | STARK-based. No ceremony, no toxic waste. |
+| **Deterministic nullifier** | Prevents double-claim. No server state needed. |
+| **Front-running impossible** | Recipient is committed to the journal. |
+| **Relayer learns nothing** | Relayer sees {proof, nullifier, recipient} — same as on-chain. |
 
-### 10.3 Operational Security
+### 10.3 Immutability Benefits
 
-| Measure | Details |
-|---------|---------|
-| **Multisig for Admin** | Admin address is a 3-of-5 multisig (e.g., Safe) |
-| **Timelock for Withdrawal** | Unclaimed withdrawal has a 7-day delay |
-| **Monitoring** | On-chain monitoring for unusual claim patterns |
-| **Bug Bounty** | Post-launch bounty program via Immunefi |
+| Property | Why it matters |
+|----------|----------------|
+| **No admin to compromise** | No private keys to steal, no multisig to social-engineer |
+| **No pause function** | Claims cannot be stopped, censored, or delayed |
+| **No upgrade path** | Logic cannot be changed after deployment |
+| **Trustless** | Users don't need to trust the ZKMist team — the code is the contract |
+| **Permanent** | The contract exists as long as Base chain exists |
 
 ---
 
@@ -929,31 +809,23 @@ Step 8: "Claim Complete!" ✓
 | Spec | Value |
 |------|-------|
 | **Chain** | Base (Chain ID: 8453) |
-| **Token Standard** | ERC-20 |
-| **Token Name** | ZKMist |
-| **Token Symbol** | ZKM |
-| **Token Decimals** | 18 |
-| **Total Supply** | 1,000,000,000 (1B) |
+| **Token** | ZKMist (ZKM), ERC-20, 18 decimals, 1B supply |
 | **Proof System** | RISC Zero zkVM (STARK) |
 | **Guest Program** | Rust, compiled to RISC-V ELF |
-| **Trusted Setup** | **None** (STARK-based) |
-| **Merkle Tree Hash** | SHA-256 (interior nodes), Poseidon (leaf) |
-| **Merkle Tree Depth** | 26 levels (65M leaves, padded to 2²⁶) |
-| **Merkle Proof Size** | 26 × 32 bytes = 832 bytes per claim |
-| **Nullifier (CLI)** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
-| **Nullifier (Web)** | sha256(signature_r ∥ "ZKMist_V1_NULLIFIER") |
-| **Claim Amount** | 7.69 ZKM (constant — uniform for all 65M addresses) |
-| **Claim Modes** | 0: Private key (CLI), 1: Wallet signature (Web dApp) |
+| **Trusted Setup** | **None** |
+| **Merkle Tree** | 26 levels, 65M leaves, Poseidon leaf hash, SHA-256 interior |
+| **Nullifier** | `sha256(privateKey ∥ "ZKMist_V1_NULLIFIER")` |
+| **Claim Amount** | ~7.69 ZKM (uniform, hardcoded at deploy) |
+| **Claim Deadline** | 90 days after deployment |
 | **On-chain Verification** | RISC Zero STARK verifier + journal validation |
-| **Proof Generation (local)** | ~30–90s (CLI), ~60–180s (browser WASM) |
-| **Proof Generation (Bonsai)** | ~5–15s (cloud, privacy trade-off) |
-| **Claim Method** | Anyone submits proof — msg.sender irrelevant |
-| **Claim Period** | 90 days |
-| **Gas Target** | < $0.50 per claim (~300K gas with Groth16 wrapper, ~1.5M gas raw STARK) |
+| **Proof Generation** | Local only, ~30–90s |
+| **Gas (raw STARK)** | ~1,500,000 (~$0.07) |
+| **Gas (Groth16 wrapper)** | ~300,000 (~$0.015) — optional optimization |
 | **Solidity Version** | ^0.8.24 |
-| **Eligibility Data Source** | Google BigQuery |
+| **Contract Mutability** | **Fully immutable** — no admin, no owner, no pause |
+| **Eligibility** | ≥0.004 ETH gas fees on mainnet before 2026-01-01 |
 | **Qualified Addresses** | ~65,000,000 |
-| **Data Distribution** | IPFS (chunked CSV) + GitHub mirror |
+| **Data Distribution** | IPFS + GitHub mirror |
 
 ---
 
@@ -964,16 +836,14 @@ Step 8: "Claim Complete!" ✓
 | 1 | Run final BigQuery extraction & validate ~65M address list | Week 1 |
 | 2 | Build Merkle tree, compute root, publish to IPFS | Week 2 |
 | 3 | Write RISC Zero guest program (Rust) + test with small tree | Weeks 2–3 |
-| 4 | Develop & test smart contracts (ZKMToken + Verifier + ZKMAirdrop) | Weeks 3–4 |
-| 5 | Build CLI tool (download list → stream tree → generate proof → submit) | Weeks 3–4 |
-| 6 | Build web dApp (wallet signature → proof generation → submit) | Weeks 4–6 |
-| 7 | Internal security review + testnet deployment | Week 6 |
-| 8 | External audit (guest program + contracts) | Weeks 6–8 |
-| 9 | Set up Bonsai integration (optional cloud proving for web dApp) | Week 7 |
-| 10 | Deploy to Base mainnet | Week 9 |
-| 11 | Open claim window | Week 9 |
-| 12 | Close claim window + withdraw unclaimed | Week 22 |
-| 13 | Renounce admin / decentralize | Week 23 |
+| 4 | Develop & test immutable contracts (ZKMToken + Verifier + ZKMAirdrop) | Weeks 3–4 |
+| 5 | Build CLI tool (fetch → prove → submit) | Weeks 3–4 |
+| 6 | Internal security review + testnet deployment | Week 5 |
+| 7 | External audit (guest program + contracts) | Weeks 5–7 |
+| 8 | Deploy to Base mainnet (immutable, no admin) | Week 8 |
+| 9 | Publish all artifacts (IPFS + GitHub) | Week 8 |
+| 10 | Claim window runs for 90 days | Weeks 8–21 |
+| 11 | Post-close: contract remains with unclaimed tokens | Indefinite |
 
 ---
 
@@ -981,24 +851,20 @@ Step 8: "Claim Complete!" ✓
 
 | # | Question | Status |
 |---|----------|--------|
-| 1 | What is the exact eligibility criteria / snapshot source? | ✅ **Resolved** — ≥ 0.004 ETH cumulative gas fees on Ethereum mainnet before 2026-01-01 UTC. |
-| 2 | Will claim amounts be uniform or tiered? | ✅ **Resolved** — Uniform (~7.69 ZKM per address). |
-| 3 | Proof system: circom+Groth16 vs RISC Zero? | ✅ **Resolved** — RISC Zero zkVM. Eliminates trusted setup, enables web dApp via wallet signatures, produces auditable Rust code. |
-| 4 | Will a relayer service be built or use an existing one (Gelato)? | 🔲 Pending |
-| 5 | Should the eligibility list be updatable (e.g., to fix errors)? | 🔲 Pending (recommend no — fixed list) |
-| 6 | What happens to unclaimed tokens after the claim window? | 🔲 Pending (recommend → treasury) |
-| 7 | Will the admin role be fully renounced post-claim? | 🔲 Pending (recommend yes) |
-| 8 | Sybil resistance beyond the 0.004 ETH fee threshold? | ✅ **Resolved** — 0.004 ETH (~$8–12) is a meaningful Sybil filter. |
-| 9 | Token listing strategy — DEX liquidity pool at launch or after claim period? | 🔲 Pending |
-| 10 | Legal / compliance review needed for the airdrop? | 🔲 Pending |
-| 11 | Exact snapshot timestamp/block for 2025-12-31 23:59:59 UTC? | 🔲 Pending |
-| 12 | How to handle addresses that are contracts (smart contracts / multisigs)? | 🔲 Pending (recommend: include all — contracts are eligible too) |
-| 13 | Should Bonsai (cloud proving) be offered as an option for the web dApp? | 🔲 Pending (recommend yes, with privacy warning: Bonsai sees the signature) |
-| 14 | Groth16 wrapper on STARK for lower gas (~300K) or raw STARK (~1.5M gas)? | 🔲 Pending (recommend Groth16 wrapper — cheaper per claim at the cost of a larger verifier contract) |
-| 15 | What if the actual qualified count differs slightly from 65M after final query? | 🔲 Pending (adjust CLAIM_AMOUNT to ensure total = 500M ZKM) |
-| 16 | **Cross-mode double-claim:** Can a user claim via CLI (nullifier from private key) AND web dApp (nullifier from signature r-value) for the same address? | 🔲 **Critical — unresolved.** The nullifiers differ per mode, so both would pass the uniqueness check. Options: (a) accept it (each address gets max 2× claim — budget for 130M claims), (b) store a separate nullifier per mode, (c) make the nullifier mode-agnostic by deriving from the address directly (reduces privacy). |
-| 17 | Guest program keccak256 vs SHA-256 for address derivation? | 🔲 Pending (keccak256 is the Ethereum standard but requires a keccak crate in RISC Zero guest; SHA-256 is native in RISC Zero but doesn't match Ethereum addresses. Recommend keccak256.) |
-| 18 | Should the web dApp download the full list + stream tree (trustless, ~1.3 GB) or use a compact proof index (~520 MB) that maps address → leaf index? | 🔲 Pending (recommend proof index for web dApp, full list for CLI) |
+| 1 | Eligibility criteria / snapshot source? | ✅ **Resolved** — ≥0.004 ETH gas fees on mainnet before 2026-01-01 UTC. |
+| 2 | Uniform or tiered amounts? | ✅ **Resolved** — Uniform (~7.69 ZKM). |
+| 3 | Proof system? | ✅ **Resolved** — RISC Zero zkVM. |
+| 4 | Contract mutability? | ✅ **Resolved** — Fully immutable. No admin, no owner, no pause. |
+| 5 | Web dApp? | ✅ **Resolved** — No web dApp from ZKMist team. Contract is the interface. Anyone can build one. |
+| 6 | Unclaimed tokens? | ✅ **Resolved** — Remain in the contract permanently. No withdrawal function. |
+| 7 | Relayers? | ✅ **Resolved** — Permissionless. Anyone can build one. The proof file is self-contained. |
+| 8 | Token listing strategy? | 🔲 Pending |
+| 9 | Legal / compliance review? | 🔲 Pending |
+| 10 | Exact qualified count (after final BigQuery run)? | 🔲 Pending (determines exact CLAIM_AMOUNT) |
+| 11 | Handle contract addresses (multisigs, smart contracts)? | 🔲 Pending (recommend: include all — they're eligible too) |
+| 12 | Keccak256 in guest program for Ethereum address derivation? | 🔲 Pending (recommend: yes — must match Ethereum's address scheme) |
+| 13 | Gas optimization: raw STARK (~1.5M gas) or Groth16 wrapper (~300K gas)? | 🔲 Pending (recommend: raw STARK for simplicity; Groth16 wrapper if gas is a concern at scale) |
+| 14 | Claim deadline: hardcoded timestamp or block number? | 🔲 Pending (recommend: timestamp — simpler, `block.timestamp <= claimDeadline`) |
 
 ---
 
@@ -1006,17 +872,15 @@ Step 8: "Claim Complete!" ✓
 
 | Term | Definition |
 |------|------------|
-| **Nullifier** | A deterministic hash derived from the private key (CLI mode) or signature r-value (web mode). Used to prevent double-claiming without revealing the qualified address. |
-| **Merkle Tree** | A binary hash tree where each leaf is a Poseidon hash of a qualified Ethereum address. The root is stored on-chain. |
-| **Merkle Proof** | The 26 sibling hashes needed to prove a specific leaf is part of the tree. |
-| **Base Chain** | Coinbase's Ethereum Layer-2 blockchain. |
-| **RISC Zero** | A zero-knowledge virtual machine (zkVM) that proves correct execution of Rust programs compiled to RISC-V. |
-| **Guest Program** | The Rust program that runs inside the RISC Zero zkVM. Equivalent to a "circuit" in other ZK frameworks. |
-| **Journal** | The public output of a RISC Zero guest program execution. Contains the values committed via `env::commit()`. |
-| **Image ID** | A hash identifying a specific guest program binary. Stored on-chain to ensure only the intended program's proofs are accepted. |
-| **STARK** | Scalable Transparent ARgument of Knowledge. A proof system that requires no trusted setup. Used by RISC Zero. |
-| **Bonsai** | RISC Zero's cloud proving service. Generates proofs on behalf of users (faster but less private than local proving). |
-| **Relayer** | A service that submits transactions on behalf of a user. The relayer pays gas; the user only signs a message. |
+| **Nullifier** | `sha256(privateKey ∥ "ZKMist_V1_NULLIFIER")`. Prevents double-claiming without revealing the qualified address. |
+| **Merkle Tree** | Binary hash tree, 26 levels. Each leaf is `poseidon(address)`. Root stored on-chain. |
+| **Merkle Proof** | 26 sibling hashes proving a leaf's membership in the tree. |
+| **RISC Zero** | Zero-knowledge virtual machine that proves correct execution of Rust programs. |
+| **Guest Program** | The Rust program running inside RISC Zero zkVM. Proves address membership and nullifier validity. |
+| **Journal** | Public output of the guest program. Contains `[merkleRoot, nullifier, recipient]`. |
+| **Image ID** | Hash identifying the guest program binary. Hardcoded in the contract. |
+| **STARK** | Scalable Transparent ARgument of Knowledge. Proof system requiring no trusted setup. |
+| **Relayer** | Any third party that submits proofs on behalf of claimants. Operates permissionlessly. |
 
 ---
 
@@ -1024,27 +888,22 @@ Step 8: "Claim Complete!" ✓
 
 ### A. Reference Implementations
 
-- [RISC Zero — zkVM documentation](https://dev.risczero.com/)
-- [RISC Zero — Bonsai cloud proving](https://dev.risczero.com/bonsai/)
-- [circom-ecdsa — ECDSA verification in circom (v2.0 alternative)](https://github.com/0xPARC/circom-ecdsa)
-- [Semaphore Protocol — Privacy-preserving group proofs](https://semaphore.pse.dev/)
+- [RISC Zero Documentation](https://dev.risczero.com/)
+- [RISC Zero Examples (GitHub)](https://github.com/risc0/risc0/tree/main/examples)
+- [k256 Rust crate (secp256k1)](https://crates.io/crates/k256)
 - [Tornado Cash — ZK-based private transactions](https://github.com/tornadocash)
-- [snarkjs — ZK proof generation and verification](https://github.com/iden3/snarkjs)
 
 ### B. Gas Estimation (Base Chain)
 
 | Operation | Estimated Gas | Estimated Cost (Base) |
 |-----------|---------------|------------------------|
 | Deploy ZKMToken | ~1,200,000 | ~$0.05 |
-| Deploy RISC Zero Verifier (STARK) | ~6,000,000 | ~$0.25 |
-| Deploy RISC Zero Verifier (Groth16 wrapper) | ~4,500,000 | ~$0.20 |
+| Deploy RiscZeroVerifier (STARK) | ~6,000,000 | ~$0.25 |
 | Deploy ZKMAirdrop | ~1,000,000 | ~$0.04 |
-| Claim (raw STARK verification) | ~1,500,000 | ~$0.07 |
+| Claim (raw STARK) | ~1,500,000 | ~$0.07 |
 | Claim (Groth16 wrapper) | ~300,000 | ~$0.015 |
-| Nullifier Storage (SSTORE cold) | ~20,000 | ~$0.001 |
 
-> *Gas estimates based on Base average gas price of ~0.1 Gwei & ETH at $3,000.*
-> *The Groth16 wrapper reduces per-claim gas from ~1.5M to ~300K at the cost of a larger verifier deployment. Recommended for 65M+ potential claims.*
+> *Gas estimates based on Base gas price ~0.1 Gwei & ETH at $3,000.*
 
 ### C. Architecture Diagram
 
@@ -1060,63 +919,38 @@ Step 8: "Claim Complete!" ✓
                     │  (CSV on IPFS + GitHub)   │
                     └──────────┬───────────────┘
                                │
+                               ▼
+                    ┌──────────────────────────┐
+                    │  Claimant's Local Machine  │
+                    │                            │
+                    │  $ zkmist fetch            │
+                    │  $ zkmist prove            │
+                    │     → proof.json           │
+                    │                            │
+                    └──────────┬───────────────┘
+                               │ proof.json
                  ┌─────────────┴─────────────┐
                  ▼                           ▼
       ┌──────────────────┐        ┌──────────────────┐
-      │  CLI (Mode 0)     │        │  Web dApp (Mode 1)│
-      │                   │        │                    │
-      │  ① Download list  │        │  ① Connect wallet  │
-      │  ② Stream tree    │        │  ② Sign message    │
-      │  ③ Enter privkey  │        │  ③ Download proof  │
-      │     (hidden)      │        │     chunk           │
-      │  ④ zkVM: derive   │        │  ④ zkVM: ecrecover │
-      │     addr from key │        │     addr from sig   │
-      │  ⑤ Prove + submit │        │  ⑤ Prove + submit  │
-      └──────────┬────────┘        └──────────┬─────────┘
-                 │                            │
-                 └────────────┬───────────────┘
-                              │  STARK proof + journal
-                              │  [merkleRoot, nullifier, recipient]
+      │  Direct submit    │        │  Any relayer      │
+      │  $ zkmist submit  │        │  (permissionless) │
+      └──────────┬────────┘        └────────┬──────────┘
+                 │                          │
+                 └────────────┬─────────────┘
                               ▼
                    ┌────────────────────────┐
-                   │  Base Chain             │
+                   │  ZKMAirdrop (Base)      │
+                   │  IMMUTABLE CONTRACT      │
                    │                          │
-                   │  ZKMAirdrop Contract:    │
-                   │   • Verify STARK proof   │
-                   │   • Validate journal     │
-                   │   • Check nullifier      │
-                   │   • Transfer ZKM         │
+                   │  claim(proof, journal,   │
+                   │        nullifier, recip) │
                    │                          │
-                   │  On-chain sees:          │
-                   │   ✓ nullifier (opaque)   │
-                   │   ✓ recipient address    │
-                   │   ✗ qualified address    │
+                   │  ✗ qualified addr hidden │
+                   │  ✓ nullifier + recipient │
+                   │  No admin. No pause.     │
                    └────────────────────────┘
 ```
 
-### D. Cross-Mode Double-Claim Analysis (Open Question #16)
-
-The most critical unresolved issue: **can a user claim twice by using both modes?**
-
-```
-CLI mode nullifier:   sha256(privateKey || "ZKMist_V1_NULLIFIER")
-Web dApp nullifier:   sha256(signature_r || "ZKMist_V1_NULLIFIER")
-```
-
-These produce **different nullifiers** for the same address because they're derived from different inputs (private key vs signature r-value). The contract cannot detect that both nullifiers belong to the same address.
-
-**Options:**
-
-| Option | Description | Trade-off |
-|--------|-------------|-----------|
-| **A. Accept 2× claims** | Budget for up to 130M claims (reduce per-address amount to ~3.85 ZKM) | Simplest; all addresses treated equally |
-| **B. Separate nullifier namespaces** | Contract tracks `usedNullifiersCLI` and `usedNullifiersWeb` separately; each address can claim once per mode | Still allows 2× claims per address |
-| **C. Derive nullifier from address** | `nullifier = sha256(address || domain)` — same regardless of mode | **Breaks privacy** — address is no longer hidden (it's the nullifier pre-image) |
-| **D. Require same nullifier derivation** | Both modes must produce the same nullifier. Web mode signs a message that includes a nullifier commitment; the nullifier is derived from the private key even in web mode. | Requires a way to derive the nullifier from the private key in web mode without exposing the key. Possible: user signs `(nullifier_seed, recipient)` where `nullifier_seed = sha256(privateKey || domain)` — but this requires computing the seed off-circuit, which means the web dApp needs the private key. Circular. |
-| **E. Single mode only** | Only offer web dApp mode (wallet signature). No CLI mode. | Simplest. No cross-mode issue. But removes power-user option. |
-
-> **Recommendation:** Option A (accept 2× claims, reduce per-address to ~3.85 ZKM) or Option E (web-only). The privacy loss from Option C is unacceptable. Option D is technically circular.
-
 ---
 
-*End of PRD v3.0*
+*End of PRD v4.0*
