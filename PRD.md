@@ -1,6 +1,6 @@
 # ZKMist (ZKM) — Product Requirements Document
 
-**Version:** 5.0  
+**Version:** 5.1  
 **Date:** 2026-05-03  
 **Status:** Draft  
 **Author:** ZKMist Community  
@@ -13,7 +13,7 @@
 
 ZKMist (ticker: **ZKM**) is a **fully community-owned, fairly launched** ERC-20 token on **Base Chain**. There is no team allocation, no treasury, no investor share, and no pre-mine. Every ZKM token in existence was claimed by a member of the Ethereum community through a privacy-preserving airdrop.
 
-~65 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Each claimant receives **10,000 ZKM** — no more, no less. The token supply is determined entirely by how many people claim: up to **1 billion ZKM** across up to **1 million claimants**. Claims close at end of 2026 or when 1 million claims are reached, whichever comes first.
+~65 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Each claimant receives **10,000 ZKM** — no more, no less. The token supply is determined entirely by how many people claim: up to **10 billion ZKM** across up to **1 million claimants**. Claims close on 2027-01-01 or when 1 million claims are reached, whichever comes first.
 
 The claiming process is **anonymous** — the qualified address is never linked to the receiving address. Claimants generate zero-knowledge proofs locally using the RISC Zero zkVM and submit them to a fully immutable, adminless contract.
 
@@ -226,7 +226,18 @@ Final Eligibility List
 | **Leaf** | `poseidon(address)` |
 | **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
 | **Interior hash** | Poseidon |
+| **Poseidon params** | `risc0-zkvm` default: BN254 scalar field, `t = 3`, `R = 8` (Poseidon2) |
+| **Padding** | Empty leaves set to `[0u8; 32]` |
 | **Root** | Hardcoded in the airdrop contract |
+
+**Poseidon parameters:**
+
+- **Field:** BN254 scalar field (`p = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001`)
+- **t (width):** 3 (2 inputs per round for interior nodes: `hash(left, right)`)
+- **R (rounds):** 8 full rounds + 57 partial rounds (RISC Zero default)
+- **Leaf hash:** `poseidon(address_as_field_element)` — the 20-byte address is zero-padded to 32 bytes and interpreted as a field element
+- **Interior hash:** `poseidon(left_child, right_child)` — each node is the Poseidon hash of its two children
+- **Implementation:** Use the `risc0-zkvm` built-in Poseidon accelerator or the `poseidon` crate compatible with RISC Zero's parameters
 
 ### 5.4 Eligibility List Format
 
@@ -413,6 +424,50 @@ fn compute_nullifier(key: &[u8; 32]) -> [u8; 32] {
     h.update(key);
     h.update(DOMAIN_SEPARATOR);
     h.finalize().into()
+}
+
+/// Hash a 20-byte Ethereum address into a 32-byte Poseidon leaf.
+/// The address is zero-padded to 32 bytes and interpreted as a BN254 field element.
+fn poseidon_hash_address(addr: &[u8; 20]) -> [u8; 32] {
+    let mut padded = [0u8; 32];
+    padded[12..32].copy_from_slice(addr);
+    // Use RISC Zero's built-in Poseidon accelerator (single-input preimage)
+    // Equivalent to: poseidon(padded_as_field_element)
+    poseidon_hash_single(&padded)
+}
+
+/// Compute the Merkle root by hashing siblings up the tree.
+/// At each level: if path_index is 0 (left), computed = poseidon(computed, sibling)
+///               if path_index is 1 (right), computed = poseidon(sibling, computed)
+fn compute_merkle_root(
+    leaf: &[u8; 32],
+    siblings: &[[u8; 32]; TREE_DEPTH],
+    path_indices: &[bool; TREE_DEPTH],
+) -> [u8; 32] {
+    let mut current = *leaf;
+    for i in 0..TREE_DEPTH {
+        let (left, right) = if path_indices[i] {
+            (siblings[i], current)
+        } else {
+            (current, siblings[i])
+        };
+        current = poseidon_hash_pair(&left, &right);
+    }
+    current
+}
+
+/// Poseidon hash of a single field element (used for leaf hashing).
+/// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
+fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
+    // Leverages RISC Zero's Poseidon accelerator for fast proving
+    // See: https://dev.risczero.com/api/zkvm/accelerators
+    todo!("Use risc0-zkvm Poseidon guest accelerator or poseidon crate")
+}
+
+/// Poseidon hash of two field elements (used for interior node hashing).
+/// Uses BN254 scalar field, t=3, R=8+57 rounds (RISC Zero default).
+fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    todo!("Use risc0-zkvm Poseidon guest accelerator or poseidon crate")
 }
 ```
 
@@ -706,7 +761,7 @@ Cannot:
 | T-14d | List + Merkle root + guest program source published for audit |
 | T-7d | Contracts deployed on Base |
 | T+0 | Claims open |
-| T+90d or 1M claims | Claims close (whichever comes first) |
+| T+deadline or 1M claims | Claims close at 2027-01-01 00:00:00 UTC or 1M claims, whichever comes first |
 | Post-close | Contract remains immutable forever. No more ZKM can be minted. |
 
 ---
