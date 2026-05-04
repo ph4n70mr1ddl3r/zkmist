@@ -173,6 +173,7 @@ With ~65 million eligible addresses and a cap of 1 million claimants, ZKMist has
 | **Information advantage** | Those who discover ZKMist early have more time and less competition. Early claimants face a lower risk of the cap being reached. |
 | **Effort-reward structure** | The claiming process rewards technical competence and proactive engagement — qualities valued in the Ethereum community. |
 | **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier (1.3 GB download, 4 GB RAM, ~90s proving time per claim), mass Sybil farming is inconvenient but not impossible for a well-funded actor. The design raises the cost sufficiently to deter casual farming. |
+| **Gas auction risk near cap** | As `totalClaims` approaches 1M, late claimants may engage in priority-fee bidding wars to secure one of the final slots. This could price out users despite holding a valid proof. Accepted as inherent to first-come-first-served on-chain markets. |
 
 **This is not equally accessible to all 65M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
 
@@ -394,6 +395,7 @@ nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
 | **Not precomputable** | Requires the private key, not in the published list |
 | **Not reversible** | Cannot recover key or address from nullifier |
 | **Unique per address** | Different keys → different nullifiers |
+| **Versioned** | Domain separator `"ZKMist_V1_NULLIFIER"` encodes the protocol version. If a V2 contract is ever deployed (new guest program, new Merkle tree), it would use `"ZKMist_V2_NULLIFIER"` so V1 nullifiers cannot be replayed on V2. |
 
 ### 6.5 Guest Program (Rust)
 
@@ -575,6 +577,7 @@ fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
    - Prompts for private key (hidden input)
    - Prompts for recipient address
    - **⚠️ Recipient is irrevocable.** Once the proof is generated, tokens can only ever be minted to this address. If the recipient is wrong, you cannot re-claim — your nullifier is consumed. Triple-check before confirming.
+   - **⚠️ Recipient must not be the zero address (`0x0`).** Tokens minted to `address(0)` are irreversibly burned. The CLI MUST validate this before starting the (expensive) proof generation, not leave it to the zkVM assertion which would waste ~45–90s of proving time.
    - Stream-builds Merkle tree (~1–2 min, ~4 GB RAM required)
    - Runs RISC Zero zkVM (~30–90s)
    - Saves `proof.json`
@@ -681,6 +684,9 @@ contract ZKMToken is ERC20 {
     }
 
     /// @notice Burn tokens from an approved address. Permanently reduces total supply.
+    /// Note: Uses manual allowance update (_approve) instead of OpenZeppelin's _spendAllowance()
+    /// because _burn() does not touch allowances. Both approaches are functionally equivalent;
+    /// _spendAllowance is the more conventional OZ pattern and may be preferred during audit.
     function burnFrom(address account, uint256 amount) external {
         uint256 currentAllowance = allowance(account, msg.sender);
         require(currentAllowance >= amount, "ERC20: insufficient allowance");
@@ -697,6 +703,9 @@ contract ZKMToken is ERC20 {
 ```solidity
 contract ZKMAirdrop {
     ZKMToken public immutable token;
+    // MUST be the Groth16 verifier variant (RiscZeroGroth16Verifier), not the raw STARK verifier.
+    // The Groth16 verifier internally compresses the user's STARK proof for cheap on-chain
+    // verification (~400K gas vs. ~1.5M for raw STARK). Uses the IRiscZeroVerifier interface.
     IRiscZeroVerifier public immutable verifier;
     bytes32 public immutable imageId;
     bytes32 public immutable merkleRoot;
@@ -1089,7 +1098,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | 8 | Proof system? | ✅ RISC Zero zkVM |
 | 9 | Unclaimed supply? | ✅ Never minted. Supply = claims × 10,000. |
 | 10 | Exact qualified count after final BigQuery run? | 🔲 Pending — final BigQuery run scheduled for T-30d |
-| 11 | Keccak256 in guest program for address derivation? | 🔲 Pending (recommend: yes) — must be resolved before guest program freeze at T-14d |
+| 11 | Keccak256 in guest program for address derivation? | ✅ Resolved — `tiny-keccak` v2 is confirmed and compiles for `riscv32im-risc0-zkvm-elf`. Use `Keccak::v256()` hasher API (not the removed `keccak256()` direct function). See #17 for full API migration notes. |
 | 12 | Contract addresses (multisigs) eligible? | ✅ Ineligible by design — claiming requires a private key to derive address + generate nullifier. Contract wallets appear in the list but cannot claim. |
 | 13 | Poseidon API: does the guest program's Poseidon output match the off-chain Merkle tree builder? | ✅ **Resolved** — RISC Zero's Poseidon accelerator uses BabyBear (wrong field). Use `light-poseidon` crate (pure Rust, BN254, `no_std`) in BOTH guest program and CLI tree builder. Leaf: t=2 (R_F=8, R_P=56). Interior: t=3 (R_F=8, R_P=57). ~2.7M cycles total — negligible. Must still validate with end-to-end testnet test before T-14d. |
 | 14 | Journal digest: does `sha256(raw_journal_bytes)` match the deployed `IRiscZeroVerifier`'s expected digest scheme? | ✅ **Resolved** — Confirmed correct by reading RISC Zero source. Rust `Journal::digest()` = `Sha256::hash_bytes(&self.bytes)`. Solidity `bytes32(sha256(_journal))` matches. The `RiscZeroGroth16Verifier.verify(seal, imageId, journalDigest)` takes the digest as-is and wraps it in `ReceiptClaimLib.ok(imageId, journalDigest).digest()`. End-to-end testnet test still recommended before mainnet. |
@@ -1208,7 +1217,7 @@ leaf    = poseidon(Fr::from_be_bytes_mod_order(padded))
 5. Run the full guest program with these inputs → verify journal is exactly 84 bytes:
    - `[0:32]` = merkleRoot
    - `[32:64]` = nullifier
-   - `[64:84]` = recipient (padded to 32 bytes in the field element representation)
+   - `[64:84]` = recipient (20 bytes, raw address — NOT padded to 32 bytes)
 6. Submit to a local Base fork → verify `claim()` succeeds and mints 10,000 ZKM
 
 **Field element edge case test:**
@@ -1219,6 +1228,9 @@ An address like `0x0000000000000000000000000000000000000001` produces a very sma
 The RISC Zero guest program requires specific build configuration to compile for the `riscv32im-risc0-zkvm-elf` target. The following files must be present in the guest program's Cargo workspace.
 
 **`.cargo/config.toml`** (in the guest program crate root):
+
+> ⚠️ **Note on `[build] target`:** Setting a global `[build] target` causes `cargo build` to always target riscv32, which can break host-side tooling (tests, runners) in the same workspace. Standard RISC Zero practice is to keep only the `runner` and `rustflags` in `.cargo/config.toml` and let `cargo risczero build` select the target. If you must keep `[build] target`, isolate the guest program in a separate workspace member where no host code is compiled.
+
 ```toml
 [target.riscv32im-risc0-zkvm-elf]
 runner = "cargo run --bin zkmist-guest-runner"
