@@ -173,7 +173,7 @@ With ~65 million eligible addresses and a cap of 1 million claimants, ZKMist has
 | **Information advantage** | Those who discover ZKMist early have more time and less competition. Early claimants face a lower risk of the cap being reached. |
 | **Effort-reward structure** | The claiming process rewards technical competence and proactive engagement — qualities valued in the Ethereum community. |
 | **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier (1.3 GB download, 4 GB RAM, ~90s proving time per claim), mass Sybil farming is inconvenient but not impossible for a well-funded actor. The design raises the cost sufficiently to deter casual farming. |
-| **Gas auction risk near cap** | As `totalClaims` approaches 1M, late claimants may engage in priority-fee bidding wars to secure one of the final slots. This could price out users despite holding a valid proof. Accepted as inherent to first-come-first-served on-chain markets. |
+| **Gas auction risk near cap** | As `totalClaims` approaches 1M, late claimants may engage in priority-fee bidding wars to secure one of the final slots. This could price out users despite holding a valid proof. Additionally, multiple valid claims in the same final block may push `totalClaims` past the cap — only the first N claims that fit under the cap succeed, and the rest revert, wasting their proofs. Accepted as inherent to first-come-first-served on-chain markets. |
 
 **This is not equally accessible to all 65M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
 
@@ -261,7 +261,7 @@ Final Eligibility List
 | **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
 | **Interior hash** | Poseidon — t=3, R_F=8, R_P=57 |
 | **Poseidon params** | BN254 scalar field, x^5 S-box. Leaf: `light-poseidon` Circom t=2 (1 input). Interior: `light-poseidon` Circom t=3 (2 inputs). |
-| **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf) |
+| **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf). Note: the sentinel's raw bytes are larger than the BN254 scalar field modulus (`p ≈ 2^254`), so `Fr::from_be_bytes_mod_order()` would reduce it modulo p. However, the guest program compares the 32-byte Poseidon output (a field element) against the raw sentinel bytes — a Poseidon hash can never equal the sentinel, so the comparison is safe. Do not compare sentinel as a field element. |
 | **Root** | Hardcoded in the airdrop contract |
 
 **Poseidon parameters:**
@@ -684,13 +684,9 @@ contract ZKMToken is ERC20 {
     }
 
     /// @notice Burn tokens from an approved address. Permanently reduces total supply.
-    /// Note: Uses manual allowance update (_approve) instead of OpenZeppelin's _spendAllowance()
-    /// because _burn() does not touch allowances. Both approaches are functionally equivalent;
-    /// _spendAllowance is the more conventional OZ pattern and may be preferred during audit.
+    /// Uses OpenZeppelin's _spendAllowance() which handles the allowance check and decrement.
     function burnFrom(address account, uint256 amount) external {
-        uint256 currentAllowance = allowance(account, msg.sender);
-        require(currentAllowance >= amount, "ERC20: insufficient allowance");
-        _approve(account, msg.sender, currentAllowance - amount);
+        _spendAllowance(account, msg.sender, amount);
         _burn(account, amount);
     }
 }
@@ -817,8 +813,8 @@ contract ZKMAirdrop {
 ### 8.1 Commands
 
 ```
-zkmist fetch                  Download eligibility list from IPFS (~1.3 GB)
-zkmist prove                  Generate ZK proof (interactive)
+zkmist fetch                  Download eligibility list from IPFS (~1.3 GB). Builds and caches the Merkle tree locally so `prove` doesn't need to rebuild it. Falls back to GitHub mirror if IPFS is unavailable.
+zkmist prove                  Generate ZK proof (interactive). Uses the cached Merkle tree from `fetch` — does not rebuild from scratch.
 zkmist submit <proof.json>    Submit proof to ZKMAirdrop contract
 zkmist verify <proof.json>    Verify proof locally: validates the STARK proof and checks that the journal contains the expected merkleRoot, nullifier, and recipient
 zkmist check <address>        Check if address is eligible (requires downloaded eligibility list — see §8.7)
