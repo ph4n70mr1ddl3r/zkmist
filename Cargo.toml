@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "guest",
+    "cli",
+    "merkle-tree",
+]
+resolver = "2"

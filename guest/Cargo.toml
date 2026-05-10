@@ -1,0 +1,13 @@
+[package]
+name = "zkmist-guest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+light-poseidon = "0.4"
+risc0-zkvm = { version = "5.0.0-rc.1", default-features = false, features = ["std"] }
+sha2 = "0.10"
+tiny-keccak = { version = "2.0", features = ["keccak"] }

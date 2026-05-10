@@ -1,0 +1,12 @@
+[target.riscv32im-risc0-zkvm-elf]
+runner = "cargo run --bin zkmist-guest-runner"
+
+[build]
+target = "riscv32im-risc0-zkvm-elf"
+
+[unstable]
+build-std = ["core", "alloc"]
+
+# Required for getrandom 0.3+ on riscv32 targets without OS support.
+# RISC Zero provides a custom entropy source via the zkVM environment.
+rustflags = ["-C", "getrandom_backend=custom"]

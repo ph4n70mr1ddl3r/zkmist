@@ -1,0 +1,12 @@
+[package]
+name = "zkmist-merkle-tree"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+light-poseidon = "0.4"
+
+[dev-dependencies]
+hex = "0.4"

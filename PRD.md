@@ -1,7 +1,7 @@
 # ZKMist (ZKM) — Product Requirements Document
 
-**Version:** 6.0  
-**Date:** 2026-05-03  
+**Version:** 6.1  
+**Date:** 2026-05-11  
 **Status:** Draft  
 **Author:** ZKMist Community  
 
@@ -264,6 +264,15 @@ Final Eligibility List
 | **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf). Note: the sentinel's raw bytes are larger than the BN254 scalar field modulus (`p ≈ 2^254`), so `Fr::from_be_bytes_mod_order()` would reduce it modulo p. However, the guest program compares the 32-byte Poseidon output (a field element) against the raw sentinel bytes — a Poseidon hash can never equal the sentinel, so the comparison is safe. Do not compare sentinel as a field element. |
 | **Root** | Hardcoded in the airdrop contract |
 
+**Merkle path direction convention:**
+
+| `path_index[i]` | Position of current node | Parent hash |
+|-----------------|--------------------------|-------------|
+| `0` | Left child | `poseidon(current, sibling)` |
+| `1` | Right child | `poseidon(sibling, current)` |
+
+This convention MUST be identical in the guest program, CLI tree builder, and any third-party Merkle proof generation. A mismatch will produce a different root and cause all proofs to be rejected on-chain.
+
 **Poseidon parameters:**
 
 - **Field:** BN254 scalar field (`p = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001`)
@@ -405,7 +414,12 @@ nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
 #![no_main]
 risc0_zkvm::guest::entry!(main);
 
+use ark_bn254::Fr;
+use k256::ecdsa::{SigningKey, VerifyingKey};
+use light_poseidon::{Poseidon, PoseidonHasher};
+use risc0_zkvm::guest::env;
 use sha2::{Digest, Sha256};
+use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 const TREE_DEPTH: usize = 26;
 const DOMAIN_SEPARATOR: &[u8] = b"ZKMist_V1_NULLIFIER";
@@ -428,7 +442,13 @@ pub fn main() {
     // Derive Ethereum address
     let address = derive_address(&private_key);
 
-    // Merkle membership proof
+    // Merkle membership proof.
+    //
+    // path_index convention:
+    //   path_index[i] = 0 → current node is the LEFT child at level i
+    //                     → parent = poseidon(current, sibling)
+    //   path_index[i] = 1 → current node is the RIGHT child at level i
+    //                     → parent = poseidon(sibling, current)
     let mut siblings: [[u8; 32]; TREE_DEPTH] = [[0u8; 32]; TREE_DEPTH];
     let mut path_indices: [u8; TREE_DEPTH] = [0u8; TREE_DEPTH];
     for i in 0..TREE_DEPTH {
@@ -440,30 +460,45 @@ pub fn main() {
     // initialization overhead inside the 26-level Merkle path verification.
     // Each hasher construction involves fixed-string round constant allocation;
     // reusing a single instance across all 26 levels saves ~2.6M–5.2M RISC-V cycles.
-    let leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-    let interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+    //
+    // NOTE: Poseidon::hash() requires &mut self (light-poseidon v0.4.x internal
+    // state mutation for sponge absorption). Hashers MUST be declared mutable.
+    let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+    let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
 
     // Compute leaf and verify Merkle membership
-    let leaf = poseidon_hash_address_with(&address, &leaf_hasher);
+    let leaf = poseidon_hash_address_with(&address, &mut leaf_hasher);
     assert!(leaf != PADDING_SENTINEL, "Padding leaf — not a valid claimant");
-    let computed_root = compute_merkle_root_with(&leaf, &siblings, &path_indices, &interior_hasher);
+    let computed_root = compute_merkle_root_with(&leaf, &siblings, &path_indices, &mut interior_hasher);
     assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
 
     // Verify nullifier
     let expected = compute_nullifier(&private_key);
     assert_eq!(nullifier, expected, "Invalid nullifier");
 
-    // Commit outputs
+    // Commit outputs to journal.
+    // ⚠️  CRITICAL: The Solidity contract slices the journal bytes directly:
+    //     journal[0:32]   = merkleRoot
+    //     journal[32:64]  = nullifier
+    //     journal[64:84]  = recipient (raw 20 bytes, NOT padded to 32)
+    // Total journal must be exactly 84 bytes. This requires that env::commit()
+    // writes raw bytes without length prefixes or padding. Verified for
+    // risc0-zkvm v5.0.0: commit() uses serde with a custom serializer that
+    // writes [u8; N] arrays as N raw bytes (no varint length prefix).
+    // Must be re-verified end-to-end before mainnet deployment.
     env::commit(&merkle_root);
     env::commit(&nullifier);
     env::commit(&recipient);
 }
 
 fn derive_address(key: &[u8; 32]) -> [u8; 20] {
-    let sk = k256::ecdsa::SigningKey::from_bytes(key).expect("Invalid key");
-    let vk = k256::ecdsa::VerifyingKey::from(&sk);
+    let sk = SigningKey::from_slice(key).expect("Invalid key");
+    let vk = VerifyingKey::from(&sk);
     let point = vk.to_encoded_point(false);
-    let hash = keccak256(&point.as_bytes()[1..65]);
+    let mut hasher = Keccak::v256();
+    hasher.update(&point.as_bytes()[1..65]);
+    let mut hash = [0u8; 32];
+    hasher.finalize(&mut hash);
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&hash[12..32]);
     addr
@@ -476,28 +511,29 @@ fn compute_nullifier(key: &[u8; 32]) -> [u8; 32] {
     h.finalize().into()
 }
 
-use ark_bn254::Fr;
-use light_poseidon::{Poseidon, PoseidonHasher};
-
 /// Hash a 20-byte Ethereum address into a 32-byte Poseidon leaf.
 /// The address is zero-padded to 32 bytes and interpreted as a BN254 field element.
 /// Uses light-poseidon (t=2, R_F=8, R_P=56) — same crate as CLI tree builder.
 /// Takes a pre-constructed hasher to avoid redundant initialization per call.
-fn poseidon_hash_address_with(addr: &[u8; 20], hasher: &Poseidon<Fr>) -> [u8; 32] {
+fn poseidon_hash_address_with(addr: &[u8; 20], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
     let mut padded = [0u8; 32];
     padded[12..32].copy_from_slice(addr);
     field_element_to_bytes(hasher.hash(&[Fr::from_be_bytes_mod_order(&padded)]).expect("Leaf hash failed"))
 }
 
 /// Compute the Merkle root by hashing siblings up the tree.
-/// At each level: if path_index is 0 (left), computed = poseidon(computed, sibling)
-///               if path_index is 1 (right), computed = poseidon(sibling, computed)
+///
+/// Direction convention:
+///   path_index[i] = 0 → current is LEFT child  → parent = poseidon(current, sibling)
+///   path_index[i] = 1 → current is RIGHT child → parent = poseidon(sibling, current)
+///
+/// This convention MUST match the CLI tree builder's path encoding exactly.
 /// Takes a pre-constructed hasher to avoid redundant initialization across 26 levels.
 fn compute_merkle_root_with(
     leaf: &[u8; 32],
     siblings: &[[u8; 32]; TREE_DEPTH],
     path_indices: &[u8; TREE_DEPTH],
-    hasher: &Poseidon<Fr>,
+    hasher: &mut Poseidon<Fr>,
 ) -> [u8; 32] {
     let mut current = *leaf;
     for i in 0..TREE_DEPTH {
@@ -547,6 +583,9 @@ fn field_element_to_bytes(elem: Fr) -> [u8; 32] {
 /// ⚠️  PERFORMANCE: Poseidon hasher instances must be constructed ONCE and reused
 /// across all 26+1 hash invocations per claim. Constructing per-call wastes
 /// ~100K–200K RISC-V cycles per hash on round-constant initialization.
+/// ⚠️  REFERENCE ONLY — not used in the claim flow.
+/// Callers should construct a hasher once and reuse it via
+/// `poseidon_hash_address_with()` instead.
 #[allow(dead_code)]
 fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
@@ -558,7 +597,9 @@ fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
 /// Poseidon hash of two field elements (used for interior node hashing).
 /// Uses BN254 scalar field, x^5 S-box, t=3 (2 inputs), R_F=8 + R_P=57 rounds.
 ///
-/// Same implementation notes as poseidon_hash_single.
+/// ⚠️  REFERENCE ONLY — not used in the claim flow.
+/// Callers should construct a hasher once and reuse it via
+/// `compute_merkle_root_with()` instead.
 #[allow(dead_code)]
 fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
@@ -1100,7 +1141,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | 14 | Journal digest: does `sha256(raw_journal_bytes)` match the deployed `IRiscZeroVerifier`'s expected digest scheme? | ✅ **Resolved** — Confirmed correct by reading RISC Zero source. Rust `Journal::digest()` = `Sha256::hash_bytes(&self.bytes)`. Solidity `bytes32(sha256(_journal))` matches. The `RiscZeroGroth16Verifier.verify(seal, imageId, journalDigest)` takes the digest as-is and wraps it in `ReceiptClaimLib.ok(imageId, journalDigest).digest()`. End-to-end testnet test still recommended before mainnet. |
 | 15 | Do `light-poseidon` + `ark-bn254` compile for `riscv32im-risc0-zkvm-elf`? | ✅ **Resolved** — Validated by building a full guest program (address derivation + Poseidon hashing + Merkle proof + nullifier verification) for `riscv32im-risc0-zkvm-elf` using the RISC Zero toolchain (rzup v1.94.1, cargo-risczero 3.0.5). All crates compile successfully. Three issues required fixes: (1) `getrandom` 0.3 needs `getrandom_backend="custom"` cfg flag in `.cargo/config.toml`, (2) `tracing_core` requires an atomic shim for `__atomic_store_1` (riscv32 limitation), (3) the PRD's guest program code has API mismatches with current crate versions (see #17). Binary size: 442K ELF. |
 | 16 | Gas per claim estimate accuracy? | ✅ **Resolved** — Measured with Foundry gas benchmarks. Airdrop contract overhead (with noop verifier): 111,637 gas for first claim, 58,264 for subsequent. Groth16 verification (calculated): ~404,500 gas (5× ECMUL @ 32K + 5× ECADD @ 500 + 2× BN254 pairing @ 80K+77K + overhead). **Total: ~516,000 gas for first claim, ~463,000 for subsequent.** PRD's original estimate of ~300K was too low. Updated §11, Appendix B. At Base prices (0.1 Gwei, $3K ETH): ~$0.15/claim. |
-| 17 | Guest program API compatibility with current crate versions? | ✅ **Resolved** — The PRD's Rust code has 5 API mismatches with current crate versions that must be fixed in the actual implementation: (1) `Fr::from_be_bytes()` → `Fr::from_be_bytes_mod_order()` (ark-ff 0.5 removed `from_be_bytes`), (2) `into_bigint().to_bytes_be(&mut out[..])` → `into_bigint().to_bytes_be()` returns `Vec<u8>` (no in-place write), (3) `tiny_keccak::keccak256(data)` → must use `Keccak::v256()` hasher API (tiny-keccak v2 removed the direct function), (4) `k256::ecdsa::SigningKey::from_bytes(key)` → must use `SigningKey::from_slice(key)` (k256 0.13 changed the API), (5) `env::read()` → must use `risc0_zkvm::guest::env::read()` or import `use risc0_zkvm::guest::env`. These are all straightforward API updates, not design issues. |
+| 17 | Guest program API compatibility with current crate versions? | ✅ **Resolved** — The PRD's Rust code had 6 API mismatches with current crate versions, all fixed in §6.5: (1) `Fr::from_be_bytes()` → `Fr::from_be_bytes_mod_order()` (ark-ff 0.5 removed `from_be_bytes`), (2) `into_bigint().to_bytes_be(&mut out[..])` → `into_bigint().to_bytes_be()` returns `Vec<u8>` (no in-place write), (3) `tiny_keccak::keccak256(data)` → must use `Keccak::v256()` hasher API (tiny-keccak v2 removed the direct function), (4) `k256::ecdsa::SigningKey::from_bytes(key)` → must use `SigningKey::from_slice(key)` (k256 0.13 changed the API), (5) `env::read()` → must use `risc0_zkvm::guest::env::read()` or import `use risc0_zkvm::guest::env`, (6) `&Poseidon<Fr>` → must be `&mut Poseidon<Fr>` because `PoseidonHasher::hash()` requires `&mut self` (light-poseidon v0.4.x mutates internal sponge state). These are all straightforward API updates, not design issues. |
 
 ---
 
@@ -1185,39 +1226,56 @@ The following test vector allows independent verification of the entire claim pi
 
 **Derived Ethereum address:**
 ```
-0x{computed by: secp256k1 public key → keccak256 → last 20 bytes}
+0xfcad0b19bb29d4674531d6f115237e16afce377c
 ```
 
-> ⚠️ The full test vector (derived address, leaf hash, Merkle path, nullifier, expected journal) must be computed by the implementation during development and published before the audit. The values below are placeholders until the actual computation is performed.
+Computed via: secp256k1 public key → Keccak-256 → last 20 bytes.
+
+- Public key (uncompressed, 64 bytes): `0x4646ae5047316b4230d0086c8acec687f00b1cd9d1dc634f6cb358ac0a9a8ffffe77b4dd0a4bfb95851f3b7355c781dd60f8418fc8a65d14907aff47c903a559`
+- Keccak-256 of pubkey: `0x8a28e3bd23ede916a38d4a85fcad0b19bb29d4674531d6f115237e16afce377c`
+- Address (last 20 bytes): `0xfcad0b19bb29d4674531d6f115237e16afce377c`
+
+**⚠️ Ethereum uses Keccak-256 (the original NIST submission), NOT NIST SHA3-256.** These are different hash functions that produce different outputs. The `tiny_keccak` crate's `Keccak::v256()` implements the correct Keccak-256. Using `sha3::Sha3_256` or Python's `hashlib.sha3_256` will produce the WRONG address.
 
 **Expected nullifier:**
 ```
 nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
-         = sha256(0x0123...cdef || 0x5a4b4d6973745f56315f4e554c4c4946494552)
-         = 0x{to be computed}
+         = sha256(0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+                  || 0x5a4b4d6973745f56315f4e554c4c4946494552)
+         = 0xf741d5881202a18254a7cfbb629352d6580ece6b290d7c8f5c1177b3f0e79984
 ```
 
 **Leaf computation:**
 ```
-address = 0x{derived}
-padded  = 0x000000000000000000000000{derived}  // 12 zero bytes + 20 address bytes
+address = 0xfcad0b19bb29d4674531d6f115237e16afce377c
+padded  = 0x00000000000000000000000fcad0b19bb29d4674531d6f115237e16afce377c  // 12 zero bytes + 20 address bytes
 leaf    = poseidon(Fr::from_be_bytes_mod_order(padded))
-        = 0x{to be computed}
+        = 0x1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9
 ```
 
+Computed with `light-poseidon` v0.4.0, `ark-bn254` v0.5.0, t=2 (1 input), R_F=8, R_P=56.
+
+**Reference values for cross-validation:**
+
+| Input | Hash | Output |
+|-------|------|--------|
+| `poseidon(Fr(1))` (t=2, leaf hasher) | Leaf | To be computed |
+| `poseidon(Fr(1), Fr(2))` (t=3, interior hasher) | Interior | `0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a` |
+| Edge address `0x...0001` | Leaf | `0x29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133` |
+
+**Field element edge case test:**
+An address like `0x0000000000000000000000000000000000000001` produces a very small field element. Verified that `field_element_to_bytes()` correctly zero-pads the output to 32 bytes: `field_element_to_bytes(Fr(1)) = 0x0000000000000000000000000000000000000000000000000000000000000001` (32 bytes, 31 leading zeros). The `into_bigint().to_bytes_be()` returns a `Vec<u8>` whose length depends on the value — for small values, `len < 32`. The copy into `out[32 - bytes.len()..]` correctly handles this.
+
 **Verification steps:**
-1. Compute `derive_address(privateKey)` → must match expected address
-2. Compute `compute_nullifier(privateKey)` → must match expected nullifier
-3. Compute `poseidon_hash_address(address)` → must match expected leaf
+1. Compute `derive_address(privateKey)` → must match `0xfcad0b19bb29d4674531d6f115237e16afce377c`
+2. Compute `compute_nullifier(privateKey)` → must match `0xf741d5881202a18254a7cfbb629352d6580ece6b290d7c8f5c1177b3f0e79984`
+3. Compute `poseidon_hash_address(address)` → must match `0x1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9`
 4. Build a test Merkle tree containing the leaf → verify root matches
 5. Run the full guest program with these inputs → verify journal is exactly 84 bytes:
    - `[0:32]` = merkleRoot
    - `[32:64]` = nullifier
    - `[64:84]` = recipient (20 bytes, raw address — NOT padded to 32 bytes)
 6. Submit to a local Base fork → verify `claim()` succeeds and mints 10,000 ZKM
-
-**Field element edge case test:**
-An address like `0x0000000000000000000000000000000000000001` produces a very small field element. Verify that `field_element_to_bytes()` correctly zero-pads the output to 32 bytes (since `into_bigint().to_bytes_be()` may return fewer than 32 bytes for small values).
 
 ### E. Guest Program Build Configuration
 
