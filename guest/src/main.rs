@@ -115,21 +115,19 @@ pub fn main() {
     let expected = compute_nullifier(&private_key, &mut interior_hasher);
     assert_eq!(nullifier, expected, "Invalid nullifier");
 
-    // Commit outputs to journal (96 bytes total, all 32-byte word-aligned).
+    // Commit outputs to journal (84 bytes total).
     //
     // ⚠️  CRITICAL: The Solidity contract slices the journal bytes directly:
-    //     journal[0:32]   = merkleRoot
-    //     journal[32:64]  = nullifier
-    //     journal[64:96]  = recipient (left-padded to 32 bytes: 12 zeros + 20 addr)
+    //     journal[0:32]   = merkleRoot   (bytes32)
+    //     journal[32:64]  = nullifier    (bytes32)
+    //     journal[64:84]  = recipient    (bytes20 — raw address, NOT padded)
     // Any mismatch = all proofs rejected on-chain.
     //
-    // env::commit() uses postcard serialization: [u8; 32] writes 32 raw bytes,
-    // no length prefix. Verified for risc0-zkvm v5.0.0.
+    // env::commit() for [u8; N] arrays writes N raw bytes, no length prefix.
+    // Verified for risc0-zkvm v5.0.0.
     env::commit(&merkle_root);
     env::commit(&nullifier);
-    let mut recipient_padded = [0u8; 32];
-    recipient_padded[12..32].copy_from_slice(&recipient);
-    env::commit(&recipient_padded);
+    env::commit(&recipient);
 }
 
 // ── Address derivation ───────────────────────────────────────────────────

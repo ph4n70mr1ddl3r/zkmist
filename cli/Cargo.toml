@@ -10,12 +10,19 @@ path = "src/main.rs"
 [dependencies]
 # CLI framework
 clap = { version = "4", features = ["derive"] }
-# Ethereum interaction (replaces deprecated ethers-rs)
+# Ethereum interaction
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
 # ZK proof generation
 risc0-zkvm = "5.0.0-rc.1"
 # Merkle tree (shared library)
 zkmist-merkle-tree = { path = "../merkle-tree" }
+# Crypto primitives used by CLI
+ark-bn254 = "0.5"
+light-poseidon = "0.4"
+k256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+sha3 = "0.10"
+# Hidden password input
+rpassword = "7"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 # Serialization

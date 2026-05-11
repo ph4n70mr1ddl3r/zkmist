@@ -68,24 +68,98 @@ pub fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] 
     )
 }
 
+/// Build a complete Merkle tree from a list of Ethereum addresses.
+///
+/// Returns the tree layers: `layers[0]` = leaves, `layers[1..]` = interior levels,
+/// `layers[TREE_DEPTH]` = root (single element).
+///
+/// Addresses are hashed into leaves using the leaf hasher (Poseidon t=2).
+/// Empty slots (beyond the provided addresses) are filled with `PADDING_SENTINEL`.
+/// Interior nodes use the interior hasher (Poseidon t=3).
+///
+/// **Note:** For the full 26-level tree (67M leaves), this requires ~4 GB RAM.
+/// Use `build_tree_streaming` for large trees to avoid holding all layers.
+pub fn build_tree(addresses: &[[u8; 20]]) -> Vec<Vec<[u8; 32]>> {
+    let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+    let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+
+    // Layer 0: leaves
+    let num_leaves = 1usize << TREE_DEPTH;
+    let mut layers = Vec::with_capacity(TREE_DEPTH + 1);
+
+    let mut current_layer: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
+    for addr in addresses {
+        current_layer.push(hash_leaf(addr, &mut leaf_hasher));
+    }
+    // Pad remaining leaves with sentinel
+    current_layer.resize(num_leaves, PADDING_SENTINEL);
+    layers.push(current_layer);
+
+    // Layers 1..TREE_DEPTH: interior nodes
+    for level in 0..TREE_DEPTH {
+        let prev = &layers[level];
+        let mut next = Vec::with_capacity(prev.len() / 2);
+        for chunk in prev.chunks(2) {
+            next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
+        }
+        layers.push(next);
+    }
+
+    layers
+}
+
+/// Extract the Merkle root from a built tree.
+pub fn tree_root(layers: &[Vec<[u8; 32]>]) -> [u8; 32] {
+    assert!(!layers.is_empty(), "Empty tree has no root");
+    let root_layer = &layers[layers.len() - 1];
+    assert_eq!(root_layer.len(), 1, "Root layer must have exactly one element");
+    root_layer[0]
+}
+
+/// Verify a Merkle proof by recomputing the root from leaf + siblings + path.
+/// This mirrors the guest program's `compute_merkle_root` exactly.
+///
+/// Returns the computed root. Compare against the trusted root.
+pub fn verify_merkle_proof(
+    leaf: &[u8; 32],
+    siblings: &[[u8; 32]],
+    path_indices: &[u8],
+) -> [u8; 32] {
+    assert_eq!(siblings.len(), path_indices.len());
+    let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+    let mut current = *leaf;
+    for i in 0..siblings.len() {
+        let (left, right) = if path_indices[i] == 1 {
+            (siblings[i], current)
+        } else {
+            (current, siblings[i])
+        };
+        current = hash_interior(&left, &right, &mut hasher);
+    }
+    current
+}
+
 /// Generate a Merkle proof for a leaf at the given index.
 ///
 /// Returns (siblings, path_indices) where:
 ///   path_indices[i] = 0 → leaf is left child at level i
 ///   path_indices[i] = 1 → leaf is right child at level i
 ///
-/// This convention MUST match the guest program's `compute_merkle_root_with`.
+/// This convention MUST match the guest program's `compute_merkle_root`.
 pub fn generate_proof(
     tree_layers: &[Vec<[u8; 32]>],
     leaf_index: usize,
 ) -> (Vec<[u8; 32]>, Vec<u8>) {
-    let mut siblings = Vec::with_capacity(TREE_DEPTH);
-    let mut path_indices = Vec::with_capacity(TREE_DEPTH);
+    let depth = tree_layers.len().saturating_sub(1); // number of proof levels
+    let mut siblings = Vec::with_capacity(depth);
+    let mut path_indices = Vec::with_capacity(depth);
 
     let mut index = leaf_index;
-    for layer in tree_layers.iter().take(TREE_DEPTH) {
+    for layer in tree_layers.iter().take(depth) {
+        assert!(index < layer.len(), "leaf_index out of bounds at level");
         if index % 2 == 0 {
             // Current is left child (path_index = 0)
+            assert!(index + 1 < layer.len(), "missing sibling at level");
             siblings.push(layer[index + 1]);
             path_indices.push(0);
         } else {
@@ -179,5 +253,143 @@ mod tests {
             leaf, nullifier,
             "Nullifier must differ from a simple leaf hash of the key"
         );
+    }
+
+    /// End-to-end integration test: build a small tree, generate proof, verify.
+    ///
+    /// Uses a reduced tree depth (4 levels, 16 leaves) for fast test execution.
+    /// This validates the entire pipeline: address → leaf hash → tree build →
+    /// proof generation → proof verification → root match.
+    #[test]
+    fn test_end_to_end_merkle_proof() {
+        // Test addresses (arbitrary valid Ethereum addresses)
+        let addresses: [[u8; 20]; 5] = [
+            // PRD test vector address
+            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
+             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
+            // Address 0x0000...0001 (edge case)
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+            // Address 0xFFff...ffFF (edge case)
+            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            // Arbitrary address
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
+             0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44],
+            // Another arbitrary address
+            [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+             0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01],
+        ];
+
+        // Build tree with custom depth
+        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+
+        let test_depth = 4usize;
+        let num_leaves = 1usize << test_depth;
+
+        // Build leaves
+        let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
+        for addr in &addresses {
+            leaves.push(hash_leaf(addr, &mut leaf_hasher));
+        }
+        leaves.resize(num_leaves, PADDING_SENTINEL);
+
+        // Build tree layers
+        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
+        for level in 0..test_depth {
+            let prev = &layers[level];
+            let mut next = Vec::with_capacity(prev.len() / 2);
+            for chunk in prev.chunks(2) {
+                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
+            }
+            layers.push(next);
+        }
+
+        let root = layers[test_depth][0];
+        assert_ne!(root, [0u8; 32], "Root must not be zero");
+
+        // Generate and verify proof for each address
+        for (i, addr) in addresses.iter().enumerate() {
+            let leaf = hash_leaf(addr, &mut leaf_hasher);
+
+            // Generate proof
+            let (siblings, path_indices) = generate_proof(&layers, i);
+            assert_eq!(siblings.len(), test_depth);
+            assert_eq!(path_indices.len(), test_depth);
+
+            // Verify proof (mirrors guest program logic)
+            let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
+            assert_eq!(computed_root, root, "Proof verification failed for address {}", i);
+        }
+
+        // Negative test: wrong leaf should NOT produce the same root
+        let wrong_addr: [u8; 20] = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x00,
+                                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                     0x00, 0x00, 0x00, 0x00];
+        let wrong_leaf = hash_leaf(&wrong_addr, &mut leaf_hasher);
+        let (siblings, path_indices) = generate_proof(&layers, 0);
+        let wrong_root = verify_merkle_proof(&wrong_leaf, &siblings, &path_indices);
+        assert_ne!(wrong_root, root, "Wrong leaf must not verify against root");
+
+        // Negative test: wrong sibling should NOT produce the same root
+        let leaf = hash_leaf(&addresses[0], &mut leaf_hasher);
+        let mut bad_siblings = siblings.clone();
+        bad_siblings[0] = [0xAAu8; 32]; // corrupt first sibling
+        let bad_root = verify_merkle_proof(&leaf, &bad_siblings, &path_indices);
+        assert_ne!(bad_root, root, "Corrupted sibling must not verify");
+    }
+
+    /// Test that build_tree + generate_proof + verify_merkle_proof produces
+    /// consistent results for the PRD test vector address.
+    #[test]
+    fn test_build_tree_and_proof_prd_vector() {
+        let addresses: [[u8; 20]; 1] = [
+            // PRD test vector: derived from private key 0x0123...cdef
+            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
+             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
+        ];
+
+        // Build with reduced depth
+        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+
+        let test_depth = 4usize;
+        let num_leaves = 1usize << test_depth;
+
+        let mut leaves: Vec<[u8; 32]> = addresses.iter()
+            .map(|a| hash_leaf(a, &mut leaf_hasher))
+            .collect();
+        leaves.resize(num_leaves, PADDING_SENTINEL);
+
+        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
+        for level in 0..test_depth {
+            let prev = &layers[level];
+            let mut next = Vec::with_capacity(prev.len() / 2);
+            for chunk in prev.chunks(2) {
+                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
+            }
+            layers.push(next);
+        }
+
+        let root = layers[test_depth][0];
+
+        // Verify leaf hash matches PRD test vector
+        let expected_leaf = hex::decode("1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9")
+            .expect("Invalid hex");
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&expected_leaf);
+        assert_eq!(layers[0][0], expected, "Leaf hash must match PRD test vector");
+
+        // Generate proof for index 0
+        let (siblings, path_indices) = generate_proof(&layers, 0);
+
+        // Verify proof
+        let computed = verify_merkle_proof(&layers[0][0], &siblings, &path_indices);
+        assert_eq!(computed, root, "Proof must verify against root");
+
+        // Root is deterministic
+        let root2 = verify_merkle_proof(&layers[0][0], &siblings, &path_indices);
+        assert_eq!(root, root2, "Root must be deterministic");
     }
 }

@@ -7,10 +7,9 @@ Cargo.lock
 node_modules/
 
 # Foundry
-cache/
-broadcast/
-out/
-lib/
+contracts/cache/
+contracts/broadcast/
+contracts/out/
 
 # IDE
 .idea/
