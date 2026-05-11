@@ -10,8 +10,8 @@ path = "src/main.rs"
 [dependencies]
 # CLI framework
 clap = { version = "4", features = ["derive"] }
-# Ethereum types
-ethers = { version = "2", features = ["ethers-solc", "ws"] }
+# Ethereum interaction (replaces deprecated ethers-rs)
+alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
 # ZK proof generation
 risc0-zkvm = "5.0.0-rc.1"
 # Merkle tree (shared library)

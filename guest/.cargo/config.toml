@@ -1,12 +1,15 @@
-[target.riscv32im-risc0-zkvm-elf]
-runner = "cargo run --bin zkmist-guest-runner"
-
-[build]
-target = "riscv32im-risc0-zkvm-elf"
+# RISC Zero guest build configuration.
+#
+# Build with: cargo risczero build
+# Run with:   cargo risczero run   (requires a host-side runner binary)
+#
+# Do NOT set `[build] target` here — `cargo risczero` manages the target
+# automatically. A global target breaks host-side tooling (tests, IDEs).
 
 [unstable]
 build-std = ["core", "alloc"]
 
 # Required for getrandom 0.3+ on riscv32 targets without OS support.
 # RISC Zero provides a custom entropy source via the zkVM environment.
+[target.riscv32im-risc0-zkvm-elf]
 rustflags = ["-C", "getrandom_backend=custom"]

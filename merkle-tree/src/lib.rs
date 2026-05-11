@@ -9,6 +9,7 @@
 //!   - Leaf encoding: 12 zero bytes + 20 address bytes → BN254 field element
 //!   - Padding: empty leaves = 0xFF..FF (32 bytes, sentinel)
 //!   - Direction: path_index=0 → left child, path_index=1 → right child
+//!   - Nullifier: poseidon(Fr(key), Fr(domain)) using interior hasher
 
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -17,6 +18,10 @@ use light_poseidon::{Poseidon, PoseidonHasher};
 pub const TREE_DEPTH: usize = 26;
 pub const TREE_LEAVES: usize = 1 << TREE_DEPTH; // 67,108,864
 pub const PADDING_SENTINEL: [u8; 32] = [0xFFu8; 32];
+
+/// Nullifier domain separator. Changing this invalidates all existing proofs
+/// and requires redeploying the contract with a new image ID.
+pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V1_NULLIFIER";
 
 /// Hash a 20-byte Ethereum address into a Poseidon leaf.
 /// The address is zero-padded to 32 bytes (left-padded with zeros).
@@ -44,6 +49,23 @@ pub fn field_element_to_bytes(elem: Fr) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[32 - bytes.len()..].copy_from_slice(&bytes);
     out
+}
+
+/// Compute the claim nullifier: poseidon(Fr(key), Fr(domain)).
+///
+/// Uses the interior hasher (t=3, 2 inputs). The domain separator prevents
+/// cross-version nullifier collisions. This MUST produce the same output as
+/// the guest program's `compute_nullifier`.
+pub fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
+    let key_elem = Fr::from_be_bytes_mod_order(key);
+    let mut domain_padded = [0u8; 32];
+    domain_padded[..NULLIFIER_DOMAIN.len()].copy_from_slice(NULLIFIER_DOMAIN);
+    let domain_elem = Fr::from_be_bytes_mod_order(&domain_padded);
+    field_element_to_bytes(
+        hasher
+            .hash(&[key_elem, domain_elem])
+            .expect("Nullifier hash failed"),
+    )
 }
 
 /// Generate a Merkle proof for a leaf at the given index.
@@ -119,6 +141,43 @@ mod tests {
         assert_eq!(
             hex::encode(result),
             "115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a"
+        );
+    }
+
+    #[test]
+    fn test_nullifier_deterministic() {
+        let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key = [0x01u8; 32];
+        let n1 = compute_nullifier(&key, &mut hasher);
+        let n2 = compute_nullifier(&key, &mut hasher);
+        assert_eq!(n1, n2, "Nullifier must be deterministic");
+        assert_ne!(n1, [0u8; 32], "Nullifier must not be all zeros");
+    }
+
+    #[test]
+    fn test_nullifier_unique_per_key() {
+        let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key1 = [0x01u8; 32];
+        let key2 = [0x02u8; 32];
+        let n1 = compute_nullifier(&key1, &mut hasher);
+        let n2 = compute_nullifier(&key2, &mut hasher);
+        assert_ne!(n1, n2, "Different keys must produce different nullifiers");
+    }
+
+    #[test]
+    fn test_nullifier_differs_from_leaf() {
+        // Nullifier uses interior hasher (t=3), leaf uses leaf hasher (t=2).
+        // Even if they hash the same field element, the different arities mean
+        // different Poseidon parameters, so outputs must differ.
+        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
+        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key = [0x01u8; 32];
+        let key_elem = Fr::from_be_bytes_mod_order(&key);
+        let leaf = field_element_to_bytes(leaf_hasher.hash(&[key_elem]).expect("hash"));
+        let nullifier = compute_nullifier(&key, &mut interior_hasher);
+        assert_ne!(
+            leaf, nullifier,
+            "Nullifier must differ from a simple leaf hash of the key"
         );
     }
 }

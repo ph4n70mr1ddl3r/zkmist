@@ -395,16 +395,20 @@ eligibility/
 ### 6.4 Nullifier Design
 
 ```
-nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
+nullifier = poseidon(Fr(privateKey), Fr(domain))
+domain   = Fr("ZKMist_V1_NULLIFIER")  // left-aligned, zero-padded to 32 bytes
 ```
+
+Uses the **same Poseidon hasher** as interior Merkle nodes: `light-poseidon` Circom t=3 (2 inputs), R_F=8, R_P=57, over BN254. This keeps all hashing in the same field and reuses an already-constructed hasher instance inside the guest program, saving cycles.
 
 | Property | Explanation |
 |----------|-------------|
 | **Deterministic** | Same private key → same nullifier → double-claim impossible |
 | **Not precomputable** | Requires the private key, not in the published list |
-| **Not reversible** | Cannot recover key or address from nullifier |
-| **Unique per address** | Different keys → different nullifiers |
+| **Not reversible** | Cannot recover key or address from nullifier (Poseidon is a one-way permutation) |
+| **Unique per address** | Different keys produce different field elements → different nullifiers |
 | **Versioned** | Domain separator `"ZKMist_V1_NULLIFIER"` encodes the protocol version. If a V2 contract is ever deployed (new guest program, new Merkle tree), it would use `"ZKMist_V2_NULLIFIER"` so V1 nullifiers cannot be replayed on V2. |
+| **Field-native** | Stays entirely in the BN254 scalar field. No SHA-256 dependency inside the guest. |
 
 ### 6.5 Guest Program (Rust)
 
@@ -415,14 +419,14 @@ nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
 risc0_zkvm::guest::entry!(main);
 
 use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
 use k256::ecdsa::{SigningKey, VerifyingKey};
 use light_poseidon::{Poseidon, PoseidonHasher};
 use risc0_zkvm::guest::env;
-use sha2::{Digest, Sha256};
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 const TREE_DEPTH: usize = 26;
-const DOMAIN_SEPARATOR: &[u8] = b"ZKMist_V1_NULLIFIER";
+const NULLIFIER_DOMAIN_BYTES: &[u8; 19] = b"ZKMist_V1_NULLIFIER";
 const PADDING_SENTINEL: [u8; 32] = [0xFFu8; 32];
 
 pub fn main() {
@@ -472,8 +476,9 @@ pub fn main() {
     let computed_root = compute_merkle_root_with(&leaf, &siblings, &path_indices, &mut interior_hasher);
     assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
 
-    // Verify nullifier
-    let expected = compute_nullifier(&private_key);
+    // Verify nullifier: poseidon(Fr(key), Fr(domain)) using the interior hasher.
+    // Same hasher as Merkle proof — each hash() call is independent.
+    let expected = compute_nullifier(&private_key, &mut interior_hasher);
     assert_eq!(nullifier, expected, "Invalid nullifier");
 
     // Commit outputs to journal.
@@ -504,11 +509,19 @@ fn derive_address(key: &[u8; 32]) -> [u8; 20] {
     addr
 }
 
-fn compute_nullifier(key: &[u8; 32]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(key);
-    h.update(DOMAIN_SEPARATOR);
-    h.finalize().into()
+/// Compute nullifier as poseidon(Fr(key), Fr(domain)) using the interior
+/// hasher (t=3, 2 inputs). Domain separation prevents nullifier collisions
+/// across protocol versions.
+fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
+    let key_elem = Fr::from_be_bytes_mod_order(key);
+    let mut domain_padded = [0u8; 32];
+    domain_padded[..NULLIFIER_DOMAIN_BYTES.len()].copy_from_slice(NULLIFIER_DOMAIN_BYTES);
+    let domain_elem = Fr::from_be_bytes_mod_order(&domain_padded);
+    field_element_to_bytes(
+        hasher
+            .hash(&[key_elem, domain_elem])
+            .expect("Nullifier hash failed"),
+    )
 }
 
 /// Hash a 20-byte Ethereum address into a 32-byte Poseidon leaf.
@@ -949,7 +962,7 @@ Cannot:
 | zkVM | RISC Zero (risc0-zkvm) |
 | Guest Program | Rust (RISC-V) |
 | Proof System | STARK (RISC Zero) |
-| Crypto | `k256`, `sha2`, `tiny-keccak`, `light-poseidon`, `ark-bn254` |
+| Crypto | `k256`, `tiny-keccak`, `light-poseidon`, `ark-bn254` |
 | CLI | Rust |
 | Chain | Base (8453) |
 | Data | IPFS + GitHub |
@@ -1059,12 +1072,12 @@ This section consolidates the security-relevant adversaries, their capabilities,
 
 | Adversary | Capabilities | Attack Goal | Defense |
 |-----------|-------------|-------------|----------|
-| **Double-claimer** | Holds one eligible private key, attempts to claim twice | Receive 20,000 ZKM instead of 10,000 | Nullifier is deterministic (sha256 of private key). Contract rejects duplicate nullifiers. | 
+| **Double-claimer** | Holds one eligible private key, attempts to claim twice | Receive 20,000 ZKM instead of 10,000 | Nullifier is deterministic (poseidon of private key + domain). Contract rejects duplicate nullifiers. | 
 | **Impersonator** | Does NOT hold the eligible private key, but knows the address | Claim someone else's allocation | Must produce a valid ZK proof: address derivation from private key + valid Merkle membership proof. Without the private key, no valid proof exists. |
 | **Front-runner** | Observes pending claim transactions in the mempool | Submit the same proof first to steal tokens | Recipient address is committed inside the ZK proof (journal). Front-runner cannot change recipient without invalidating the proof. |
 | **Relayer** | Submits proofs on behalf of claimants, sees proof.json | Learn the qualified address or steal tokens | proof.json contains no qualified address — only a nullifier, recipient, and STARK proof. Relayer sees exactly what's on-chain, nothing more. |
 | **Sybil farmer** | Controls many eligible addresses, automates claiming at scale | Claim disproportionate share of the 1M cap | Each claim requires a unique private key + ~90s proving time + 4 GB RAM. Amortizable across addresses but still costly at scale (~10 concurrent proofs per 40 GB machine). The 1M cap limits total damage. |
-| **Privacy attacker** | Analyzes on-chain data to link qualified → recipient addresses | De-anonymize claimants | Mitigated by: nullifier is sha256(privateKey), not address-derived; no on-chain link between qualified and recipient; user controls gas-funding path. See §6.8 for residual risks. |
+| **Privacy attacker** | Analyzes on-chain data to link qualified → recipient addresses | De-anonymize claimants | Mitigated by: nullifier is poseidon(privateKey, domain), not address-derived; no on-chain link between qualified and recipient; user controls gas-funding path. See §6.8 for residual risks. |
 | **Malicious verifier** | Deploys a modified verifier contract | Accept invalid proofs, mint tokens without eligibility | The verifier contract address and image ID are immutable at deployment. Community must verify these match the audited, published source before claiming. |
 
 **Adversaries explicitly out of scope:**
@@ -1095,7 +1108,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | **Poseidon crate** | `light-poseidon` v0.4.x — same version in guest program and CLI tree builder |
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon (leaf: t=2/R_P=56, interior: t=3/R_P=57, BN254) |
-| **Nullifier** | sha256(privateKey ∥ "ZKMist_V1_NULLIFIER") |
+| **Nullifier** | poseidon(Fr(privateKey), Fr(domain)), domain = "ZKMist_V1_NULLIFIER" |
 | **Gas per claim** | ~500,000–520,000 (~0.00005 ETH / ~$0.15) via Groth16 wrapper (validated — see §13, #16) |
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
@@ -1149,7 +1162,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 
 | Term | Definition |
 |------|------------|
-| **Nullifier** | sha256(privateKey ∥ domain). Prevents double-claim without revealing the qualified address. |
+| **Nullifier** | poseidon(Fr(privateKey), Fr(domain)). Prevents double-claim without revealing the qualified address. |
 | **Merkle Tree** | 26-level binary hash tree. Leaves are poseidon(address). Root on-chain. |
 | **RISC Zero** | Zero-knowledge VM proving correct Rust program execution. |
 | **Guest Program** | Rust program inside RISC Zero. Proves membership + nullifier validity. |
@@ -1239,11 +1252,16 @@ Computed via: secp256k1 public key → Keccak-256 → last 20 bytes.
 
 **Expected nullifier:**
 ```
-nullifier = sha256(privateKey || "ZKMist_V1_NULLIFIER")
-         = sha256(0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-                  || 0x5a4b4d6973745f56315f4e554c4c4946494552)
-         = 0xf741d5881202a18254a7cfbb629352d6580ece6b290d7c8f5c1177b3f0e79984
+nullifier = poseidon(Fr(privateKey), Fr(domain))
+         where domain = "ZKMist_V1_NULLIFIER" (19 bytes, zero-padded to 32)
+         = poseidon(
+             Fr(0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef),
+             Fr(0x5a4b4d6973745f56315f4e554c4c494649455200000000000000000000000000)
+           )
+         = 0x078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9
 ```
+
+Computed with `light-poseidon` v0.4.0, `ark-bn254` v0.5.0, t=3 (2 inputs), R_F=8, R_P=57.
 
 **Leaf computation:**
 ```
@@ -1268,7 +1286,7 @@ An address like `0x0000000000000000000000000000000000000001` produces a very sma
 
 **Verification steps:**
 1. Compute `derive_address(privateKey)` → must match `0xfcad0b19bb29d4674531d6f115237e16afce377c`
-2. Compute `compute_nullifier(privateKey)` → must match `0xf741d5881202a18254a7cfbb629352d6580ece6b290d7c8f5c1177b3f0e79984`
+2. Compute `compute_nullifier(privateKey)` → must match `0x078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9`
 3. Compute `poseidon_hash_address(address)` → must match `0x1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9`
 4. Build a test Merkle tree containing the leaf → verify root matches
 5. Run the full guest program with these inputs → verify journal is exactly 84 bytes:
