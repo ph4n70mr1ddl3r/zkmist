@@ -4,17 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
-import {IRiscZeroVerifier} from "../src/IRiscZeroVerifier.sol";
-
-/// @dev A noop verifier that accepts any proof. Used for testing airdrop logic
-///      without needing real RISC Zero proofs.
-contract NoopVerifier is IRiscZeroVerifier {
-    function verify(
-        bytes calldata,
-        bytes32,
-        bytes32
-    ) external pure override {}
-}
+import {NoopVerifier} from "./TestUtils.sol";
 
 contract ZKMTokenTest is Test {
     ZKMToken token;

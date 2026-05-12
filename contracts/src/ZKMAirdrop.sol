@@ -18,7 +18,9 @@ contract ZKMAirdrop {
 
     uint256 public constant CLAIM_AMOUNT = 10_000e18; // 10,000 ZKM
     uint256 public constant MAX_CLAIMS = 1_000_000;
-    uint256 public constant CLAIM_DEADLINE = 1_798_761_600; // 2027-01-01 00:00:00 UTC
+    // 2027-01-01 00:00:00 UTC — claims after this timestamp are rejected.
+    // Verified: new Date(1798761600 * 1000).toUTCString() = "Fri, 01 Jan 2027 00:00:00 GMT"
+    uint256 public constant CLAIM_DEADLINE = 1_798_761_600;
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;

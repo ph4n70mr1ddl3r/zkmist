@@ -82,23 +82,28 @@ pub fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] 
 /// **Note:** For the full 26-level tree (67M leaves), this requires ~4 GB RAM.
 /// Use `build_tree_streaming` for large trees to avoid holding all layers.
 pub fn build_tree(addresses: &[[u8; 20]]) -> Vec<Vec<[u8; 32]>> {
+    build_tree_with_depth(addresses, TREE_DEPTH)
+}
+
+/// Build a complete Merkle tree with a custom depth.
+///
+/// Same as `build_tree` but allows specifying the tree depth instead of using
+/// the default `TREE_DEPTH`. Useful for testing with small trees.
+pub fn build_tree_with_depth(addresses: &[[u8; 20]], depth: usize) -> Vec<Vec<[u8; 32]>> {
     let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
 
-    // Layer 0: leaves
-    let num_leaves = 1usize << TREE_DEPTH;
-    let mut layers = Vec::with_capacity(TREE_DEPTH + 1);
+    let num_leaves = 1usize << depth;
+    let mut layers = Vec::with_capacity(depth + 1);
 
     let mut current_layer: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
     for addr in addresses {
         current_layer.push(hash_leaf(addr, &mut leaf_hasher));
     }
-    // Pad remaining leaves with sentinel
     current_layer.resize(num_leaves, PADDING_SENTINEL);
     layers.push(current_layer);
 
-    // Layers 1..TREE_DEPTH: interior nodes
-    for level in 0..TREE_DEPTH {
+    for level in 0..depth {
         let prev = &layers[level];
         let mut next = Vec::with_capacity(prev.len() / 2);
         for chunk in prev.chunks(2) {
@@ -325,32 +330,40 @@ pub fn build_tree_streaming(
     addresses: &[[u8; 20]],
     target_index: Option<usize>,
 ) -> ([u8; 32], Option<(Vec<[u8; 32]>, Vec<u8>)>) {
-    let num_leaves = 1usize << TREE_DEPTH;
+    build_tree_streaming_with_depth(addresses, TREE_DEPTH, target_index)
+}
+
+/// Streaming tree build with a custom depth.
+///
+/// Same as `build_tree_streaming` but allows specifying the tree depth.
+/// Useful for testing with small trees where the full TREE_DEPTH is impractical.
+pub fn build_tree_streaming_with_depth(
+    addresses: &[[u8; 20]],
+    depth: usize,
+    target_index: Option<usize>,
+) -> ([u8; 32], Option<(Vec<[u8; 32]>, Vec<u8>)>) {
+    let num_leaves = 1usize << depth;
     let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
 
-    // Build leaf layer
     let mut current: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
     for addr in addresses {
         current.push(hash_leaf(addr, &mut leaf_hasher));
     }
     current.resize(num_leaves, PADDING_SENTINEL);
 
-    // Track proof data for target leaf
     let mut target_siblings: Option<Vec<[u8; 32]>> =
-        target_index.map(|_| Vec::with_capacity(TREE_DEPTH));
+        target_index.map(|_| Vec::with_capacity(depth));
     let mut target_path: Option<Vec<u8>> =
-        target_index.map(|_| Vec::with_capacity(TREE_DEPTH));
+        target_index.map(|_| Vec::with_capacity(depth));
     let mut idx = target_index.unwrap_or(0);
 
-    // Build layer by layer
-    for _level in 0..TREE_DEPTH {
+    for _level in 0..depth {
         let mut next = Vec::with_capacity(current.len() / 2);
         for chunk in current.chunks(2) {
             next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
         }
 
-        // Extract sibling for target proof
         if let (Some(ref mut sibs), Some(ref mut path)) =
             (&mut target_siblings, &mut target_path)
         {
@@ -607,7 +620,9 @@ mod tests {
         assert_eq!(r_path, path_indices);
     }
 
-    /// Test streaming tree build produces same root as full build.
+    /// Test streaming tree build produces the same root as full build.
+    /// Uses `build_tree_with_depth` and `build_tree_streaming_with_depth` at
+    /// depth 4 (16 leaves) — small enough for a fast unit test.
     #[test]
     fn test_streaming_matches_full() {
         let addresses: [[u8; 20]; 3] = [
@@ -619,29 +634,40 @@ mod tests {
              0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01],
         ];
 
-        // Build with a small depth using local build logic
-        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
-        let test_depth = 4usize;
-        let num_leaves = 1usize << test_depth;
-        let mut leaves: Vec<[u8; 32]> = addresses.iter()
-            .map(|a| hash_leaf(a, &mut leaf_hasher))
-            .collect();
-        leaves.resize(num_leaves, PADDING_SENTINEL);
-        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
-        for level in 0..test_depth {
-            let prev = &layers[level];
-            let mut next = Vec::with_capacity(prev.len() / 2);
-            for chunk in prev.chunks(2) {
-                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
-            }
-            layers.push(next);
-        }
-        let full_root = tree_root(&layers);
+        let test_depth = 4;
 
-        // Build with streaming (override TREE_DEPTH temporarily is not possible,
-        // so just compare against the full build root for the small tree)
+        // Build with full (all layers in memory)
+        let full_layers = build_tree_with_depth(&addresses, test_depth);
+        let full_root = tree_root(&full_layers);
         assert_ne!(full_root, [0u8; 32], "Root must not be zero");
+
+        // Build with streaming (only 2 layers in memory at a time)
+        let (streaming_root, _) = build_tree_streaming_with_depth(
+            &addresses,
+            test_depth,
+            None,
+        );
+
+        // Both methods must produce the identical root
+        assert_eq!(full_root, streaming_root,
+            "Full build and streaming build must produce the same root");
+
+        // Also verify streaming with proof extraction
+        let (streaming_root_with_proof, proof) =
+            build_tree_streaming_with_depth(&addresses, test_depth, Some(0));
+        let (siblings, path_indices) = proof
+            .expect("Expected proof for target_index=0");
+        assert_eq!(full_root, streaming_root_with_proof,
+            "Streaming with proof extraction must produce same root");
+        assert_eq!(siblings.len(), test_depth);
+        assert_eq!(path_indices.len(), test_depth);
+
+        // Verify the extracted proof is valid
+        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
+        let leaf = hash_leaf(&addresses[0], &mut leaf_hasher);
+        let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
+        assert_eq!(full_root, computed_root,
+            "Streaming-extracted proof must verify against root");
     }
 
     /// Test that build_tree + generate_proof + verify_merkle_proof produces
