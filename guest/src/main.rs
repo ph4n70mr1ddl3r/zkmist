@@ -6,10 +6,10 @@
 //!   3. The nullifier is correctly computed from the private key
 //!   4. The recipient address is not zero
 //!
-//! Journal layout (96 bytes, all word-aligned):
+//! Journal layout (84 bytes):
 //!   [0:32]   merkleRoot    (bytes32)
 //!   [32:64]  nullifier     (bytes32)
-//!   [64:96]  recipient     (bytes32 — address left-padded with 12 zero bytes)
+//!   [64:84]  recipient     (address — raw 20 bytes)
 //!
 //! The Solidity contract slices the journal by these exact offsets.
 

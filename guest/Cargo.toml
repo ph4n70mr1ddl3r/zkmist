@@ -3,6 +3,11 @@ name = "zkmist-guest"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "zkmist-guest"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 ark-bn254 = "0.5"
 ark-ff = "0.5"

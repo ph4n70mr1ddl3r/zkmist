@@ -13,7 +13,7 @@ clap = { version = "4", features = ["derive"] }
 # Ethereum interaction
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
 # ZK proof generation
-risc0-zkvm = "5.0.0-rc.1"
+risc0-zkvm = { version = "5.0.0-rc.1", features = ["client", "prove"] }
 # Merkle tree (shared library)
 zkmist-merkle-tree = { path = "../merkle-tree" }
 # Crypto primitives used by CLI
@@ -31,3 +31,13 @@ serde_json = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+# Hex encoding/decoding
+hex = "0.4"
+# HTTP client for IPFS download
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# SHA-256 for file integrity checks
+sha2 = "0.10"
+# Progress bar
+indicatif = "0.17"
+# Home directory
+dirs = "5"

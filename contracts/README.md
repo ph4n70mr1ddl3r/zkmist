@@ -1,66 +1,56 @@
-## Foundry
+# ZKMist Smart Contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Privacy-preserving, community-owned ZKM token airdrop on Base.
 
-Foundry consists of:
+## Contracts
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
+| Contract | Description |
+|----------|-------------|
+| `ZKMToken.sol` | ERC-20 with max supply (10B), mintable only by airdrop, burnable by holders |
+| `ZKMAirdrop.sol` | Immutable claim contract — verify ZK proof + mint tokens |
+| `IRiscZeroVerifier.sol` | RISC Zero Groth16 verifier interface |
 
 ## Usage
 
 ### Build
 
 ```shell
-$ forge build
+forge build
 ```
 
 ### Test
 
 ```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
+forge test          # Unit tests (33 tests)
+forge test -vv      # With gas reports
+forge test --match-contract ZKME2E  # End-to-end integration tests (7 tests)
 ```
 
 ### Deploy
 
+Set environment variables:
 ```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+export VERIFIER_ADDRESS=0x...   # RISC Zero Groth16 verifier on Base
+export IMAGE_ID=0x...           # Guest program image ID (bytes32)
+export MERKLE_ROOT=0x...        # Merkle root of eligibility tree (bytes32)
 ```
 
-### Cast
-
 ```shell
-$ cast <subcommand>
+forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast
 ```
 
-### Help
+## Architecture
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+- **Fully immutable**: No admin, no owner, no pause, no upgrade
+- **100% community-owned**: All tokens minted on claim, zero team allocation
+- **Privacy-preserving**: ZK proofs hide the qualified address from the recipient
+- **Gas-efficient**: ~510K gas per claim via Groth16 proof compression
+
+## Journal Layout (84 bytes)
+
+The ZK proof journal is sliced directly by the contract:
+```
+[0:32]   merkleRoot   (bytes32)
+[32:64]  nullifier    (bytes32)
+[64:84]  recipient    (address, 20 bytes)
 ```
