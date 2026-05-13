@@ -241,10 +241,22 @@ pub fn deserialize_tree<R: Read>(mut reader: R) -> io::Result<Vec<Vec<[u8; 32]>>
     let mut buf4 = [0u8; 4];
     reader.read_exact(&mut buf4)?;
     let num_layers = u32::from_le_bytes(buf4) as usize;
+    if num_layers == 0 || num_layers > 64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid number of layers: {} (expected 1..=64)", num_layers),
+        ));
+    }
     let mut layers = Vec::with_capacity(num_layers);
     for _ in 0..num_layers {
         reader.read_exact(&mut buf4)?;
         let num_nodes = u32::from_le_bytes(buf4) as usize;
+        if num_nodes == 0 || num_nodes > (1 << 27) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid layer size: {} nodes (max 2^27)", num_nodes),
+            ));
+        }
         let mut layer = Vec::with_capacity(num_nodes);
         for _ in 0..num_nodes {
             let mut node = [0u8; 32];
@@ -455,6 +467,30 @@ mod tests {
         let n1 = compute_nullifier(&key1, &mut hasher);
         let n2 = compute_nullifier(&key2, &mut hasher);
         assert_ne!(n1, n2, "Different keys must produce different nullifiers");
+    }
+
+    /// Validate nullifier against the PRD Appendix D test vector.
+    ///
+    /// Private key: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    /// Domain: b"ZKMist_V1_NULLIFIER" (19 bytes, zero-padded to 32)
+    /// Expected: 0x078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9
+    ///
+    /// This catches parameter mismatches (wrong Poseidon t, R_F, R_P, or domain)
+    /// before they reach the guest program or on-chain contract.
+    #[test]
+    fn test_nullifier_prd_test_vector() {
+        let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+        let nullifier = compute_nullifier(&key, &mut hasher);
+        assert_eq!(
+            hex::encode(nullifier),
+            "078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9",
+            "Nullifier must match PRD Appendix D test vector"
+        );
     }
 
     #[test]

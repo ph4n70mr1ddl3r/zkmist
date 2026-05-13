@@ -120,6 +120,7 @@ const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD"; // 
 // ── Data structures ──────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProofFile {
     version: u64,
     proof: String,     // hex-encoded STARK seal (Groth16-wrapped)
@@ -620,8 +621,20 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // ── RISC Zero zkVM proving ──────────────────────────────────────────
     eprintln!("      Running RISC Zero zkVM...");
 
-    // Build the executor environment with guest inputs
-    let env = risc0_zkvm::ExecutorEnv::builder()
+    // Build the executor environment with guest inputs.
+    //
+    // IMPORTANT: sibling/path_index pairs must be written interleaved
+    // (sibling[0], path_index[0], sibling[1], path_index[1], ...) to match
+    // the guest program's alternating read loop:
+    //   for i in 0..TREE_DEPTH {
+    //       siblings[i] = env::read();
+    //       path_indices[i] = env::read();
+    //   }
+    // DO NOT use write_slice for siblings and path_indices separately —
+    // that would write [s0,s1,...,s25,p0,p1,...,p25] but the guest reads
+    // [s0,p0,s1,p1,...,s25,p25].
+    let mut builder = risc0_zkvm::ExecutorEnv::builder();
+    builder
         // Public inputs (committed to journal)
         .write(&root)
         .map_err(|e| format!("Failed to write merkle_root to env: {}", e))?
@@ -631,10 +644,15 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("Failed to write recipient to env: {}", e))?
         // Private inputs
         .write(&private_key)
-        .map_err(|e| format!("Failed to write private_key to env: {}", e))?
-        // Merkle proof: 26 levels × (sibling + path_index)
-        .write_slice(&siblings)
-        .write_slice(&path_indices)
+        .map_err(|e| format!("Failed to write private_key to env: {}", e))?;
+    for i in 0..siblings.len() {
+        builder
+            .write(&siblings[i])
+            .map_err(|e| format!("Failed to write sibling[{}]: {}", i, e))?
+            .write(&path_indices[i])
+            .map_err(|e| format!("Failed to write path_index[{}]: {}", i, e))?;
+    }
+    let env = builder
         .build()
         .map_err(|e| format!("Failed to build ExecutorEnv: {}", e))?;
 
@@ -706,7 +724,7 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         journal: hex::encode(journal_bytes),
         nullifier: hex::encode(nullifier),
         recipient: hex::encode(recipient),
-        claim_amount: format!("{}000000000000000000", CLAIM_AMOUNT), // 18 decimals
+        claim_amount: (CLAIM_AMOUNT as u128 * 1_000_000_000_000_000_000).to_string(),
         contract_address: AIRDROP_CONTRACT.to_string(),
         chain_id: CHAIN_ID,
         receipt_hex: Some(receipt_hex),
@@ -753,6 +771,20 @@ fn get_guest_elf() -> Result<Vec<u8>, String> {
                 return std::fs::read(&sibling_path)
                     .map_err(|e| format!("Failed to read guest ELF: {}", e));
             }
+        }
+    }
+
+    // Try the RISC Zero build output directory (cargo risczero build)
+    let build_paths = [
+        // Release build (standard)
+        std::path::PathBuf::from("target/riscv32im-risc0-zkvm-elf/release/zkmist-guest"),
+        // Relative to workspace root (when run via cargo run)
+        std::path::PathBuf::from("../target/riscv32im-risc0-zkvm-elf/release/zkmist-guest"),
+    ];
+    for path in &build_paths {
+        if path.exists() {
+            return std::fs::read(path)
+                .map_err(|e| format!("Failed to read guest ELF {}: {}", path.display(), e));
         }
     }
 

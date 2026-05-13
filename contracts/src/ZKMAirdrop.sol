@@ -30,19 +30,9 @@ contract ZKMAirdrop {
     /// @param amount     Always CLAIM_AMOUNT (10,000 ZKM).
     /// @param recipient  Address that received the tokens.
     /// @param totalClaims Updated claim count after this claim.
-    event Claimed(
-        bytes32 indexed nullifier,
-        uint256 amount,
-        address indexed recipient,
-        uint256 totalClaims
-    );
+    event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient, uint256 totalClaims);
 
-    constructor(
-        address _token,
-        address _verifier,
-        bytes32 _imageId,
-        bytes32 _merkleRoot
-    ) {
+    constructor(address _token, address _verifier, bytes32 _imageId, bytes32 _merkleRoot) {
         token = ZKMToken(_token);
         verifier = IRiscZeroVerifier(_verifier);
         imageId = _imageId;
@@ -54,12 +44,7 @@ contract ZKMAirdrop {
     /// @param _journal   Journal bytes (84 bytes: merkleRoot + nullifier + recipient).
     /// @param _nullifier The nullifier for this claim (prevents double-claim).
     /// @param _recipient Address to receive 10,000 ZKM.
-    function claim(
-        bytes calldata _proof,
-        bytes calldata _journal,
-        bytes32 _nullifier,
-        address _recipient
-    ) external {
+    function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient) external {
         // Check claim window
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
@@ -78,10 +63,7 @@ contract ZKMAirdrop {
         // Validate journal contents match claim parameters
         require(bytes32(_journal[0:32]) == merkleRoot, "Root mismatch");
         require(bytes32(_journal[32:64]) == _nullifier, "Nullifier mismatch");
-        require(
-            address(bytes20(_journal[64:84])) == _recipient,
-            "Recipient mismatch"
-        );
+        require(address(bytes20(_journal[64:84])) == _recipient, "Recipient mismatch");
 
         // Mark claimed and mint
         usedNullifiers[_nullifier] = true;

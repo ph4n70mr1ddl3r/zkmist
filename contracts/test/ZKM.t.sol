@@ -124,30 +124,21 @@ contract ZKMAirdropTest is Test {
         verifier = new NoopVerifier();
 
         // Predict the airdrop contract address.
-        // Nonces from address(this): 0=NoopVerifier, 1=ZKMToken, 2=ZKMAirdrop
+        // Nonces from address(this): 1=NoopVerifier, 2=ZKMToken, 3=ZKMAirdrop
         address predictedAirdrop = vm.computeCreateAddress(address(this), 3);
 
         // Deploy token with predicted airdrop address as minter
         token = new ZKMToken(predictedAirdrop);
 
         // Deploy airdrop
-        airdrop = new ZKMAirdrop(
-            address(token),
-            address(verifier),
-            IMAGE_ID,
-            MERKLE_ROOT
-        );
+        airdrop = new ZKMAirdrop(address(token), address(verifier), IMAGE_ID, MERKLE_ROOT);
 
         require(address(airdrop) == predictedAirdrop, "Address prediction failed");
         require(token.minter() == address(airdrop), "Minter mismatch");
     }
 
     /// @dev Build a valid 84-byte journal for the given claim parameters.
-    function _buildJournal(
-        bytes32 root,
-        bytes32 nullifier,
-        address recipient
-    ) internal pure returns (bytes memory) {
+    function _buildJournal(bytes32 root, bytes32 nullifier, address recipient) internal pure returns (bytes memory) {
         return bytes.concat(root, nullifier, bytes20(recipient));
     }
 

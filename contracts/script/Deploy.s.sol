@@ -40,12 +40,7 @@ contract Deploy is Script {
         console.log("Predicted airdrop address:", predictedAirdrop);
 
         // Step 2: Deploy airdrop
-        ZKMAirdrop airdrop = new ZKMAirdrop(
-            address(token),
-            verifier,
-            imageId,
-            merkleRoot
-        );
+        ZKMAirdrop airdrop = new ZKMAirdrop(address(token), verifier, imageId, merkleRoot);
         console.log("ZKMAirdrop deployed at:", address(airdrop));
 
         require(address(airdrop) == predictedAirdrop, "Address prediction failed");

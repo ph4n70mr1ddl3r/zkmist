@@ -41,12 +41,7 @@ contract ZKME2ETest is Test {
 
         NoopVerifier testVerifier = new NoopVerifier();
         testToken = new ZKMToken(predictedAirdrop);
-        testAirdrop = new ZKMAirdrop(
-            address(testToken),
-            address(testVerifier),
-            IMAGE_ID,
-            _root
-        );
+        testAirdrop = new ZKMAirdrop(address(testToken), address(testVerifier), IMAGE_ID, _root);
 
         require(address(testAirdrop) == predictedAirdrop, "Address prediction failed");
         require(testToken.minter() == address(testAirdrop), "Minter mismatch");
@@ -249,11 +244,7 @@ contract ZKME2ETest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    function _buildJournal(
-        bytes32 root,
-        bytes32 nullifier,
-        address recipient
-    ) internal pure returns (bytes memory) {
+    function _buildJournal(bytes32 root, bytes32 nullifier, address recipient) internal pure returns (bytes memory) {
         return bytes.concat(root, nullifier, bytes20(recipient));
     }
 }
