@@ -122,10 +122,10 @@ const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD"; // 
 #[derive(Serialize, Deserialize)]
 struct ProofFile {
     version: u64,
-    proof: String,      // hex-encoded STARK seal (Groth16-wrapped)
-    journal: String,    // hex-encoded journal bytes (84 bytes)
-    nullifier: String,  // hex-encoded 32 bytes
-    recipient: String,  // hex-encoded 20 bytes
+    proof: String,     // hex-encoded STARK seal (Groth16-wrapped)
+    journal: String,   // hex-encoded journal bytes (84 bytes)
+    nullifier: String, // hex-encoded 32 bytes
+    recipient: String, // hex-encoded 20 bytes
     claim_amount: String,
     contract_address: String,
     chain_id: u64,
@@ -191,18 +191,14 @@ fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
     let mut csv_files: Vec<_> = std::fs::read_dir(&dir)
         .map_err(|e| format!("Failed to read eligibility dir: {}", e))?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "csv")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "csv"))
         .map(|e| e.path())
         .collect();
     csv_files.sort();
 
     for path in &csv_files {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with("address") {
@@ -224,7 +220,10 @@ fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
 fn parse_address(s: &str) -> Result<[u8; 20], String> {
     let hex = s.strip_prefix("0x").unwrap_or(s);
     if hex.len() != 40 {
-        return Err(format!("Invalid address length: {} (expected 40 hex chars)", hex.len()));
+        return Err(format!(
+            "Invalid address length: {} (expected 40 hex chars)",
+            hex.len()
+        ));
     }
     let mut addr = [0u8; 20];
     hex::decode_to_slice(hex, &mut addr)
@@ -239,7 +238,10 @@ fn read_private_key() -> Result<[u8; 32], String> {
     let input = rpassword::read_password().map_err(|e| format!("Failed to read input: {}", e))?;
     let hex = input.strip_prefix("0x").unwrap_or(&input);
     if hex.len() != 64 {
-        return Err(format!("Invalid private key length: {} hex chars (expected 64)", hex.len()));
+        return Err(format!(
+            "Invalid private key length: {} hex chars (expected 64)",
+            hex.len()
+        ));
     }
     let mut key = [0u8; 32];
     hex::decode_to_slice(hex, &mut key)
@@ -329,9 +331,12 @@ fn format_deadline(timestamp: u64) -> &'static str {
 fn progress_bar(total: u64, msg: &str) -> ProgressBar {
     let pb = ProgressBar::new(total);
     pb.set_style(
-        ProgressStyle::with_template(&format!("{{msg}} {{bar:40.cyan/blue}} {{pos}}/{{len}} ({}) ETA: {{eta}}", msg))
-            .expect("valid template")
-            .progress_chars("█▓░"),
+        ProgressStyle::with_template(&format!(
+            "{{msg}} {{bar:40.cyan/blue}} {{pos}}/{{len}} ({}) ETA: {{eta}}",
+            msg
+        ))
+        .expect("valid template")
+        .progress_chars("█▓░"),
     );
     pb
 }
@@ -340,7 +345,8 @@ fn progress_bar(total: u64, msg: &str) -> ProgressBar {
 
 fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
     let dir = eligibility_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
 
     let effective_cid = cid.unwrap_or(DEFAULT_CID);
     if effective_cid.contains("FIXME") {
@@ -362,12 +368,16 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
     let manifest: Manifest = rt.block_on(async {
         let client = reqwest::Client::new();
-        let resp = client.get(&manifest_url).send().await
+        let resp = client
+            .get(&manifest_url)
+            .send()
+            .await
             .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
-        let text = resp.text().await
+        let text = resp
+            .text()
+            .await
             .map_err(|e| format!("Failed to read manifest: {}", e))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("Failed to parse manifest: {}", e))
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse manifest: {}", e))
     })?;
 
     eprintln!("      Version: {}", manifest.version);
@@ -387,7 +397,10 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
 
     for file_entry in &manifest.files {
         let filename = &file_entry.file;
-        let expected_hash = file_entry.sha256.strip_prefix("0x").unwrap_or(&file_entry.sha256);
+        let expected_hash = file_entry
+            .sha256
+            .strip_prefix("0x")
+            .unwrap_or(&file_entry.sha256);
         let dest = dir.join(filename);
 
         if dest.exists() {
@@ -406,9 +419,14 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
         let url = format!("{}/{}/{}", IPFS_GATEWAY, effective_cid, filename);
         rt.block_on(async {
             let client = reqwest::Client::new();
-            let resp = client.get(&url).send().await
+            let resp = client
+                .get(&url)
+                .send()
+                .await
                 .map_err(|e| format!("Failed to fetch {}: {}", filename, e))?;
-            let data = resp.bytes().await
+            let data = resp
+                .bytes()
+                .await
                 .map_err(|e| format!("Failed to read {}: {}", filename, e))?;
 
             // Verify hash
@@ -425,7 +443,7 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
             std::fs::write(&dest, &data)
                 .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
             Ok::<(), String>(())
-        }).map_err(|e| e)?;
+        })?;
 
         pb.inc(1);
     }
@@ -442,11 +460,17 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
     eprintln!("      Root: {}", format_bytes32(&root));
 
     // Validate computed root against manifest's expected root
-    let expected_root_hex = manifest.merkle_root.strip_prefix("0x").unwrap_or(&manifest.merkle_root);
+    let expected_root_hex = manifest
+        .merkle_root
+        .strip_prefix("0x")
+        .unwrap_or(&manifest.merkle_root);
     let expected_root_bytes = hex::decode(expected_root_hex)
         .map_err(|e| format!("Invalid merkle root in manifest: {}", e))?;
     if expected_root_bytes.len() != 32 {
-        return Err(format!("Invalid merkle root length in manifest: {} bytes", expected_root_bytes.len()));
+        return Err(format!(
+            "Invalid merkle root length in manifest: {} bytes",
+            expected_root_bytes.len()
+        ));
     }
     let mut expected = [0u8; 32];
     expected.copy_from_slice(&expected_root_bytes);
@@ -466,10 +490,12 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
     let writer = std::io::BufWriter::new(file);
     zkmist_merkle_tree::serialize_tree(&tree_layers, writer)
         .map_err(|e| format!("Failed to write tree cache: {}", e))?;
-    let cache_size = std::fs::metadata(&cache_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    eprintln!("      Cache saved: {} ({:.1} MB)", cache_path.display(), cache_size as f64 / 1_048_576.0);
+    let cache_size = std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "      Cache saved: {} ({:.1} MB)",
+        cache_path.display(),
+        cache_size as f64 / 1_048_576.0
+    );
 
     eprintln!();
     eprintln!("✅ Fetch complete. Run `zkmist prove` to generate a claim proof.");
@@ -506,7 +532,10 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
                 .map_err(|e| format!("Failed to read manifest: {}", e))?;
             let manifest: Manifest = serde_json::from_str(&manifest_json)
                 .map_err(|e| format!("Failed to parse manifest: {}", e))?;
-            let expected_hex = manifest.merkle_root.strip_prefix("0x").unwrap_or(&manifest.merkle_root);
+            let expected_hex = manifest
+                .merkle_root
+                .strip_prefix("0x")
+                .unwrap_or(&manifest.merkle_root);
             let expected_bytes = hex::decode(expected_hex)
                 .map_err(|e| format!("Invalid root in manifest: {}", e))?;
             if expected_bytes.len() == 32 {
@@ -524,7 +553,9 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         }
     } else {
         eprintln!("[2/4] Building Merkle tree...");
-        eprintln!("      ⚠️  This requires ~4 GB RAM. Tip: run `zkmist fetch` first to cache the tree.");
+        eprintln!(
+            "      ⚠️  This requires ~4 GB RAM. Tip: run `zkmist fetch` first to cache the tree."
+        );
         tree_layers = zkmist_merkle_tree::build_tree(&addresses);
         root = zkmist_merkle_tree::tree_root(&tree_layers);
         eprintln!("      Tree built ({} levels)", tree_layers.len() - 1);
@@ -543,8 +574,7 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     eprintln!("      → Address: {}", format_address(&address));
 
     // Check eligibility
-    let mut leaf_hasher =
-        ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
+    let mut leaf_hasher = ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
     let leaf = hash_leaf(&address, &mut leaf_hasher);
 
     if leaf == PADDING_SENTINEL {
@@ -553,22 +583,18 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
 
     // Find the leaf in the tree
     let leaves = &tree_layers[0];
-    let leaf_index = leaves
-        .iter()
-        .position(|l| *l == leaf)
-        .ok_or_else(|| {
-            format!(
-                "Address {} is NOT in the eligibility tree. \
+    let leaf_index = leaves.iter().position(|l| *l == leaf).ok_or_else(|| {
+        format!(
+            "Address {} is NOT in the eligibility tree. \
                  If you believe this is an error, verify the eligibility list.",
-                format_address(&address)
-            )
-        })?;
+            format_address(&address)
+        )
+    })?;
 
     eprintln!("      ✓ Eligible (index: {})", leaf_index);
 
     // Compute nullifier
-    let mut interior_hasher =
-        ark_poseidon_hasher(2).ok_or("Failed to create interior hasher")?;
+    let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create interior hasher")?;
     let nullifier = compute_nullifier(&private_key, &mut interior_hasher);
     eprintln!("      → Nullifier: {}", format_bytes32(&nullifier));
 
@@ -616,8 +642,13 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     let guest_elf = get_guest_elf()?;
     let computed_image_id = risc0_zkvm::compute_image_id(&guest_elf)
         .map_err(|e| format!("Failed to compute image ID: {}", e))?;
-    eprintln!("      Guest image ID: {}", hex::encode(computed_image_id.as_bytes()));
-    eprintln!("      ⚠️  Verify this matches the image ID in the airdrop contract before submitting.");
+    eprintln!(
+        "      Guest image ID: {}",
+        hex::encode(computed_image_id.as_bytes())
+    );
+    eprintln!(
+        "      ⚠️  Verify this matches the image ID in the airdrop contract before submitting."
+    );
 
     // Prove with Groth16 compression for on-chain verification (~510K gas)
     let prover = risc0_zkvm::default_prover();
@@ -688,7 +719,11 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
 
     eprintln!();
     eprintln!("      ⚠️  RECIPIENT IS IRREVOCABLE — triple-check before submitting.");
-    eprintln!("      {} ZKM will be minted to {} on claim.", CLAIM_AMOUNT, format_address(&recipient));
+    eprintln!(
+        "      {} ZKM will be minted to {} on claim.",
+        CLAIM_AMOUNT,
+        format_address(&recipient)
+    );
     eprintln!("      Proof saved: {}", proof_filename);
     eprintln!("      Run: zkmist submit {}", proof_filename);
     eprintln!("      Or send to any relayer.");
@@ -749,19 +784,22 @@ fn encode_receipt_seal(receipt: &risc0_zkvm::Receipt) -> String {
             // For now, return an error indication
             "NEEDS_GROTH16_COMPRESSION".to_string()
         }
-        _ => {
-            "UNKNOWN_RECEIPT_TYPE".to_string()
-        }
+        _ => "UNKNOWN_RECEIPT_TYPE".to_string(),
     }
 }
 
 // ── Command: submit ──────────────────────────────────────────────────────
 
-fn cmd_submit(proof_file: &str, rpc_url: Option<&str>, private_key_hex: Option<&str>, key_file: Option<&str>) -> Result<(), String> {
+fn cmd_submit(
+    proof_file: &str,
+    rpc_url: Option<&str>,
+    private_key_hex: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<(), String> {
     let content = std::fs::read_to_string(proof_file)
         .map_err(|e| format!("Failed to read {}: {}", proof_file, e))?;
-    let proof: ProofFile = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse proof file: {}", e))?;
+    let proof: ProofFile =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse proof file: {}", e))?;
 
     eprintln!("Loading proof from: {}", proof_file);
     eprintln!("  Nullifier: 0x{}", proof.nullifier);
@@ -788,8 +826,8 @@ fn cmd_submit(proof_file: &str, rpc_url: Option<&str>, private_key_hex: Option<&
     } else {
         eprint!("Submitter private key (for gas, hidden): ");
         io::stderr().flush().ok();
-        let input = rpassword::read_password()
-            .map_err(|e| format!("Failed to read input: {}", e))?;
+        let input =
+            rpassword::read_password().map_err(|e| format!("Failed to read input: {}", e))?;
         input.strip_prefix("0x").unwrap_or(&input).to_string()
     };
 
@@ -799,23 +837,28 @@ fn cmd_submit(proof_file: &str, rpc_url: Option<&str>, private_key_hex: Option<&
     // Build and submit the claim transaction using alloy
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
     rt.block_on(async {
-        use alloy::providers::{ProviderBuilder, Provider};
-        use alloy::signers::local::PrivateKeySigner;
         use alloy::primitives::{Address, Bytes, FixedBytes};
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::signers::local::PrivateKeySigner;
 
         // Create provider with signer
-        let signer: PrivateKeySigner = submitter_key.parse()
+        let signer: PrivateKeySigner = submitter_key
+            .parse()
             .map_err(|e| format!("Invalid private key: {}", e))?;
         let url: reqwest::Url = rpc.parse().map_err(|e| format!("Invalid RPC URL: {}", e))?;
-        let provider = ProviderBuilder::new()
-            .wallet(signer)
-            .connect_http(url);
+        let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
 
-        let contract_address: Address = proof.contract_address.parse()
-            .map_err(|e| format!("Invalid contract address '{}': {}", proof.contract_address, e))?;
-        let nullifier_bytes: FixedBytes<32> = format!("0x{}", proof.nullifier).parse()
+        let contract_address: Address = proof.contract_address.parse().map_err(|e| {
+            format!(
+                "Invalid contract address '{}': {}",
+                proof.contract_address, e
+            )
+        })?;
+        let nullifier_bytes: FixedBytes<32> = format!("0x{}", proof.nullifier)
+            .parse()
             .map_err(|e| format!("Invalid nullifier: {}", e))?;
-        let recipient_address: Address = format!("0x{}", proof.recipient).parse()
+        let recipient_address: Address = format!("0x{}", proof.recipient)
+            .parse()
             .map_err(|e| format!("Invalid recipient: {}", e))?;
 
         // Decode hex proof and journal
@@ -842,12 +885,16 @@ fn cmd_submit(proof_file: &str, rpc_url: Option<&str>, private_key_hex: Option<&
             .input(call_data.into());
 
         eprintln!("Submitting claim transaction...");
-        let pending = provider.send_transaction(tx).await
+        let pending = provider
+            .send_transaction(tx)
+            .await
             .map_err(|e| format!("Failed to send transaction: {}", e))?;
         let tx_hash = *pending.tx_hash();
         eprintln!("  TX hash: {}", tx_hash);
 
-        let receipt = pending.get_receipt().await
+        let receipt = pending
+            .get_receipt()
+            .await
             .map_err(|e| format!("Failed to get receipt: {}", e))?;
 
         if receipt.status() {
@@ -861,20 +908,18 @@ fn cmd_submit(proof_file: &str, rpc_url: Option<&str>, private_key_hex: Option<&
         }
 
         Ok::<(), String>(())
-    }).map_err(|e| e)?;
+    })?;
 
     Ok(())
 }
-
-
 
 // ── Command: verify ──────────────────────────────────────────────────────
 
 fn cmd_verify(proof_file: &str) -> Result<(), String> {
     let content = std::fs::read_to_string(proof_file)
         .map_err(|e| format!("Failed to read {}: {}", proof_file, e))?;
-    let proof: ProofFile = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse proof file: {}", e))?;
+    let proof: ProofFile =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse proof file: {}", e))?;
 
     eprintln!("Verifying proof from: {}", proof_file);
     eprintln!("  Nullifier: 0x{}", proof.nullifier);
@@ -882,8 +927,8 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
     eprintln!();
 
     // Parse journal
-    let journal_bytes = hex::decode(&proof.journal)
-        .map_err(|e| format!("Failed to decode journal hex: {}", e))?;
+    let journal_bytes =
+        hex::decode(&proof.journal).map_err(|e| format!("Failed to decode journal hex: {}", e))?;
 
     if journal_bytes.len() != 84 {
         return Err(format!(
@@ -907,8 +952,8 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
     eprintln!();
 
     // Verify journal fields match proof file fields
-    let proof_nullifier = hex::decode(&proof.nullifier)
-        .map_err(|e| format!("Invalid nullifier hex: {}", e))?;
+    let proof_nullifier =
+        hex::decode(&proof.nullifier).map_err(|e| format!("Invalid nullifier hex: {}", e))?;
     if proof_nullifier.len() != 32 {
         return Err("Proof nullifier must be 32 bytes".to_string());
     }
@@ -918,8 +963,8 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
         return Err("Journal nullifier does not match proof file nullifier".to_string());
     }
 
-    let proof_recipient = hex::decode(&proof.recipient)
-        .map_err(|e| format!("Invalid recipient hex: {}", e))?;
+    let proof_recipient =
+        hex::decode(&proof.recipient).map_err(|e| format!("Invalid recipient hex: {}", e))?;
     if proof_recipient.len() != 20 {
         return Err("Proof recipient must be 20 bytes".to_string());
     }
@@ -977,7 +1022,10 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
                     ));
                 }
             }
-        } else if proof.proof == "FAKE_SEAL_DEV_MODE" || proof.proof == "NEEDS_GROTH16_COMPRESSION" || proof.proof == "UNKNOWN_RECEIPT_TYPE" {
+        } else if proof.proof == "FAKE_SEAL_DEV_MODE"
+            || proof.proof == "NEEDS_GROTH16_COMPRESSION"
+            || proof.proof == "UNKNOWN_RECEIPT_TYPE"
+        {
             eprintln!("  ⚠️  Proof was generated in dev/fake mode — cryptographic verification not possible.");
             eprintln!("      Only journal integrity has been verified.");
         } else {
@@ -1051,16 +1099,22 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
     // Query on-chain state via alloy
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
     rt.block_on(async {
-        use alloy::providers::{ProviderBuilder, Provider};
         use alloy::primitives::Address;
+        use alloy::providers::{Provider, ProviderBuilder};
 
         let url: reqwest::Url = rpc.parse().map_err(|e| format!("Invalid RPC URL: {}", e))?;
         let provider = ProviderBuilder::new().connect_http(url);
 
-        let contract: Address = AIRDROP_CONTRACT.parse()
+        let contract: Address = AIRDROP_CONTRACT
+            .parse()
             .map_err(|e| format!("Invalid contract address: {}", e))?;
 
-        if contract == Address::ZERO || contract == "0x000000000000000000000000000000000000dEaD".parse::<Address>().unwrap() {
+        if contract == Address::ZERO
+            || contract
+                == "0x000000000000000000000000000000000000dEaD"
+                    .parse::<Address>()
+                    .unwrap()
+        {
             eprintln!("⚠️  Contract not deployed yet (address is placeholder).");
             eprintln!("   On-chain status unavailable until deployment.");
             return Ok::<(), String>(());
@@ -1072,8 +1126,11 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             .await
             .map_err(|e| format!("Failed to query totalClaims: {}", e))?;
 
-        let total_claims_u64: u64 = total_claims_storage.try_into()
-            .map_err(|e: alloy::primitives::ruint::FromUintError<u64>| format!("totalClaims overflow: {}", e))?;
+        let total_claims_u64: u64 = total_claims_storage.try_into().map_err(
+            |e: alloy::primitives::ruint::FromUintError<u64>| {
+                format!("totalClaims overflow: {}", e)
+            },
+        )?;
 
         let remaining = MAX_CLAIMS - total_claims_u64;
         let total_supply = total_claims_u64 * CLAIM_AMOUNT;
@@ -1082,10 +1139,17 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
         eprintln!("Total claimed:  {}", total_claims_u64);
         eprintln!("Claims left:    {} / {}", remaining, MAX_CLAIMS);
         eprintln!("Total supply:   {} ZKM ({:.1}% of max)", total_supply, pct);
-        eprintln!("Status:         {}", if total_claims_u64 < MAX_CLAIMS { "✅ OPEN" } else { "🔴 CAP REACHED" });
+        eprintln!(
+            "Status:         {}",
+            if total_claims_u64 < MAX_CLAIMS {
+                "✅ OPEN"
+            } else {
+                "🔴 CAP REACHED"
+            }
+        );
 
         Ok::<(), String>(())
-    }).map_err(|e| e)?;
+    })?;
 
     Ok(())
 }
@@ -1099,9 +1163,17 @@ async fn main() {
     let result = match cli.command {
         Commands::Fetch { cid, http } => cmd_fetch(cid.as_deref(), http),
         Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
-        Commands::Submit { proof_file, rpc_url, private_key, key_file } => {
-            cmd_submit(&proof_file, rpc_url.as_deref(), private_key.as_deref(), key_file.as_deref())
-        }
+        Commands::Submit {
+            proof_file,
+            rpc_url,
+            private_key,
+            key_file,
+        } => cmd_submit(
+            &proof_file,
+            rpc_url.as_deref(),
+            private_key.as_deref(),
+            key_file.as_deref(),
+        ),
         Commands::Verify { proof_file } => cmd_verify(&proof_file),
         Commands::Check { address } => cmd_check(&address),
         Commands::Status { rpc_url } => cmd_status(rpc_url.as_deref()),

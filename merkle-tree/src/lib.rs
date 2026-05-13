@@ -119,7 +119,11 @@ pub fn build_tree_with_depth(addresses: &[[u8; 20]], depth: usize) -> Vec<Vec<[u
 pub fn tree_root(layers: &[Vec<[u8; 32]>]) -> [u8; 32] {
     assert!(!layers.is_empty(), "Empty tree has no root");
     let root_layer = &layers[layers.len() - 1];
-    assert_eq!(root_layer.len(), 1, "Root layer must have exactly one element");
+    assert_eq!(
+        root_layer.len(),
+        1,
+        "Root layer must have exactly one element"
+    );
     root_layer[0]
 }
 
@@ -164,7 +168,7 @@ pub fn generate_proof(
     let mut index = leaf_index;
     for layer in tree_layers.iter().take(depth) {
         assert!(index < layer.len(), "leaf_index out of bounds at level");
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             // Current is left child (path_index = 0)
             assert!(index + 1 < layer.len(), "missing sibling at level");
             siblings.push(layer[index + 1]);
@@ -285,9 +289,10 @@ pub fn serialize_proof<W: Write>(
 /// Deserialize proof data from a reader.
 ///
 /// Returns (root, leaf_index, siblings, path_indices).
-pub fn deserialize_proof<R: Read>(
-    mut reader: R,
-) -> io::Result<([u8; 32], usize, Vec<[u8; 32]>, Vec<u8>)> {
+/// Deserialized proof data: (root, leaf_index, siblings, path_indices).
+pub type ProofData = ([u8; 32], usize, Vec<[u8; 32]>, Vec<u8>);
+
+pub fn deserialize_proof<R: Read>(mut reader: R) -> io::Result<ProofData> {
     let mut magic = [0u8; 4];
     reader.read_exact(&mut magic)?;
     if magic != PROOF_CACHE_MAGIC {
@@ -326,10 +331,13 @@ pub fn deserialize_proof<R: Read>(
 ///
 /// If `target_index` is provided, also returns (siblings, path_indices) for
 /// that leaf, enabling proof generation without storing all layers.
+/// Result of streaming tree build: root, and optionally (siblings, path_indices) for a target leaf.
+pub type StreamingResult = ([u8; 32], Option<(Vec<[u8; 32]>, Vec<u8>)>);
+
 pub fn build_tree_streaming(
     addresses: &[[u8; 20]],
     target_index: Option<usize>,
-) -> ([u8; 32], Option<(Vec<[u8; 32]>, Vec<u8>)>) {
+) -> StreamingResult {
     build_tree_streaming_with_depth(addresses, TREE_DEPTH, target_index)
 }
 
@@ -341,7 +349,7 @@ pub fn build_tree_streaming_with_depth(
     addresses: &[[u8; 20]],
     depth: usize,
     target_index: Option<usize>,
-) -> ([u8; 32], Option<(Vec<[u8; 32]>, Vec<u8>)>) {
+) -> StreamingResult {
     let num_leaves = 1usize << depth;
     let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
@@ -354,8 +362,7 @@ pub fn build_tree_streaming_with_depth(
 
     let mut target_siblings: Option<Vec<[u8; 32]>> =
         target_index.map(|_| Vec::with_capacity(depth));
-    let mut target_path: Option<Vec<u8>> =
-        target_index.map(|_| Vec::with_capacity(depth));
+    let mut target_path: Option<Vec<u8>> = target_index.map(|_| Vec::with_capacity(depth));
     let mut idx = target_index.unwrap_or(0);
 
     for _level in 0..depth {
@@ -364,10 +371,8 @@ pub fn build_tree_streaming_with_depth(
             next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
         }
 
-        if let (Some(ref mut sibs), Some(ref mut path)) =
-            (&mut target_siblings, &mut target_path)
-        {
-            if idx % 2 == 0 {
+        if let (Some(ref mut sibs), Some(ref mut path)) = (&mut target_siblings, &mut target_path) {
+            if idx.is_multiple_of(2) {
                 sibs.push(current[idx + 1]);
                 path.push(0);
             } else {
@@ -409,8 +414,8 @@ mod tests {
         // Verify that hash_leaf produces the same output as the test vector
         let mut hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
         let addr_bytes: [u8; 20] = [
-            0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
-            0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+            0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+            0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
         ];
         let leaf = hash_leaf(&addr_bytes, &mut hasher);
         assert_eq!(
@@ -479,20 +484,30 @@ mod tests {
         // Test addresses (arbitrary valid Ethereum addresses)
         let addresses: [[u8; 20]; 5] = [
             // PRD test vector address
-            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
-             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
+            [
+                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+            ],
             // Address 0x0000...0001 (edge case)
-            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            ],
             // Address 0xFFff...ffFF (edge case)
-            [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            [
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            ],
             // Arbitrary address
-            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
-             0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44],
+            [
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+                0xff, 0x00, 0x11, 0x22, 0x33, 0x44,
+            ],
             // Another arbitrary address
-            [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
-             0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01],
+            [
+                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+            ],
         ];
 
         // Build tree with custom depth
@@ -534,13 +549,18 @@ mod tests {
 
             // Verify proof (mirrors guest program logic)
             let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
-            assert_eq!(computed_root, root, "Proof verification failed for address {}", i);
+            assert_eq!(
+                computed_root, root,
+                "Proof verification failed for address {}",
+                i
+            );
         }
 
         // Negative test: wrong leaf should NOT produce the same root
-        let wrong_addr: [u8; 20] = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x00,
-                                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                                     0x00, 0x00, 0x00, 0x00];
+        let wrong_addr: [u8; 20] = [
+            0xde, 0xad, 0xbe, 0xef, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let wrong_leaf = hash_leaf(&wrong_addr, &mut leaf_hasher);
         let (siblings, path_indices) = generate_proof(&layers, 0);
         let wrong_root = verify_merkle_proof(&wrong_leaf, &siblings, &path_indices);
@@ -558,12 +578,18 @@ mod tests {
     #[test]
     fn test_tree_cache_roundtrip() {
         let addresses: [[u8; 20]; 3] = [
-            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
-             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
-            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
-            [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
-             0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01],
+            [
+                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+            ],
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            ],
+            [
+                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+            ],
         ];
 
         // Build a small tree with custom depth
@@ -571,7 +597,8 @@ mod tests {
         let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
         let test_depth = 4usize;
         let num_leaves = 1usize << test_depth;
-        let mut leaves: Vec<[u8; 32]> = addresses.iter()
+        let mut leaves: Vec<[u8; 32]> = addresses
+            .iter()
             .map(|a| hash_leaf(a, &mut leaf_hasher))
             .collect();
         leaves.resize(num_leaves, PADDING_SENTINEL);
@@ -626,12 +653,18 @@ mod tests {
     #[test]
     fn test_streaming_matches_full() {
         let addresses: [[u8; 20]; 3] = [
-            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
-             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
-            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
-            [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
-             0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01],
+            [
+                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+            ],
+            [
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+            ],
+            [
+                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+            ],
         ];
 
         let test_depth = 4;
@@ -642,23 +675,22 @@ mod tests {
         assert_ne!(full_root, [0u8; 32], "Root must not be zero");
 
         // Build with streaming (only 2 layers in memory at a time)
-        let (streaming_root, _) = build_tree_streaming_with_depth(
-            &addresses,
-            test_depth,
-            None,
-        );
+        let (streaming_root, _) = build_tree_streaming_with_depth(&addresses, test_depth, None);
 
         // Both methods must produce the identical root
-        assert_eq!(full_root, streaming_root,
-            "Full build and streaming build must produce the same root");
+        assert_eq!(
+            full_root, streaming_root,
+            "Full build and streaming build must produce the same root"
+        );
 
         // Also verify streaming with proof extraction
         let (streaming_root_with_proof, proof) =
             build_tree_streaming_with_depth(&addresses, test_depth, Some(0));
-        let (siblings, path_indices) = proof
-            .expect("Expected proof for target_index=0");
-        assert_eq!(full_root, streaming_root_with_proof,
-            "Streaming with proof extraction must produce same root");
+        let (siblings, path_indices) = proof.expect("Expected proof for target_index=0");
+        assert_eq!(
+            full_root, streaming_root_with_proof,
+            "Streaming with proof extraction must produce same root"
+        );
         assert_eq!(siblings.len(), test_depth);
         assert_eq!(path_indices.len(), test_depth);
 
@@ -666,8 +698,10 @@ mod tests {
         let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid params");
         let leaf = hash_leaf(&addresses[0], &mut leaf_hasher);
         let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
-        assert_eq!(full_root, computed_root,
-            "Streaming-extracted proof must verify against root");
+        assert_eq!(
+            full_root, computed_root,
+            "Streaming-extracted proof must verify against root"
+        );
     }
 
     /// Test that build_tree + generate_proof + verify_merkle_proof produces
@@ -676,8 +710,10 @@ mod tests {
     fn test_build_tree_and_proof_prd_vector() {
         let addresses: [[u8; 20]; 1] = [
             // PRD test vector: derived from private key 0x0123...cdef
-            [0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31,
-             0xd6, 0xf1, 0x15, 0x23, 0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c],
+            [
+                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+            ],
         ];
 
         // Build with reduced depth
@@ -687,7 +723,8 @@ mod tests {
         let test_depth = 4usize;
         let num_leaves = 1usize << test_depth;
 
-        let mut leaves: Vec<[u8; 32]> = addresses.iter()
+        let mut leaves: Vec<[u8; 32]> = addresses
+            .iter()
             .map(|a| hash_leaf(a, &mut leaf_hasher))
             .collect();
         leaves.resize(num_leaves, PADDING_SENTINEL);
@@ -705,11 +742,15 @@ mod tests {
         let root = layers[test_depth][0];
 
         // Verify leaf hash matches PRD test vector
-        let expected_leaf = hex::decode("1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9")
-            .expect("Invalid hex");
+        let expected_leaf =
+            hex::decode("1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9")
+                .expect("Invalid hex");
         let mut expected = [0u8; 32];
         expected.copy_from_slice(&expected_leaf);
-        assert_eq!(layers[0][0], expected, "Leaf hash must match PRD test vector");
+        assert_eq!(
+            layers[0][0], expected,
+            "Leaf hash must match PRD test vector"
+        );
 
         // Generate proof for index 0
         let (siblings, path_indices) = generate_proof(&layers, 0);

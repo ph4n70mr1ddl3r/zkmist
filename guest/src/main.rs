@@ -36,14 +36,18 @@ use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 // If risc0-zkvm or ark-relations ever removes the `tracing` dependency,
 // these shims can be deleted entirely.
 
+/// # Safety
+/// Safe in the RISC Zero zkVM because it is single-threaded.
 #[no_mangle]
-pub extern "C" fn __atomic_load_1(ptr: *const u8, _ordering: i32) -> u8 {
-    unsafe { core::ptr::read_volatile(ptr) }
+pub unsafe extern "C" fn __atomic_load_1(ptr: *const u8, _ordering: i32) -> u8 {
+    core::ptr::read_volatile(ptr)
 }
 
+/// # Safety
+/// Safe in the RISC Zero zkVM because it is single-threaded.
 #[no_mangle]
-pub extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32) {
-    unsafe { core::ptr::write_volatile(ptr, val) }
+pub unsafe extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32) {
+    core::ptr::write_volatile(ptr, val)
 }
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -105,9 +109,11 @@ pub fn main() {
 
     // Compute leaf and verify Merkle membership
     let leaf = poseidon_hash_address(&address, &mut leaf_hasher);
-    assert!(leaf != PADDING_SENTINEL, "Padding leaf — not a valid claimant");
-    let computed_root =
-        compute_merkle_root(&leaf, &siblings, &path_indices, &mut interior_hasher);
+    assert!(
+        leaf != PADDING_SENTINEL,
+        "Padding leaf — not a valid claimant"
+    );
+    let computed_root = compute_merkle_root(&leaf, &siblings, &path_indices, &mut interior_hasher);
     assert_eq!(computed_root, merkle_root, "Not in eligibility tree");
 
     // Verify nullifier: poseidon(Fr(key), Fr(domain)) using the interior hasher.

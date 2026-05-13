@@ -308,7 +308,7 @@ contract ZKMAirdropTest is Test {
         airdrop.claim("", journal, nullifier, wrongRecipient);
     }
 
-    function test_isClaimWindowOpen() public {
+    function test_isClaimWindowOpen() public view {
         assertTrue(airdrop.isClaimWindowOpen());
     }
 
