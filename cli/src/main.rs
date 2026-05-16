@@ -21,11 +21,24 @@ use zkmist_merkle_tree::{
     verify_merkle_proof, PADDING_SENTINEL,
 };
 
-// ABI encoding for the ZKMAirdrop.claim function.
-// Replaces manual ABI encoding — alloy's sol! macro computes the selector and
-// handles offset/padding for dynamic types, eliminating a class of encoding bugs.
+// ABI bindings for the ZKMAirdrop contract.
+// alloy's sol! macro computes selectors, handles offset/padding for dynamic
+// types, and generates type-safe call/response structs — eliminating a class
+// of encoding bugs and fragile raw storage-slot reads.
 alloy::sol! {
     function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient);
+
+    interface IZKMAirdrop {
+        function totalClaims() external view returns (uint256);
+        function claimsRemaining() external view returns (uint256);
+        function isClaimWindowOpen() external view returns (bool);
+        function isClaimed(bytes32 nullifier) external view returns (bool);
+        function CLAIM_AMOUNT() external view returns (uint256);
+        function MAX_CLAIMS() external view returns (uint256);
+        function CLAIM_DEADLINE() external view returns (uint256);
+        function merkleRoot() external view returns (bytes32);
+        function imageId() external view returns (bytes32);
+    }
 }
 
 use alloy::sol_types::SolCall;
@@ -1214,6 +1227,11 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
         None
     };
 
+    // Track the level of verification achieved so the final summary is accurate.
+    //   0 = journal layout + field consistency only
+    //   1 = cryptographic proof verified against image ID
+    let mut verification_level: u8 = 0;
+
     if let Some(img_id) = image_id {
         eprintln!("  Image ID: {}", hex::encode(img_id.as_bytes()));
 
@@ -1229,6 +1247,7 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
             match receipt.verify(img_id) {
                 Ok(()) => {
                     eprintln!("  ✅ Proof verified cryptographically against image ID");
+                    verification_level = 1;
                 }
                 Err(e) => {
                     return Err(format!(
@@ -1260,7 +1279,18 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
     }
 
     eprintln!();
-    eprintln!("✅ Proof is valid. Safe to submit.");
+    match verification_level {
+        1 => {
+            eprintln!("✅ Proof is valid (cryptographically verified). Safe to submit.");
+        }
+        _ => {
+            eprintln!("⚠️  Journal layout and field consistency verified, but cryptographic");
+            eprintln!("   proof was NOT verified locally. On-chain verification by the");
+            eprintln!("   RiscZeroGroth16Verifier will catch an invalid proof — but you may");
+            eprintln!("   waste gas if the proof is bad. For full local verification, place");
+            eprintln!("   the guest ELF at ~/.zkmist/guest.elf.");
+        }
+    }
     Ok(())
 }
 
@@ -1311,11 +1341,14 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
     eprintln!("Chain:          Base (chain ID: {})", CHAIN_ID);
     eprintln!();
 
-    // Query on-chain state via alloy
+    // Query on-chain state via alloy using type-safe contract bindings.
+    // This calls the actual view functions (totalClaims, isClaimWindowOpen, etc.)
+    // instead of reading raw storage slots — robust against storage layout changes.
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
     rt.block_on(async {
         use alloy::primitives::Address;
         use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::sol_types::SolCall as _;
 
         let url: reqwest::Url = rpc.parse().map_err(|e| format!("Invalid RPC URL: {}", e))?;
         let provider = ProviderBuilder::new().connect_http(url);
@@ -1335,19 +1368,37 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             return Ok::<(), String>(());
         }
 
-        // Read totalClaims (storage slot 0)
-        let total_claims_storage: alloy::primitives::U256 = provider
-            .get_storage_at(contract, alloy::primitives::U256::ZERO)
+        // Call totalClaims() — returns (uint256)
+        let total_claims_call = IZKMAirdrop::totalClaimsCall {};
+        let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(contract)
+            .input(total_claims_call.abi_encode().into());
+        let resp = provider
+            .call(tx)
             .await
-            .map_err(|e| format!("Failed to query totalClaims: {}", e))?;
-
-        let total_claims_u64: u64 = total_claims_storage.try_into().map_err(
+            .map_err(|e| format!("totalClaims call failed: {}", e))?;
+        let total_claims_return = IZKMAirdrop::totalClaimsCall::abi_decode_returns(&resp)
+            .map_err(|e| format!("totalClaims decode failed: {}", e))?;
+        let total_claims_u64: u64 = total_claims_return.try_into().map_err(
             |e: alloy::primitives::ruint::FromUintError<u64>| {
                 format!("totalClaims overflow: {}", e)
             },
         )?;
 
-        let remaining = MAX_CLAIMS - total_claims_u64;
+        // Call isClaimWindowOpen() — returns (bool)
+        let is_open_call = IZKMAirdrop::isClaimWindowOpenCall {};
+        let tx2 = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(contract)
+            .input(is_open_call.abi_encode().into());
+        let resp2 = provider
+            .call(tx2)
+            .await
+            .map_err(|e| format!("isClaimWindowOpen call failed: {}", e))?;
+        let is_open_return = IZKMAirdrop::isClaimWindowOpenCall::abi_decode_returns(&resp2)
+            .map_err(|e| format!("isClaimWindowOpen decode failed: {}", e))?;
+        let is_open: bool = is_open_return;
+
+        let remaining = MAX_CLAIMS.saturating_sub(total_claims_u64);
         let total_supply = total_claims_u64 * CLAIM_AMOUNT;
         let pct = (total_claims_u64 as f64 / MAX_CLAIMS as f64) * 100.0;
 
@@ -1356,10 +1407,12 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
         eprintln!("Total supply:   {} ZKM ({:.1}% of max)", total_supply, pct);
         eprintln!(
             "Status:         {}",
-            if total_claims_u64 < MAX_CLAIMS {
+            if is_open {
                 "✅ OPEN"
-            } else {
+            } else if total_claims_u64 >= MAX_CLAIMS {
                 "🔴 CAP REACHED"
+            } else {
+                "⏰ DEADLINE PASSED"
             }
         );
 
