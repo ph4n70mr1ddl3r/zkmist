@@ -52,7 +52,11 @@ pub unsafe extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32)
 
 // ── Constants ────────────────────────────────────────────────────────────
 
+#[cfg(not(feature = "test-small-tree"))]
 const TREE_DEPTH: usize = 26;
+
+#[cfg(feature = "test-small-tree")]
+const TREE_DEPTH: usize = 4;
 
 /// Nullifier domain separator: b"ZKMist_V1_NULLIFIER" (20 bytes), zero-padded
 /// to 32 bytes (left-aligned), then interpreted as a BN254 field element via
@@ -129,11 +133,12 @@ pub fn main() {
     //     journal[64:84]  = recipient    (bytes20 — raw address, NOT padded)
     // Any mismatch = all proofs rejected on-chain.
     //
-    // env::commit() for [u8; N] arrays writes N raw bytes, no length prefix.
-    // Verified for risc0-zkvm v3.0.5.
-    env::commit(&merkle_root);
-    env::commit(&nullifier);
-    env::commit(&recipient);
+    // IMPORTANT: Use commit_slice() for raw byte arrays. In risc0-zkvm v3,
+    // commit() uses serde serialization which may expand each byte to 4 bytes.
+    // commit_slice() uses Pod (plain old data) and writes raw bytes directly.
+    env::commit_slice::<u8>(&merkle_root);
+    env::commit_slice::<u8>(&nullifier);
+    env::commit_slice::<u8>(&recipient);
 }
 
 // ── Address derivation ───────────────────────────────────────────────────

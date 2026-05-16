@@ -12,4 +12,4 @@ build-std = ["core", "alloc"]
 # Required for getrandom 0.3+ on riscv32 targets without OS support.
 # RISC Zero provides a custom entropy source via the zkVM environment.
 [target.riscv32im-risc0-zkvm-elf]
-rustflags = ["-C", "getrandom_backend=custom"]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
