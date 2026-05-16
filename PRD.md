@@ -488,7 +488,7 @@ pub fn main() {
     //     journal[64:84]  = recipient (raw 20 bytes, NOT padded to 32)
     // Total journal must be exactly 84 bytes. This requires that env::commit()
     // writes raw bytes without length prefixes or padding. Verified for
-    // risc0-zkvm v5.0.0: commit() uses serde with a custom serializer that
+    // risc0-zkvm v3.0.5: commit() uses serde with a custom serializer that
     // writes [u8; N] arrays as N raw bytes (no varint length prefix).
     // Must be re-verified end-to-end before mainnet deployment.
     env::commit(&merkle_root);
@@ -1104,7 +1104,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | **Max Claims** | 1,000,000 |
 | **Claim Deadline** | 2027-01-01 00:00:00 UTC |
 | **Proof System** | RISC Zero zkVM (STARK) |
-| **risc0-zkvm version** | Must be pinned at build time (e.g., `v5.0.0`). Different versions may produce different Image IDs. Note: `cargo-risczero` (CLI tool, currently v3.0.5) and `risc0-zkvm` (the zkVM crate) are versioned independently. The image ID depends on the zkVM crate version, not the CLI version. |
+| **risc0-zkvm version** | Must be pinned at build time (currently `v3.0.5`). Different versions may produce different Image IDs. Note: `cargo-risczero` (CLI tool) and `risc0-zkvm` (the zkVM crate) are versioned independently. The image ID depends on the zkVM crate version, not the CLI version. |
 | **Poseidon crate** | `light-poseidon` v0.4.x — same version in guest program and CLI tree builder |
 | **Trusted Setup** | **None** |
 | **Merkle Tree** | 26 levels, Poseidon (leaf: t=2/R_P=56, interior: t=3/R_P=57, BN254) |
@@ -1330,7 +1330,7 @@ pub extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32) {
 
 **Toolchain requirements:**
 - Install via `rzup install rust` (RISC Zero custom toolchain, currently rzup v1.94.1 / cargo-risczero v3.0.5)
-- `risc0-zkvm` crate version must be pinned (e.g., `v5.0.0`) — the image ID changes between versions
+- `risc0-zkvm` crate version must be pinned (currently `v3.0.5`) — the image ID changes between versions
 - `light-poseidon` v0.4.x — same version in both guest program and CLI tree builder
 
 ---

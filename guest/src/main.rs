@@ -130,7 +130,7 @@ pub fn main() {
     // Any mismatch = all proofs rejected on-chain.
     //
     // env::commit() for [u8; N] arrays writes N raw bytes, no length prefix.
-    // Verified for risc0-zkvm v5.0.0.
+    // Verified for risc0-zkvm v3.0.5.
     env::commit(&merkle_root);
     env::commit(&nullifier);
     env::commit(&recipient);

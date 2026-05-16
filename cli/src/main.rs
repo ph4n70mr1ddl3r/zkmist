@@ -996,7 +996,7 @@ fn encode_receipt_seal(receipt: &risc0_zkvm::Receipt) -> Result<String, String> 
             Err("Received Succinct/Composite receipt instead of Groth16. \
                  The on-chain verifier requires a Groth16 proof. \
                  Ensure the prover is configured for Groth16 compression. \
-                 With risc0-zkvm v5.x, the default prover should produce Groth16 receipts."
+                 With risc0-zkvm v3.x, the default prover should produce Groth16 receipts."
                 .to_string())
         }
         _ => Err("Unknown receipt type. Cannot encode seal for on-chain submission.".to_string()),
