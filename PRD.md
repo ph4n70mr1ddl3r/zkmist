@@ -13,9 +13,9 @@
 
 ZKMist (ticker: **ZKM**) is a **fully community-owned** ERC-20 token on **Base Chain**. There is no team allocation, no treasury, no investor share, and no pre-mine. Every ZKM token in existence was claimed by a member of the Ethereum community through a privacy-preserving airdrop.
 
-~65 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Each claimant receives **10,000 ZKM** — no more, no less. The token supply is determined entirely by how many people claim: up to **10 billion ZKM** across up to **1 million claimants**. Claims close on 2027-01-01 or when 1 million claims are reached, whichever comes first.
+~64.1 million Ethereum addresses (64,116,228 actual) that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Each claimant receives **10,000 ZKM** — no more, no less. The token supply is determined entirely by how many people claim: up to **10 billion ZKM** across up to **1 million claimants**. Claims close on 2027-01-01 or when 1 million claims are reached, whichever comes first.
 
-**With ~65 million eligible addresses and a 1-million claimant cap, only ~1.5% of eligible addresses can claim.** The claim window is first-come, first-served — those who discover ZKMist early, are technically capable of running the CLI, and are motivated to put in the effort will have a meaningful advantage. This is by design: the claiming process itself acts as a natural filter that rewards engaged community members and makes Sybil farming uneconomical.
+**With ~64.1 million eligible addresses and a 1-million claimant cap, only ~1.6% of eligible addresses can claim.** The claim window is first-come, first-served — those who discover ZKMist early, are technically capable of running the CLI, and are motivated to put in the effort will have a meaningful advantage. This is by design: the claiming process itself acts as a natural filter that rewards engaged community members and makes Sybil farming uneconomical.
 
 The claiming process is **anonymous** — the qualified address is never linked to the receiving address. Claimants generate zero-knowledge proofs locally using the RISC Zero zkVM and submit them to a fully immutable, adminless contract.
 
@@ -25,7 +25,7 @@ The claiming process is **anonymous** — the qualified address is never linked 
 
 | Principle | Implementation |
 |-----------|---------------|
-| **Fair allocation, open access** | Every claimant gets exactly 10,000 ZKM. No exceptions. No tiers. No insider allocation. However, with 65M eligible and 1M cap, claiming is first-come, first-served — see §4.6. |
+| **Fair allocation, open access** | Every claimant gets exactly 10,000 ZKM. No exceptions. No tiers. No insider allocation. However, with ~64.1M eligible and 1M cap, claiming is first-come, first-served — see §4.6. |
 | **Community-owned** | 100% of supply goes to claimants. Zero team tokens. Zero investor tokens. |
 | **Anonymous** | Qualified address is never linked to receiving address on-chain. |
 | **Immutable** | Contract has no admin, no owner, no pause, no upgrade. Deploy once, run forever. |
@@ -36,7 +36,7 @@ The claiming process is **anonymous** — the qualified address is never linked 
 
 Standard airdrops are neither fair nor private. They create public links between qualifying and claiming addresses, expose user portfolios, and reserve large token allocations for teams and investors. ZKMist exists to prove that a token launch can be **entirely community-owned and privacy-preserving**.
 
-ZKMist is *not* equally accessible to all 65M eligible addresses — the 1M claim cap creates a first-come, first-served contest where technical ability, early awareness, and motivation provide a clear advantage (see §4.6). What ZKMist guarantees is **fairness of allocation** (no insider tokens, equal amounts per claimant) and **fairness of opportunity** (anyone who is eligible can participate), not fairness of outcome.
+ZKMist is *not* equally accessible to all ~64.1M eligible addresses — the 1M claim cap creates a first-come, first-served contest where technical ability, early awareness, and motivation provide a clear advantage (see §4.6). What ZKMist guarantees is **fairness of allocation** (no insider tokens, equal amounts per claimant) and **fairness of opportunity** (anyone who is eligible can participate), not fairness of outcome.
 
 ---
 
@@ -162,20 +162,20 @@ Whichever comes first.
 
 ### 4.6 Scarcity & Access Dynamics
 
-With ~65 million eligible addresses and a cap of 1 million claimants, ZKMist has a **first-come, first-served** claim model. This is a deliberate design choice that creates bounded scarcity while keeping the process open to anyone eligible.
+With ~64.1 million eligible addresses and a cap of 1 million claimants, ZKMist has a **first-come, first-served** claim model. This is a deliberate design choice that creates bounded scarcity while keeping the process open to anyone eligible.
 
 **What this means in practice:**
 
 | Factor | Effect |
 |--------|--------|
-| **1M claim cap** | Only ~1.5% of eligible addresses can claim. Creates scarcity and per-claimant value. |
+| **1M claim cap** | Only ~1.6% of eligible addresses can claim. Creates scarcity and per-claimant value. |
 | **Technical barrier** | Claiming requires running a CLI, downloading ~1.3 GB, and building a Merkle tree (~4 GB RAM). This filters out casual or unmotivated participants. |
 | **Information advantage** | Those who discover ZKMist early have more time and less competition. Early claimants face a lower risk of the cap being reached. |
 | **Effort-reward structure** | The claiming process rewards technical competence and proactive engagement — qualities valued in the Ethereum community. |
 | **Sybil resistance** | Each claim requires a unique private key tied to an eligible address. Combined with the effort barrier (1.3 GB download, 4 GB RAM, ~90s proving time per claim), mass Sybil farming is inconvenient but not impossible for a well-funded actor. The design raises the cost sufficiently to deter casual farming. |
 | **Gas auction risk near cap** | As `totalClaims` approaches 1M, late claimants may engage in priority-fee bidding wars to secure one of the final slots. This could price out users despite holding a valid proof. Additionally, multiple valid claims in the same final block may push `totalClaims` past the cap — only the first N claims that fit under the cap succeed, and the rest revert, wasting their proofs. Accepted as inherent to first-come-first-served on-chain markets. |
 
-**This is not equally accessible to all 65M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
+**This is not equally accessible to all ~64.1M eligible users.** Some will lack the hardware, bandwidth, technical skill, or awareness to claim. The PRD acknowledges this openly. The design prioritizes:
 
 1. **Fairness of allocation** — no insider tokens, no tiers, equal amounts per claimant.
 2. **Fairness of opportunity** — anyone eligible *can* claim; no gatekeepers decide who gets in.
@@ -201,7 +201,7 @@ It does **not** guarantee fairness of outcome — not every eligible person will
 | **Cutoff** | `block_timestamp < 2026-01-01 00:00:00 UTC` |
 | **Scope** | Ethereum mainnet only (L1) |
 | **Qualifying Action** | `from_address` on successful transactions (`receipt_status = 1`) |
-| **Qualified Addresses** | **~65,000,000** (estimated from BigQuery) |
+| **Qualified Addresses** | **64,116,228** (actual from BigQuery) |
 
 **Rationale:** 0.004 ETH (~$8–12 at average prices) filters out dust/spam while capturing virtually all real Ethereum users. Broad, inclusive, and Sybil-resistant — costly to fake at scale.
 
@@ -216,7 +216,10 @@ The eligibility data is extracted from **Google BigQuery** (`bigquery-public-dat
 ```sql
 SELECT
   from_address AS qualified_address,
-  SUM(gas_price * receipt_gas_used) / 1e18 AS total_fees_eth
+  SAFE_DIVIDE(
+    SUM(CAST(gas_price AS BIGNUMERIC) * CAST(receipt_gas_used AS BIGNUMERIC)),
+    CAST(1e18 AS BIGNUMERIC)
+  ) AS total_fees_eth
 FROM
   `bigquery-public-data.crypto_ethereum.transactions`
 WHERE
@@ -233,7 +236,9 @@ ORDER BY
 #### Query Notes
 
 - `receipt_status = 1` — only **successful** transactions (reverts excluded).
-- `gas_price × receipt_gas_used` — actual gas fee paid. Accurate for both pre-EIP-1559 and EIP-1559 transactions.
+- `gas_price × receipt_gas_used` — actual gas fee paid. Accurate for both pre-EIP-1559 and EIP-1559 transactions. Post-EIP-1559, BigQuery's `gas_price` field is populated from the receipt's `effectiveGasPrice` (base fee + priority fee).
+- **Integer overflow prevention**: `gas_price` and `receipt_gas_used` are `INT64` columns whose product can exceed INT64 range (~9.2×10¹⁸). Both are cast to `BIGNUMERIC` (76 digits of precision) before multiplication and summation. Division by `1e18` is also performed in `BIGNUMERIC` via `SAFE_DIVIDE` to maintain exact precision throughout — no FLOAT64 intermediates that could cause audit irreproducibility.
+- **EIP-4844 caveat**: Blob gas fees (post-Dencun, March 2024) are not captured by `gas_price × receipt_gas_used`. This undercounts fees for type-3 blob transactions. The impact on eligibility is negligible — addresses affected by this edge case almost certainly exceed the 0.004 ETH threshold regardless.
 - Processes **~2.5 billion rows**. Expected cost: ~$25–50 USD.
 
 #### Export Pipeline
@@ -243,7 +248,7 @@ BigQuery SQL
     │
     ▼
 Export to GCS (Google Cloud Storage)
-    │   CSV, partitioned into ~65 files (1M rows each)
+    │   CSV, partitioned into ~65 files (~1M rows each)
     ▼
 Deduplicate & Normalize
     │   • Lowercase all addresses
@@ -258,7 +263,7 @@ Final Eligibility List
 | Parameter | Value |
 |-----------|-------|
 | **Leaf** | `poseidon(address)` — t=2, R_F=8, R_P=56 |
-| **Depth** | 26 levels (65M leaves, padded to 2²⁶ = 67,108,864) |
+| **Depth** | 26 levels (~64.1M leaves, padded to 2²⁶ = 67,108,864) |
 | **Interior hash** | Poseidon — t=3, R_F=8, R_P=57 |
 | **Poseidon params** | BN254 scalar field, x^5 S-box. Leaf: `light-poseidon` Circom t=2 (1 input). Interior: `light-poseidon` Circom t=3 (2 inputs). |
 | **Padding** | Empty leaves set to `0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF` (sentinel value that can never be a valid leaf). Note: the sentinel's raw bytes are larger than the BN254 scalar field modulus (`p ≈ 2^254`), so `Fr::from_be_bytes_mod_order()` would reduce it modulo p. However, the guest program compares the 32-byte Poseidon output (a field element) against the raw sentinel bytes — a Poseidon hash can never equal the sentinel, so the comparison is safe. Do not compare sentinel as a field element. |
@@ -326,7 +331,7 @@ eligibility/
 2. **Immutable contract** — no admin, no upgrades, no pause.
 3. **Permissionless submission** — anyone can submit a valid proof or build a relayer.
 4. **No trusted setup** — STARK-based proving. No ceremony, no toxic waste.
-5. **Equal allocation** — every claimant receives exactly 10,000 ZKM. First-come, first-served among 65M eligible (see §4.6).
+5. **Equal allocation** — every claimant receives exactly 10,000 ZKM. First-come, first-served among ~64.1M eligible (see §4.6).
 6. **Community-owned** — 100% of supply goes to claimants.
 
 ### 6.2 Why RISC Zero
@@ -344,7 +349,7 @@ eligibility/
 ┌─────────────────────────────────────────────────────────────┐
 │                      PUBLISHED DATA                         │
 │                                                             │
-│  Eligibility List (~65M addresses) on IPFS                  │
+│  Eligibility List (~64.1M addresses) on IPFS                 │
 │  Merkle Root hardcoded in contract                          │
 │  Guest program source on GitHub                             │
 │                                                             │
@@ -356,7 +361,7 @@ eligibility/
 │                                                             │
 │  $ zkmist prove                                             │
 │    ① Download eligibility list (IPFS, ~1.3 GB)             │
-│    ② Stream-build Merkle tree (processes all 65M leaves, ~4 GB RAM)  │
+│    ② Stream-build Merkle tree (processes all ~64.1M leaves, ~4 GB RAM) │
 │    ③ Enter private key (hidden) + recipient address         │
 │    ④ RISC Zero zkVM generates STARK proof                   │
 │    ⑤ Save proof.json                                        │
@@ -885,7 +890,7 @@ $ zkmist prove
        Using cached list: ~/.zkmist/eligibility/
 
 [2/4] Building Merkle tree...
-       Processing 65,000,000 addresses... done (1m 23s)
+       Processing 64,116,228 addresses... done (1m 23s)
        Found your address at index 42,317,891
        ✓ Root matches on-chain: 0xabc123...
 
@@ -1113,7 +1118,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | **Gas per claim** | ~500,000–520,000 (~0.00005 ETH / ~$0.15) via Groth16 wrapper (validated — see §13, #16) |
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
-| **Qualified** | ~65,000,000 addresses |
+| **Qualified** | 64,116,228 addresses |
 | **Data** | IPFS + GitHub |
 
 ---
