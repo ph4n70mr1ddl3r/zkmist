@@ -30,6 +30,11 @@ contract Deploy is Script {
         // at token deploy time.
         //
         // Solution: predict CREATE address based on deployer nonce.
+        //
+        // ⚠️  This assumes the deployer is an EOA using CREATE (not CREATE2).
+        //     Nonce order: deployerNonce = token, deployerNonce+1 = airdrop.
+        //     If deploying from a contract wallet (Safe, multisig), nonces may
+        //     not be sequential — use CREATE2 or manual address prediction instead.
 
         // Step 1: Deploy token with predicted airdrop address as minter
         uint256 deployerNonce = vm.getNonce(msg.sender);

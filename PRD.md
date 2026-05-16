@@ -481,19 +481,20 @@ pub fn main() {
     let expected = compute_nullifier(&private_key, &mut interior_hasher);
     assert_eq!(nullifier, expected, "Invalid nullifier");
 
-    // Commit outputs to journal.
+    // Commit outputs to journal (84 bytes total).
+    //
     // ⚠️  CRITICAL: The Solidity contract slices the journal bytes directly:
-    //     journal[0:32]   = merkleRoot
-    //     journal[32:64]  = nullifier
-    //     journal[64:84]  = recipient (raw 20 bytes, NOT padded to 32)
-    // Total journal must be exactly 84 bytes. This requires that env::commit()
-    // writes raw bytes without length prefixes or padding. Verified for
-    // risc0-zkvm v3.0.5: commit() uses serde with a custom serializer that
-    // writes [u8; N] arrays as N raw bytes (no varint length prefix).
-    // Must be re-verified end-to-end before mainnet deployment.
-    env::commit(&merkle_root);
-    env::commit(&nullifier);
-    env::commit(&recipient);
+    //     journal[0:32]   = merkleRoot   (bytes32)
+    //     journal[32:64]  = nullifier    (bytes32)
+    //     journal[64:84]  = recipient    (bytes20 — raw address, NOT padded)
+    // Any mismatch = all proofs rejected on-chain.
+    //
+    // IMPORTANT: Use commit_slice() for raw byte arrays. In risc0-zkvm v3,
+    // commit() uses serde serialization which expands each [u8; N] to
+    // N×4 bytes (length-prefixed). commit_slice() writes raw bytes directly.
+    env::commit_slice::<u8>(&merkle_root);
+    env::commit_slice::<u8>(&nullifier);
+    env::commit_slice::<u8>(&recipient);
 }
 
 fn derive_address(key: &[u8; 32]) -> [u8; 20] {
@@ -1154,7 +1155,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | 14 | Journal digest: does `sha256(raw_journal_bytes)` match the deployed `IRiscZeroVerifier`'s expected digest scheme? | ✅ **Resolved** — Confirmed correct by reading RISC Zero source. Rust `Journal::digest()` = `Sha256::hash_bytes(&self.bytes)`. Solidity `bytes32(sha256(_journal))` matches. The `RiscZeroGroth16Verifier.verify(seal, imageId, journalDigest)` takes the digest as-is and wraps it in `ReceiptClaimLib.ok(imageId, journalDigest).digest()`. End-to-end testnet test still recommended before mainnet. |
 | 15 | Do `light-poseidon` + `ark-bn254` compile for `riscv32im-risc0-zkvm-elf`? | ✅ **Resolved** — Validated by building a full guest program (address derivation + Poseidon hashing + Merkle proof + nullifier verification) for `riscv32im-risc0-zkvm-elf` using the RISC Zero toolchain (rzup v1.94.1, cargo-risczero 3.0.5). All crates compile successfully. Three issues required fixes: (1) `getrandom` 0.3 needs `getrandom_backend="custom"` cfg flag in `.cargo/config.toml`, (2) `tracing_core` requires an atomic shim for `__atomic_store_1` (riscv32 limitation), (3) the PRD's guest program code has API mismatches with current crate versions (see #17). Binary size: 442K ELF. |
 | 16 | Gas per claim estimate accuracy? | ✅ **Resolved** — Measured with Foundry gas benchmarks. Airdrop contract overhead (with noop verifier): 111,637 gas for first claim, 58,264 for subsequent. Groth16 verification (calculated): ~404,500 gas (5× ECMUL @ 32K + 5× ECADD @ 500 + 2× BN254 pairing @ 80K+77K + overhead). **Total: ~516,000 gas for first claim, ~463,000 for subsequent.** PRD's original estimate of ~300K was too low. Updated §11, Appendix B. At Base prices (0.1 Gwei, $3K ETH): ~$0.15/claim. |
-| 17 | Guest program API compatibility with current crate versions? | ✅ **Resolved** — The PRD's Rust code had 6 API mismatches with current crate versions, all fixed in §6.5: (1) `Fr::from_be_bytes()` → `Fr::from_be_bytes_mod_order()` (ark-ff 0.5 removed `from_be_bytes`), (2) `into_bigint().to_bytes_be(&mut out[..])` → `into_bigint().to_bytes_be()` returns `Vec<u8>` (no in-place write), (3) `tiny_keccak::keccak256(data)` → must use `Keccak::v256()` hasher API (tiny-keccak v2 removed the direct function), (4) `k256::ecdsa::SigningKey::from_bytes(key)` → must use `SigningKey::from_slice(key)` (k256 0.13 changed the API), (5) `env::read()` → must use `risc0_zkvm::guest::env::read()` or import `use risc0_zkvm::guest::env`, (6) `&Poseidon<Fr>` → must be `&mut Poseidon<Fr>` because `PoseidonHasher::hash()` requires `&mut self` (light-poseidon v0.4.x mutates internal sponge state). These are all straightforward API updates, not design issues. |
+| 17 | Guest program API compatibility with current crate versions? | ✅ **Resolved** — The PRD's Rust code had 7 API mismatches with current crate versions, all fixed in §6.5: (1) `Fr::from_be_bytes()` → `Fr::from_be_bytes_mod_order()` (ark-ff 0.5 removed `from_be_bytes`), (2) `into_bigint().to_bytes_be(&mut out[..])` → `into_bigint().to_bytes_be()` returns `Vec<u8>` (no in-place write), (3) `tiny_keccak::keccak256(data)` → must use `Keccak::v256()` hasher API (tiny-keccak v2 removed the direct function), (4) `k256::ecdsa::SigningKey::from_bytes(key)` → must use `SigningKey::from_slice(key)` (k256 0.13 changed the API), (5) `env::read()` → must use `risc0_zkvm::guest::env::read()` or import `use risc0_zkvm::guest::env`, (6) `&Poseidon<Fr>` → must be `&mut Poseidon<Fr>` because `PoseidonHasher::hash()` requires `&mut self` (light-poseidon v0.4.x mutates internal sponge state), (7) `env::commit()` → must use `env::commit_slice()` for raw bytes because `commit()` uses serde which expands each byte array to 4× its size (length-prefixed). These are all straightforward API updates, not design issues. |
 
 ---
 

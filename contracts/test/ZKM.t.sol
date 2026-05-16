@@ -335,4 +335,20 @@ contract ZKMAirdropTest is Test {
         emit ZKMAirdrop.Claimed(nullifier, 10_000e18, recipient, 1);
         airdrop.claim("", journal, nullifier, recipient);
     }
+
+    /// @notice Gas regression test. Asserts airdrop logic overhead stays bounded.
+    /// @dev With the NoopVerifier this measures ~120K gas (pure airdrop logic).
+    ///      With the real Groth16 verifier the total is ~510K gas.
+    ///      The 150K threshold catches regressions in airdrop-side logic only.
+    function test_claim_gasRegression() public {
+        bytes32 nullifier = bytes32(uint256(0x42));
+        address recipient = address(0xB0B);
+        bytes memory journal = _buildJournal(MERKLE_ROOT, nullifier, recipient);
+
+        uint256 gasBefore = gasleft();
+        airdrop.claim("", journal, nullifier, recipient);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        assertLt(gasUsed, 150_000, "Gas regression: airdrop overhead exceeds 150K");
+    }
 }

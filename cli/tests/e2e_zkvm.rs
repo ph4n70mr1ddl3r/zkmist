@@ -9,6 +9,22 @@
 //!   - Set ZKMIST_FULL_PROVE=1 to generate a real STARK proof (30+ min)
 //!   - Required before mainnet deployment
 //!
+//! Build instructions for guest binaries:
+//!
+//!   Test guest (depth=4, for Tier 1 dev-mode tests):
+//!     cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree
+//!     # The test binary must be at TEST_GUEST_BIN_PATH (see below).
+//!     # If the standard output location differs, copy/rename accordingly.
+//!
+//!   Production guest (depth=26, for Tier 2 full STARK proof):
+//!     cargo risczero build --manifest-path guest/Cargo.toml
+//!     # The prod binary must be at PROD_GUEST_BIN_PATH (see below).
+//!
+//! ⚠️  The test guest MUST be built with `--features test-small-tree` (TREE_DEPTH=4).
+//!     Without this feature the guest expects 26 sibling pairs, but Tier 1 tests
+//!     provide only 4. This causes a deserialization error, not a useful assertion
+//!     failure. Verify the binary is correct before running tests.
+//!
 //! Prerequisites:
 //!   - Guest binary built via: cargo risczero build --manifest-path guest/Cargo.toml
 //!   - Located at: target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin
@@ -20,10 +36,27 @@ use zkmist_merkle_tree::{
     build_tree_streaming_with_depth, compute_nullifier, hash_leaf, verify_merkle_proof, TREE_DEPTH,
 };
 
-/// Path to the R0BF-wrapped guest binary (built by cargo risczero build).
-const GUEST_BIN_PATH: &str = concat!(
+/// Path to the test guest binary (built with `--features test-small-tree`, depth=4).
+/// Used by Tier 1 dev-mode tests.
+///
+/// Build with:
+///   cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree
+///
+/// If `cargo risczero build` outputs to a different location, adjust this path
+/// or copy the binary here. The binary should start with the R0BF magic bytes.
+const TEST_GUEST_BIN_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin"
+);
+
+/// Path to the production guest binary (depth=26, no test features).
+/// Used by Tier 2 full-STARK proof test.
+///
+/// Build with:
+///   cargo risczero build --manifest-path guest/Cargo.toml
+const PROD_GUEST_BIN_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/riscv32im-risc0-zkvm-elf/release/zkmist-guest"
 );
 
 /// Tree depth for the test guest (4 instead of 26 for fast execution).
@@ -47,18 +80,35 @@ const EXPECTED_NULLIFIER: &str = "078f972a9364d143a172967523ed8d742aab36481a534e
 /// Expected leaf hash from PRD test vector.
 const EXPECTED_LEAF: &str = "1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9";
 
-/// Load the guest binary, skipping the test if it hasn't been built yet.
-fn load_guest_binary() -> Vec<u8> {
-    match std::fs::read(GUEST_BIN_PATH) {
+/// Load the test guest binary (built with `--features test-small-tree`, depth=4).
+/// Skips the test if the binary hasn't been built yet.
+///
+/// ⚠️  This binary MUST be built with `--features test-small-tree`. Without it,
+///     the guest expects 26 sibling pairs instead of 4, causing opaque errors.
+fn load_test_guest_binary() -> Vec<u8> {
+    load_guest_binary_at(TEST_GUEST_BIN_PATH)
+}
+
+/// Load the production guest binary (depth=26, no test features).
+/// Skips the test if the binary hasn't been built yet.
+fn load_prod_guest_binary() -> Vec<u8> {
+    load_guest_binary_at(PROD_GUEST_BIN_PATH)
+}
+
+/// Load a guest binary from the given path, validating R0BF format.
+/// Skips the test (exits with 0) if the file doesn't exist.
+fn load_guest_binary_at(path: &str) -> Vec<u8> {
+    match std::fs::read(path) {
         Ok(data) => {
             assert!(
                 data.len() >= 4 && &data[0..4] == b"R0BF",
-                "Guest binary is not in R0BF format. Build with: cargo risczero build --manifest-path guest/Cargo.toml"
+                "Guest binary at {} is not in R0BF format. Build with: cargo risczero build",
+                path
             );
             data
         }
         Err(_) => {
-            eprintln!("SKIPPED: Guest binary not found at {}", GUEST_BIN_PATH);
+            eprintln!("SKIPPED: Guest binary not found at {}", path);
             eprintln!("  Build with: cargo risczero build --manifest-path guest/Cargo.toml");
             std::process::exit(0);
         }
@@ -105,7 +155,7 @@ fn execute_guest(env: ExecutorEnv<'static>, guest: &[u8]) -> Vec<u8> {
 
 #[test]
 fn test_guest_execute_valid_claim() {
-    let guest = load_guest_binary();
+    let guest = load_test_guest_binary();
 
     // Build Merkle tree with PRD test address at full depth (26)
     let addresses = [TEST_ADDRESS];
@@ -167,7 +217,7 @@ fn test_guest_execute_valid_claim() {
 
 #[test]
 fn test_guest_rejects_wrong_merkle_root() {
-    let guest = load_guest_binary();
+    let guest = load_test_guest_binary();
 
     let addresses = [TEST_ADDRESS];
     let (_root, proof) = build_tree_streaming_with_depth(&addresses, TEST_TREE_DEPTH, Some(0));
@@ -195,7 +245,7 @@ fn test_guest_rejects_wrong_merkle_root() {
 
 #[test]
 fn test_guest_rejects_wrong_nullifier() {
-    let guest = load_guest_binary();
+    let guest = load_test_guest_binary();
 
     let addresses = [TEST_ADDRESS];
     let (root, proof) = build_tree_streaming_with_depth(&addresses, TEST_TREE_DEPTH, Some(0));
@@ -220,7 +270,7 @@ fn test_guest_rejects_wrong_nullifier() {
 
 #[test]
 fn test_guest_rejects_zero_recipient() {
-    let guest = load_guest_binary();
+    let guest = load_test_guest_binary();
 
     let addresses = [TEST_ADDRESS];
     let (root, proof) = build_tree_streaming_with_depth(&addresses, TEST_TREE_DEPTH, Some(0));
@@ -246,7 +296,7 @@ fn test_guest_rejects_zero_recipient() {
 
 #[test]
 fn test_guest_rejects_ineligible_address() {
-    let guest = load_guest_binary();
+    let guest = load_test_guest_binary();
 
     let tree_addresses: [[u8; 20]; 1] = [TEST_ADDRESS];
     let (root, proof) = build_tree_streaming_with_depth(&tree_addresses, TEST_TREE_DEPTH, Some(0));
@@ -277,7 +327,7 @@ fn test_guest_rejects_ineligible_address() {
 #[test]
 #[ignore] // Run with: cargo test --package zkmist-cli --test e2e_zkvm -- --ignored
 fn test_guest_full_stark_proof() {
-    let guest = load_guest_binary();
+    let guest = load_prod_guest_binary();
 
     let image_id = compute_image_id(&guest).expect("Failed to compute image ID");
     eprintln!("Image ID: {}", hex::encode(image_id.as_bytes()));

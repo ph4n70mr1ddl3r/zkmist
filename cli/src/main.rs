@@ -21,7 +21,7 @@ use zkmist_merkle_tree::{
     verify_merkle_proof, PADDING_SENTINEL,
 };
 
-// ABI bindings for the ZKMAirdrop contract.
+// ABI bindings for the ZKMAirdrop and ZKMToken contracts.
 // alloy's sol! macro computes selectors, handles offset/padding for dynamic
 // types, and generates type-safe call/response structs — eliminating a class
 // of encoding bugs and fragile raw storage-slot reads.
@@ -29,6 +29,7 @@ alloy::sol! {
     function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient);
 
     interface IZKMAirdrop {
+        function token() external view returns (address);
         function totalClaims() external view returns (uint256);
         function claimsRemaining() external view returns (uint256);
         function isClaimWindowOpen() external view returns (bool);
@@ -38,6 +39,11 @@ alloy::sol! {
         function CLAIM_DEADLINE() external view returns (uint256);
         function merkleRoot() external view returns (bytes32);
         function imageId() external view returns (bytes32);
+    }
+
+    interface IZKMToken {
+        function totalSupply() external view returns (uint256);
+        function MAX_SUPPLY() external view returns (uint256);
     }
 }
 
@@ -1107,15 +1113,36 @@ fn cmd_submit(
         };
         let call_data = call.abi_encode();
 
-        // Build and send transaction with explicit gas limit.
-        // Claim transactions use ~510K gas (Groth16 verification + airdrop logic).
-        // Explicit limit avoids underestimation by gas estimation for complex precompiles.
-        let mut tx = alloy::rpc::types::transaction::TransactionRequest::default()
+        // Build transaction with gas estimation.
+        // Estimate with a 20% buffer, fall back to 600K on failure.
+        // Groth16 verification involves precompile calls (ECADD, ECMUL, pairing)
+        // that some RPCs underestimate during gas estimation.
+        let base_tx = alloy::rpc::types::transaction::TransactionRequest::default()
             .to(contract_address)
             .input(call_data.into());
-        tx.gas = Some(600_000);
 
-        eprintln!("Submitting claim transaction (gas limit: 600,000)...");
+        let gas_limit = match provider.estimate_gas(base_tx.clone()).await {
+            Ok(base) => {
+                let buffered = (base as u128 * 12 / 10) as u64;
+                eprintln!(
+                    "  Gas estimate: {} (using {} with 20% buffer)",
+                    base, buffered
+                );
+                buffered
+            }
+            Err(e) => {
+                eprintln!(
+                    "  ⚠️  Gas estimation failed ({}): using 600,000 fallback",
+                    e
+                );
+                600_000
+            }
+        };
+
+        let mut tx = base_tx;
+        tx.gas = Some(gas_limit);
+
+        eprintln!("Submitting claim transaction (gas limit: {})...", gas_limit);
         let pending = provider
             .send_transaction(tx)
             .await
@@ -1398,13 +1425,56 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             .map_err(|e| format!("isClaimWindowOpen decode failed: {}", e))?;
         let is_open: bool = is_open_return;
 
+        // Call token() on airdrop to get the ZKMToken address
+        let token_call = IZKMAirdrop::tokenCall {};
+        let token_tx = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(contract)
+            .input(token_call.abi_encode().into());
+        let token_resp = provider
+            .call(token_tx)
+            .await
+            .map_err(|e| format!("token() call failed: {}", e))?;
+        let token_addr_return = IZKMAirdrop::tokenCall::abi_decode_returns(&token_resp)
+            .map_err(|e| format!("token() decode failed: {}", e))?;
+        let token_addr: alloy::primitives::Address = token_addr_return;
+
+        // Call totalSupply() on ZKMToken for actual on-chain supply (accounts for burns)
+        let supply_call = IZKMToken::totalSupplyCall {};
+        let supply_tx = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(token_addr)
+            .input(supply_call.abi_encode().into());
+        let supply_resp = provider
+            .call(supply_tx)
+            .await
+            .map_err(|e| format!("totalSupply() call failed: {}", e))?;
+        let supply_return = IZKMToken::totalSupplyCall::abi_decode_returns(&supply_resp)
+            .map_err(|e| format!("totalSupply() decode failed: {}", e))?;
+        let on_chain_supply = supply_return;
+
         let remaining = MAX_CLAIMS.saturating_sub(total_claims_u64);
-        let total_supply = total_claims_u64 * CLAIM_AMOUNT;
+        let minted_supply = total_claims_u64 * CLAIM_AMOUNT;
         let pct = (total_claims_u64 as f64 / MAX_CLAIMS as f64) * 100.0;
+
+        // Format on-chain supply for display (convert from wei to whole ZKM)
+        let on_chain_supply_u128: u128 = on_chain_supply.try_into().map_err(
+            |e: alloy::primitives::ruint::FromUintError<u128>| {
+                format!("totalSupply overflow: {}", e)
+            },
+        )?;
+        let on_chain_zkm = on_chain_supply_u128 as f64 / 1e18;
+        let burned = minted_supply as f64 - on_chain_zkm;
 
         eprintln!("Total claimed:  {}", total_claims_u64);
         eprintln!("Claims left:    {} / {}", remaining, MAX_CLAIMS);
-        eprintln!("Total supply:   {} ZKM ({:.1}% of max)", total_supply, pct);
+        eprintln!("Minted supply:  {} ZKM ({:.1}% of max)", minted_supply, pct);
+        if burned > 0.5 {
+            eprintln!(
+                "On-chain supply: {:.0} ZKM ({:.0} ZKM burned)",
+                on_chain_zkm, burned
+            );
+        } else {
+            eprintln!("On-chain supply: {:.0} ZKM", on_chain_zkm);
+        }
         eprintln!(
             "Status:         {}",
             if is_open {

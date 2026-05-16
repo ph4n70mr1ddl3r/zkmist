@@ -81,8 +81,10 @@ contract ZKMAirdrop {
     }
 
     /// @notice Number of claims remaining before the cap is reached.
+    /// @dev Uses checked comparison to avoid revert if totalClaims is manipulated
+    ///      beyond MAX_CLAIMS (e.g., via direct storage writes in tests).
     function claimsRemaining() external view returns (uint256) {
-        return MAX_CLAIMS - totalClaims;
+        return totalClaims >= MAX_CLAIMS ? 0 : MAX_CLAIMS - totalClaims;
     }
 
     /// @notice Whether the claim window is still open.

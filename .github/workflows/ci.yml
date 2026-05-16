@@ -68,6 +68,10 @@ jobs:
       - name: Run tests
         run: forge test -vvv
 
+      - name: Check gas snapshot
+        run: forge snapshot --check --tolerance 10
+        continue-on-error: true  # Non-blocking: fails on gas increases > 10%
+
   forge-fmt:
     name: Forge – Format
     runs-on: ubuntu-latest
