@@ -135,8 +135,7 @@ const DEFAULT_RPC_URL: &str = "https://mainnet.base.org";
 const IPFS_GATEWAY: &str = "https://ipfs.io/ipfs";
 
 /// Published IPFS CID for the eligibility list.
-/// This will be set when the list is published.
-const DEFAULT_CID: &str = "QMFIXME_PUBLISHED_CID";
+const DEFAULT_CID: &str = "bafybeiadqcqxmaxvijobxzpcbn4vmwxubkxv7uw32ic77wxh4dqxug6aze";
 
 /// ZKMAirdrop contract address on Base.
 /// Set after deployment.
