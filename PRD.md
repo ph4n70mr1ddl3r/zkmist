@@ -1135,7 +1135,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 
 ---
 
-## 13. Open Questions
+## 13. Resolved Decisions
 
 | # | Question | Status |
 |---|----------|--------|
@@ -1305,19 +1305,16 @@ The RISC Zero guest program requires specific build configuration to compile for
 > ⚠️ **Note on `[build] target`:** Setting a global `[build] target` causes `cargo build` to always target riscv32, which can break host-side tooling (tests, runners) in the same workspace. Standard RISC Zero practice is to keep only the `runner` and `rustflags` in `.cargo/config.toml` and let `cargo risczero build` select the target. If you must keep `[build] target`, isolate the guest program in a separate workspace member where no host code is compiled.
 
 ```toml
-[target.riscv32im-risc0-zkvm-elf]
-runner = "cargo run --bin zkmist-guest-runner"
-
-[build]
-target = "riscv32im-risc0-zkvm-elf"
-
 [unstable]
 build-std = ["core", "alloc"]
 
 # Required for getrandom 0.3+ on riscv32 targets without OS support.
 # RISC Zero provides a custom entropy source via the zkVM environment.
-rustflags = ["-C", "getrandom_backend=custom"]
+[target.riscv32im-risc0-zkvm-elf]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
 ```
+
+> ⚠️ **Note on `[build] target` and `runner`:** The guest `.cargo/config.toml` deliberately omits `[build] target` and `runner` entries. Setting `[build] target = "riscv32im-risc0-zkvm-elf"` causes `cargo build` to always target riscv32, which breaks host-side tooling (tests, IDEs) in the same workspace. Instead, `cargo risczero build` selects the target automatically. A `runner` entry is not needed — the guest binary is executed by the RISC Zero zkVM host, not run directly.
 
 **Atomic shim** (required because `riscv32im` lacks native 1-byte atomics needed by `tracing_core`):
 
@@ -1336,4 +1333,4 @@ pub extern "C" fn __atomic_store_1(ptr: *mut u8, val: u8, _ordering: i32) {
 
 ---
 
-*End of PRD v6.0*
+*End of PRD v6.1*

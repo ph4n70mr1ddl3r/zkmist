@@ -163,7 +163,6 @@ struct ProofFile {
 }
 
 #[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
 struct Manifest {
     version: u64,
     cutoff_timestamp: String,
@@ -176,7 +175,6 @@ struct Manifest {
 }
 
 #[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
 struct ManifestFile {
     file: String,
     sha256: String,
@@ -421,12 +419,35 @@ fn timestamp_string() -> String {
     format!("{}", now.as_secs())
 }
 
-fn format_deadline(timestamp: u64) -> &'static str {
-    if timestamp == CLAIM_DEADLINE {
-        "2027-01-01 00:00:00 UTC"
-    } else {
-        "unknown"
-    }
+fn format_deadline(timestamp: u64) -> String {
+    // Unix epoch to approximate UTC date string (no chrono dependency needed).
+    // Days since epoch → year/month/day via algorithm adapted from chrono.
+    let days = (timestamp / 86400) as i64;
+    let (year, month, day) = days_to_ymd(days);
+    let secs = (timestamp % 86400) as u32;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        year, month, day, h, m, s
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(mut days: i64) -> (i64, u32, u32) {
+    // Shift to era starting March 1, year 0 (simplifies month arithmetic).
+    days += 719468; // days from year 0 to 1970-03-01
+    let era = (if days >= 0 { days } else { days - 146096 }) / 146097;
+    let doe = days - era * 146097; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
+    let mp = (5 * doy + 2) / 153; // month index from March [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // day [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // month [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m as u32, d as u32)
 }
 
 /// Build a progress bar styled for ZKMist.
@@ -868,9 +889,11 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // Encode the proof seal (Groth16) as hex for the proof file
     let seal_hex = encode_receipt_seal(receipt)?;
 
-    // Save proof file
+    // Save proof file to ~/.zkmist/proofs/
+    std::fs::create_dir_all(proofs_dir())
+        .map_err(|e| format!("Failed to create proofs dir: {}", e))?;
     let timestamp = timestamp_string();
-    let proof_filename = format!("zkmist_proof_{}.json", timestamp);
+    let proof_filename = proofs_dir().join(format!("zkmist_proof_{}.json", timestamp));
 
     // Serialize the receipt for local verification (bincode → hex)
     let receipt_bytes = bincode::serialize(&prove_info.receipt)
@@ -892,7 +915,7 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&proof_file)
         .map_err(|e| format!("Failed to serialize proof: {}", e))?;
     std::fs::write(&proof_filename, &json)
-        .map_err(|e| format!("Failed to write {}: {}", proof_filename, e))?;
+        .map_err(|e| format!("Failed to write {}: {}", proof_filename.display(), e))?;
 
     eprintln!();
     eprintln!("      ⚠️  RECIPIENT IS IRREVOCABLE — triple-check before submitting.");
@@ -901,8 +924,8 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         CLAIM_AMOUNT,
         format_address(&recipient)
     );
-    eprintln!("      Proof saved: {}", proof_filename);
-    eprintln!("      Run: zkmist submit {}", proof_filename);
+    eprintln!("      Proof saved: {}", proof_filename.display());
+    eprintln!("      Run: zkmist submit {}", proof_filename.display());
     eprintln!("      Or send to any relayer.");
 
     Ok(())
@@ -1132,10 +1155,10 @@ fn cmd_submit(
             }
             Err(e) => {
                 eprintln!(
-                    "  ⚠️  Gas estimation failed ({}): using 600,000 fallback",
+                    "  ⚠️  Gas estimation failed ({}): using 700,000 fallback",
                     e
                 );
-                600_000
+                700_000
             }
         };
 
@@ -1361,7 +1384,7 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
     eprintln!("Claim amount:   {} ZKM per claim", CLAIM_AMOUNT);
     eprintln!("Max claims:     {}", MAX_CLAIMS);
     eprintln!(
-        "Deadline:       {} UTC ({})",
+        "Deadline:       {} ({})",
         CLAIM_DEADLINE,
         format_deadline(CLAIM_DEADLINE)
     );
@@ -1494,8 +1517,7 @@ fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
