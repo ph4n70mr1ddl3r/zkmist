@@ -13,5 +13,6 @@ ark-bn254 = "0.5"
 ark-ff = "0.5"
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 light-poseidon = "0.4"
+# TODO: pin to stable v5.0.0 once released. Currently only 5.0.0-rc.1 is available.
 risc0-zkvm = { version = "5.0.0-rc.1", default-features = false, features = ["std"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }

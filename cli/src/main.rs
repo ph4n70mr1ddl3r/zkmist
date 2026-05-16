@@ -15,8 +15,10 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as Sha2Digest, Sha256};
+use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 use zkmist_merkle_tree::{
-    compute_nullifier, generate_proof, hash_leaf, verify_merkle_proof, PADDING_SENTINEL,
+    build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
+    verify_merkle_proof, PADDING_SENTINEL,
 };
 
 // ABI encoding for the ZKMAirdrop.claim function.
@@ -37,7 +39,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Download eligibility list from IPFS (~1.3 GB). Builds and caches the Merkle tree.
+    /// Download eligibility list from IPFS (~1.3 GB). Verifies root via streaming tree.
     Fetch {
         /// IPFS CID override (defaults to the published CID)
         #[arg(long)]
@@ -45,9 +47,12 @@ enum Commands {
         /// Use HTTP gateway instead of native IPFS
         #[arg(long, default_value_t = true)]
         http: bool,
+        /// Skip root verification (faster, but only checks file-level SHA-256 integrity)
+        #[arg(long)]
+        no_verify: bool,
     },
 
-    /// Generate ZK proof (interactive). Uses cached Merkle tree from `fetch`.
+    /// Generate ZK proof (interactive). Uses cached proof data when available.
     Prove {
         /// Read private key from file instead of interactive prompt.
         /// ⚠️ The key file contains your claimant private key — use with caution.
@@ -95,7 +100,8 @@ enum Commands {
 
 const ZKMIST_DIR_NAME: &str = ".zkmist";
 const ELIGIBILITY_DIR_NAME: &str = "eligibility";
-const TREE_CACHE_FILE: &str = "tree_cache.bin";
+const PROOFS_DIR_NAME: &str = "proofs";
+const GUEST_HASH_FILE: &str = "guest.sha256";
 
 /// PRD §11: Contract parameters
 const CLAIM_AMOUNT: u64 = 10_000;
@@ -157,7 +163,7 @@ struct ManifestFile {
     sha256: String,
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Path helpers ─────────────────────────────────────────────────────────
 
 fn zkmist_dir() -> PathBuf {
     dirs::home_dir()
@@ -169,13 +175,26 @@ fn eligibility_dir() -> PathBuf {
     zkmist_dir().join(ELIGIBILITY_DIR_NAME)
 }
 
-fn tree_cache_path() -> PathBuf {
-    zkmist_dir().join(TREE_CACHE_FILE)
-}
-
 fn manifest_path() -> PathBuf {
     eligibility_dir().join("manifest.json")
 }
+
+fn proofs_dir() -> PathBuf {
+    zkmist_dir().join(PROOFS_DIR_NAME)
+}
+
+/// Proof cache path for a specific address. Stores the Merkle proof data
+/// (root, siblings, path_indices) so subsequent `prove` calls skip tree building.
+/// ~900 bytes per file instead of ~8.6 GB for a full tree cache.
+fn proof_cache_path(addr: &[u8; 20]) -> PathBuf {
+    proofs_dir().join(format!("{}.bin", hex::encode(addr)))
+}
+
+fn guest_hash_path() -> PathBuf {
+    zkmist_dir().join(GUEST_HASH_FILE)
+}
+
+// ── Eligibility list ─────────────────────────────────────────────────────
 
 /// Load addresses from eligibility CSV files.
 fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
@@ -217,6 +236,8 @@ fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
     Ok(addresses)
 }
 
+// ── Address / key helpers ────────────────────────────────────────────────
+
 /// Parse a hex Ethereum address (with or without 0x prefix) into 20 bytes.
 fn parse_address(s: &str) -> Result<[u8; 20], String> {
     let hex = s.strip_prefix("0x").unwrap_or(s);
@@ -229,6 +250,59 @@ fn parse_address(s: &str) -> Result<[u8; 20], String> {
     let mut addr = [0u8; 20];
     hex::decode_to_slice(hex, &mut addr)
         .map_err(|e| format!("Invalid hex in address '{}': {}", s, e))?;
+    Ok(addr)
+}
+
+/// Parse an Ethereum address string and validate its EIP-55 checksum.
+///
+/// EIP-55 mixed-case encoding provides a lightweight integrity check:
+/// the hex characters are mixed upper/lowercase based on the Keccak-256 hash
+/// of the lowercase address. A single typo in the address will almost
+/// certainly fail this check.
+///
+/// All-lowercase or all-uppercase addresses are accepted without checksum
+/// validation (per EIP-55 spec).
+fn validate_address_checksum(addr_str: &str) -> Result<[u8; 20], String> {
+    let hex_part = addr_str.strip_prefix("0x").unwrap_or(addr_str);
+    let addr = parse_address(addr_str)?;
+
+    // All lowercase or all uppercase hex is valid without checksum
+    if hex_part == hex_part.to_lowercase() || hex_part == hex_part.to_uppercase() {
+        return Ok(addr);
+    }
+
+    // Mixed case → validate EIP-55 checksum
+    let mut hasher = Keccak::v256();
+    hasher.update(hex_part.to_lowercase().as_bytes());
+    let mut hash = [0u8; 32];
+    hasher.finalize(&mut hash);
+
+    for (i, c) in hex_part.chars().enumerate() {
+        if c.is_ascii_digit() {
+            continue;
+        }
+        let hash_byte = hash[i / 2];
+        let hash_nibble = if i % 2 == 0 {
+            hash_byte >> 4
+        } else {
+            hash_byte & 0x0f
+        };
+        if c.is_ascii_uppercase() && hash_nibble < 8 {
+            return Err(format!(
+                "Invalid EIP-55 checksum for address '{}'. \
+                 Check the address carefully — a typo could send tokens to the wrong address.",
+                addr_str
+            ));
+        }
+        if c.is_ascii_lowercase() && hash_nibble >= 8 {
+            return Err(format!(
+                "Invalid EIP-55 checksum for address '{}'. \
+                 Check the address carefully — a typo could send tokens to the wrong address.",
+                addr_str
+            ));
+        }
+    }
+
     Ok(addr)
 }
 
@@ -269,7 +343,7 @@ fn read_private_key_from_file(path: &str) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
-/// Read a recipient address from input.
+/// Read a recipient address from input with EIP-55 checksum validation.
 fn read_recipient_address() -> Result<[u8; 20], String> {
     eprint!("Recipient address: ");
     io::stderr().flush().ok();
@@ -277,28 +351,36 @@ fn read_recipient_address() -> Result<[u8; 20], String> {
     io::stdin()
         .read_line(&mut input)
         .map_err(|e| format!("Failed to read input: {}", e))?;
-    let addr = parse_address(input.trim())?;
+    let addr = validate_address_checksum(input.trim())?;
     if addr == [0u8; 20] {
         return Err("Recipient cannot be the zero address. Tokens would be burned.".to_string());
     }
     Ok(addr)
 }
 
-/// Derive Ethereum address from a secp256k1 private key.
+/// Derive Ethereum address from a secp256k1 private key using Keccak-256.
+///
+/// Uses `tiny-keccak` (same crate as the guest program) to ensure identical
+/// address derivation. ⚠️ This is Keccak-256 (original NIST submission), NOT
+/// NIST SHA3-256 — they produce different outputs.
 fn derive_address(key: &[u8; 32]) -> Result<[u8; 20], String> {
     use k256::ecdsa::{SigningKey, VerifyingKey};
-    use sha3::{Digest, Keccak256};
 
     let sk = SigningKey::from_slice(key).map_err(|e| format!("Invalid private key: {}", e))?;
     let vk: &VerifyingKey = sk.verifying_key();
     let point = vk.to_encoded_point(false);
     let pubkey_bytes = point.as_bytes();
     // Uncompressed point: 0x04 + 32 bytes X + 32 bytes Y = 65 bytes
-    let hash = Keccak256::digest(&pubkey_bytes[1..65]);
+    let mut hasher = Keccak::v256();
+    hasher.update(&pubkey_bytes[1..65]);
+    let mut hash = [0u8; 32];
+    hasher.finalize(&mut hash);
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&hash[12..32]);
     Ok(addr)
 }
+
+// ── Display helpers ──────────────────────────────────────────────────────
 
 fn format_address(addr: &[u8; 20]) -> String {
     format!("0x{}", hex::encode(addr))
@@ -342,9 +424,56 @@ fn progress_bar(total: u64, msg: &str) -> ProgressBar {
     pb
 }
 
+// ── Manifest helpers ─────────────────────────────────────────────────────
+
+/// Load and parse the manifest.json from the eligibility directory.
+fn load_manifest() -> Result<Option<Manifest>, String> {
+    let path = manifest_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read manifest: {}", e))?;
+    let manifest: Manifest =
+        serde_json::from_str(&json).map_err(|e| format!("Failed to parse manifest: {}", e))?;
+    Ok(Some(manifest))
+}
+
+/// Extract the expected merkle root bytes from a manifest.
+fn manifest_root(manifest: &Manifest) -> Result<[u8; 32], String> {
+    let hex = manifest
+        .merkle_root
+        .strip_prefix("0x")
+        .unwrap_or(&manifest.merkle_root);
+    let bytes = hex::decode(hex).map_err(|e| format!("Invalid merkle root in manifest: {}", e))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "Invalid merkle root length in manifest: {} bytes",
+            bytes.len()
+        ));
+    }
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&bytes);
+    Ok(root)
+}
+
+/// Verify that a computed root matches the manifest's expected root.
+fn verify_root_against_manifest(root: &[u8; 32], manifest: &Manifest) -> Result<(), String> {
+    let expected = manifest_root(manifest)?;
+    if *root != expected {
+        return Err(format!(
+            "Merkle root mismatch!\n  Computed: {}\n  Manifest: {}\n  \
+             The eligibility list may be corrupted or incomplete. Run `zkmist fetch` to re-download.",
+            format_bytes32(root),
+            format_bytes32(&expected)
+        ));
+    }
+    Ok(())
+}
+
 // ── Command: fetch ───────────────────────────────────────────────────────
 
-fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
+fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), String> {
     let dir = eligibility_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
@@ -450,53 +579,24 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
     }
     pb.finish_with_message("done");
 
-    eprintln!("[3/3] Building Merkle tree and caching...");
-    eprintln!("      ⚠️  This requires ~4 GB RAM and ~9 GB disk space for the cache.");
-    let addresses = load_eligibility_list()?;
-    eprintln!("      Loaded {} addresses", addresses.len());
+    if no_verify {
+        eprintln!("[3/3] Root verification skipped (--no-verify).");
+        eprintln!("      File-level SHA-256 integrity verified ✓");
+    } else {
+        // Verify root using streaming tree construction (~2 GB RAM vs ~8 GB for full tree).
+        // This processes one layer at a time, keeping peak memory to O(2^depth × 32 bytes).
+        eprintln!("[3/3] Verifying Merkle root (streaming build)...");
+        eprintln!("      ⚠️  This requires ~2 GB RAM and may take 1–2 minutes.");
 
-    let tree_layers = zkmist_merkle_tree::build_tree(&addresses);
-    let root = zkmist_merkle_tree::tree_root(&tree_layers);
-    eprintln!("      Tree built ({} levels)", tree_layers.len() - 1);
-    eprintln!("      Root: {}", format_bytes32(&root));
+        let addresses = load_eligibility_list()?;
+        eprintln!("      Loaded {} addresses", addresses.len());
 
-    // Validate computed root against manifest's expected root
-    let expected_root_hex = manifest
-        .merkle_root
-        .strip_prefix("0x")
-        .unwrap_or(&manifest.merkle_root);
-    let expected_root_bytes = hex::decode(expected_root_hex)
-        .map_err(|e| format!("Invalid merkle root in manifest: {}", e))?;
-    if expected_root_bytes.len() != 32 {
-        return Err(format!(
-            "Invalid merkle root length in manifest: {} bytes",
-            expected_root_bytes.len()
-        ));
+        let (root, _) = build_tree_streaming(&addresses, None);
+        eprintln!("      Root: {}", format_bytes32(&root));
+
+        verify_root_against_manifest(&root, &manifest)?;
+        eprintln!("      ✓ Root matches manifest");
     }
-    let mut expected = [0u8; 32];
-    expected.copy_from_slice(&expected_root_bytes);
-    if root != expected {
-        return Err(format!(
-            "Merkle root mismatch!\n  Computed: {}\n  Manifest: {}\n  The eligibility list may be corrupted or incomplete.",
-            format_bytes32(&root),
-            format_bytes32(&expected)
-        ));
-    }
-    eprintln!("      ✓ Root matches manifest");
-
-    // Cache tree to disk
-    let cache_path = tree_cache_path();
-    let file = std::fs::File::create(&cache_path)
-        .map_err(|e| format!("Failed to create cache file: {}", e))?;
-    let writer = std::io::BufWriter::new(file);
-    zkmist_merkle_tree::serialize_tree(&tree_layers, writer)
-        .map_err(|e| format!("Failed to write tree cache: {}", e))?;
-    let cache_size = std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0);
-    eprintln!(
-        "      Cache saved: {} ({:.1} MB)",
-        cache_path.display(),
-        cache_size as f64 / 1_048_576.0
-    );
 
     eprintln!();
     eprintln!("✅ Fetch complete. Run `zkmist prove` to generate a claim proof.");
@@ -506,65 +606,8 @@ fn cmd_fetch(cid: Option<&str>, _http: bool) -> Result<(), String> {
 // ── Command: prove ───────────────────────────────────────────────────────
 
 fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
-    let use_tree_cache = tree_cache_path().exists();
-
-    eprintln!("[1/4] Loading eligibility list...");
-    let addresses = load_eligibility_list()?;
-    eprintln!("      Loaded {} eligible addresses", addresses.len());
-
-    // Load or build tree
-    let tree_layers;
-    let root;
-
-    if use_tree_cache {
-        eprintln!("[2/4] Loading cached Merkle tree...");
-        let file = std::fs::File::open(tree_cache_path())
-            .map_err(|e| format!("Failed to open tree cache: {}", e))?;
-        let reader = std::io::BufReader::new(file);
-        tree_layers = zkmist_merkle_tree::deserialize_tree(reader)
-            .map_err(|e| format!("Failed to read tree cache: {}", e))?;
-        root = zkmist_merkle_tree::tree_root(&tree_layers);
-        eprintln!("      Tree loaded ({} levels)", tree_layers.len() - 1);
-        eprintln!("      Root: {}", format_bytes32(&root));
-
-        // Validate cached root against manifest
-        if manifest_path().exists() {
-            let manifest_json = std::fs::read_to_string(manifest_path())
-                .map_err(|e| format!("Failed to read manifest: {}", e))?;
-            let manifest: Manifest = serde_json::from_str(&manifest_json)
-                .map_err(|e| format!("Failed to parse manifest: {}", e))?;
-            let expected_hex = manifest
-                .merkle_root
-                .strip_prefix("0x")
-                .unwrap_or(&manifest.merkle_root);
-            let expected_bytes = hex::decode(expected_hex)
-                .map_err(|e| format!("Invalid root in manifest: {}", e))?;
-            if expected_bytes.len() == 32 {
-                let mut expected = [0u8; 32];
-                expected.copy_from_slice(&expected_bytes);
-                if root != expected {
-                    return Err(format!(
-                        "Cached tree root doesn't match manifest! Run `zkmist fetch` to rebuild.\n  Cached:   {}\n  Manifest: {}",
-                        format_bytes32(&root),
-                        format_bytes32(&expected)
-                    ));
-                }
-                eprintln!("      ✓ Root matches manifest");
-            }
-        }
-    } else {
-        eprintln!("[2/4] Building Merkle tree...");
-        eprintln!(
-            "      ⚠️  This requires ~4 GB RAM. Tip: run `zkmist fetch` first to cache the tree."
-        );
-        tree_layers = zkmist_merkle_tree::build_tree(&addresses);
-        root = zkmist_merkle_tree::tree_root(&tree_layers);
-        eprintln!("      Tree built ({} levels)", tree_layers.len() - 1);
-        eprintln!("      Root: {}", format_bytes32(&root));
-    }
-
-    // Prompt for credentials
-    eprintln!("[3/4] Enter credentials:");
+    // ── Step 1: Credentials ──────────────────────────────────────────────
+    eprintln!("[1/4] Enter credentials:");
     let private_key = if let Some(path) = key_file {
         eprintln!("      Reading private key from: {}", path);
         read_private_key_from_file(path)?
@@ -574,39 +617,136 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     let address = derive_address(&private_key)?;
     eprintln!("      → Address: {}", format_address(&address));
 
-    // Check eligibility
+    // ── Step 2: Merkle proof (cached or streaming) ───────────────────────
+    //
+    // Strategy: check for a per-address proof cache file (~900 bytes) first.
+    // If cached, load proof data (root, siblings, path_indices) without
+    // loading the full eligibility list or building the tree.
+    // If not cached, load the list and use streaming tree construction
+    // (keeps only 2 layers in memory at a time, ~2 GB vs ~8 GB for full tree),
+    // then save the proof cache for future use.
+    eprintln!("[2/4] Preparing Merkle proof...");
+
+    let cache_path = proof_cache_path(&address);
+    let (root, siblings, path_indices) = if cache_path.exists() {
+        // Load cached proof data
+        eprintln!("      Loading cached proof...");
+        let file = std::fs::File::open(&cache_path)
+            .map_err(|e| format!("Failed to open proof cache: {}", e))?;
+        let reader = std::io::BufReader::new(file);
+        let (cached_root, _leaf_index, cached_siblings, cached_path) =
+            deserialize_proof(reader).map_err(|e| format!("Failed to read proof cache: {}", e))?;
+
+        eprintln!(
+            "      ✓ Proof cache loaded ({} levels)",
+            cached_siblings.len()
+        );
+        eprintln!("      Root: {}", format_bytes32(&cached_root));
+
+        // Verify cached root against manifest
+        if let Some(manifest) = load_manifest()? {
+            verify_root_against_manifest(&cached_root, &manifest)?;
+            eprintln!("      ✓ Root matches manifest");
+        }
+
+        (cached_root, cached_siblings, cached_path)
+    } else {
+        // No cache — build proof via streaming tree construction
+        eprintln!("      No cached proof — building via streaming tree...");
+        eprintln!("      ⚠️  This requires ~2 GB RAM. The result will be cached for future use.");
+
+        let addresses = load_eligibility_list()?;
+        eprintln!("      Loaded {} eligible addresses", addresses.len());
+
+        // Find address index via binary search (list must be sorted)
+        let leaf_index = match addresses.binary_search(&address) {
+            Ok(idx) => idx,
+            Err(_) => {
+                return Err(format!(
+                    "Address {} is NOT in the eligibility tree. \
+                     If you believe this is an error, verify the eligibility list.",
+                    format_address(&address)
+                ));
+            }
+        };
+
+        // Streaming build with target index: computes root + extracts Merkle proof
+        // without storing all tree layers. Peak memory: O(2^depth × 32 bytes).
+        let (streaming_root, proof) = build_tree_streaming(&addresses, Some(leaf_index));
+        let (streaming_siblings, streaming_path) =
+            proof.ok_or("Streaming build failed to produce proof for target index")?;
+
+        eprintln!(
+            "      ✓ Tree built (streaming, {} levels)",
+            streaming_siblings.len()
+        );
+        eprintln!("      Root: {}", format_bytes32(&streaming_root));
+        eprintln!("      Found at index: {}", leaf_index);
+
+        // Verify root against manifest
+        if let Some(manifest) = load_manifest()? {
+            verify_root_against_manifest(&streaming_root, &manifest)?;
+            eprintln!("      ✓ Root matches manifest");
+        }
+
+        // Verify Merkle proof locally before caching
+        let mut leaf_hasher = ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
+        let leaf = hash_leaf(&address, &mut leaf_hasher);
+        let computed_root = verify_merkle_proof(&leaf, &streaming_siblings, &streaming_path);
+        if computed_root != streaming_root {
+            return Err(format!(
+                "INTERNAL ERROR: Merkle proof verification failed. \
+                 Computed root {} != tree root {}",
+                format_bytes32(&computed_root),
+                format_bytes32(&streaming_root)
+            ));
+        }
+        eprintln!("      ✓ Merkle proof verified locally");
+
+        // Save proof cache (~900 bytes instead of ~8.6 GB full tree)
+        std::fs::create_dir_all(proofs_dir())
+            .map_err(|e| format!("Failed to create proofs dir: {}", e))?;
+        let file = std::fs::File::create(&cache_path)
+            .map_err(|e| format!("Failed to create proof cache: {}", e))?;
+        let writer = std::io::BufWriter::new(file);
+        serialize_proof(
+            &streaming_root,
+            leaf_index,
+            &streaming_siblings,
+            &streaming_path,
+            writer,
+        )
+        .map_err(|e| format!("Failed to write proof cache: {}", e))?;
+        eprintln!(
+            "      Proof cached: {} (~{} bytes)",
+            cache_path.display(),
+            cache_path.metadata().map(|m| m.len()).unwrap_or(0)
+        );
+
+        (streaming_root, streaming_siblings, streaming_path)
+    };
+
+    // Verify the leaf is not a padding sentinel
     let mut leaf_hasher = ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
     let leaf = hash_leaf(&address, &mut leaf_hasher);
-
     if leaf == PADDING_SENTINEL {
         return Err("Address produced a padding leaf — this should not happen".to_string());
     }
-
-    // Find the leaf in the tree
-    let leaves = &tree_layers[0];
-    let leaf_index = leaves.iter().position(|l| *l == leaf).ok_or_else(|| {
-        format!(
-            "Address {} is NOT in the eligibility tree. \
-                 If you believe this is an error, verify the eligibility list.",
-            format_address(&address)
-        )
-    })?;
-
-    eprintln!("      ✓ Eligible (index: {})", leaf_index);
 
     // Compute nullifier
     let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create interior hasher")?;
     let nullifier = compute_nullifier(&private_key, &mut interior_hasher);
     eprintln!("      → Nullifier: {}", format_bytes32(&nullifier));
 
-    // Get recipient
+    // ── Step 3: Recipient ────────────────────────────────────────────────
+    eprintln!("[3/4] Enter recipient:");
     let recipient = read_recipient_address()?;
+    eprintln!("      → Recipient: {}", format_address(&recipient));
 
-    // Generate Merkle proof
+    // ── Step 4: ZK proving ───────────────────────────────────────────────
     eprintln!("[4/4] Generating proof...");
-    let (siblings, path_indices) = generate_proof(&tree_layers, leaf_index);
 
-    // Verify proof locally before expensive zkVM proving
+    // Final local verification before expensive zkVM proving
     let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
     if computed_root != root {
         return Err(format!(
@@ -707,7 +847,7 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     eprintln!("      ✓ Journal contents verified");
 
     // Encode the proof seal (Groth16) as hex for the proof file
-    let seal_hex = encode_receipt_seal(receipt);
+    let seal_hex = encode_receipt_seal(receipt)?;
 
     // Save proof file
     let timestamp = timestamp_string();
@@ -749,32 +889,69 @@ fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// Get the guest program ELF binary.
+/// Get the guest program ELF binary with SHA-256 hash verification.
 ///
 /// Looks for the ELF in the following locations:
-/// 1. Embedded via risc0-build (compile-time, requires build.rs)
+/// 1. `~/.zkmist/guest.elf`
 /// 2. Next to the CLI binary (for development)
-/// 3. In ~/.zkmist/guest.elf
+/// 3. In RISC Zero build output directory
+///
+/// After loading, verifies the ELF's SHA-256 against `~/.zkmist/guest.sha256`
+/// if that file exists. This catches corruption or tampering before the
+/// expensive (45–90s) zkVM proving step.
 fn get_guest_elf() -> Result<Vec<u8>, String> {
-    // Try to load from the zkmist data directory
     let guest_path = zkmist_dir().join("guest.elf");
-    if guest_path.exists() {
-        return std::fs::read(&guest_path)
-            .map_err(|e| format!("Failed to read guest ELF {}: {}", guest_path.display(), e));
-    }
-
-    // Try next to the current executable
-    if let Ok(exe) = std::env::current_exe() {
+    let elf_data = if guest_path.exists() {
+        std::fs::read(&guest_path)
+            .map_err(|e| format!("Failed to read guest ELF {}: {}", guest_path.display(), e))?
+    } else if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let sibling_path = dir.join("zkmist-guest");
             if sibling_path.exists() {
-                return std::fs::read(&sibling_path)
-                    .map_err(|e| format!("Failed to read guest ELF: {}", e));
+                std::fs::read(&sibling_path)
+                    .map_err(|e| format!("Failed to read guest ELF: {}", e))?
+            } else {
+                try_build_paths()?
             }
+        } else {
+            try_build_paths()?
         }
+    } else {
+        try_build_paths()?
+    };
+
+    // Verify SHA-256 hash against expected hash file (if present)
+    let hash_path = guest_hash_path();
+    let mut hasher = Sha256::new();
+    hasher.update(&elf_data);
+    let computed_hash = hex::encode(hasher.finalize());
+
+    if hash_path.exists() {
+        let expected = std::fs::read_to_string(&hash_path)
+            .map_err(|e| format!("Failed to read {}: {}", hash_path.display(), e))?;
+        let expected = expected.trim();
+        if computed_hash != expected {
+            return Err(format!(
+                "Guest ELF hash mismatch!\n  Computed: {}\n  Expected: {}\n  \
+                 The ELF may be corrupted or tampered. Rebuild with: \
+                 cargo risczero build --manifest-path guest/Cargo.toml",
+                computed_hash, expected
+            ));
+        }
+        eprintln!("      ✓ Guest ELF hash verified");
+    } else {
+        eprintln!(
+            "      ⚠️  No hash file at {}. To enable verification, run:",
+            hash_path.display()
+        );
+        eprintln!("          echo {} > {}", computed_hash, hash_path.display());
     }
 
-    // Try the RISC Zero build output directory (cargo risczero build)
+    Ok(elf_data)
+}
+
+/// Try standard RISC Zero build output paths for the guest ELF.
+fn try_build_paths() -> Result<Vec<u8>, String> {
     let build_paths = [
         // Release build (standard)
         std::path::PathBuf::from("target/riscv32im-risc0-zkvm-elf/release/zkmist-guest"),
@@ -800,23 +977,29 @@ fn get_guest_elf() -> Result<Vec<u8>, String> {
 /// Encode the receipt seal as a hex string suitable for on-chain submission.
 ///
 /// The Solidity contract expects the Groth16 seal bytes.
-fn encode_receipt_seal(receipt: &risc0_zkvm::Receipt) -> String {
+/// Returns an error for non-Groth16 receipt types that require compression.
+fn encode_receipt_seal(receipt: &risc0_zkvm::Receipt) -> Result<String, String> {
     use risc0_zkvm::InnerReceipt;
     match &receipt.inner {
         InnerReceipt::Groth16(groth16_receipt) => {
             // The seal is the Groth16 proof, which is what the on-chain verifier expects
-            hex::encode(&groth16_receipt.seal)
+            Ok(hex::encode(&groth16_receipt.seal))
         }
         InnerReceipt::Fake(_) => {
-            // Dev mode — return placeholder seal
-            "FAKE_SEAL_DEV_MODE".to_string()
+            eprintln!(
+                "      ⚠️  Warning: proof was generated in dev/fake mode. \
+                 This proof will NOT be accepted by the on-chain verifier."
+            );
+            Ok("FAKE_SEAL_DEV_MODE".to_string())
         }
         InnerReceipt::Succinct(_) | InnerReceipt::Composite(_) => {
-            // These need to be compressed to Groth16 first
-            // For now, return an error indication
-            "NEEDS_GROTH16_COMPRESSION".to_string()
+            Err("Received Succinct/Composite receipt instead of Groth16. \
+                 The on-chain verifier requires a Groth16 proof. \
+                 Ensure the prover is configured for Groth16 compression. \
+                 With risc0-zkvm v5.x, the default prover should produce Groth16 receipts."
+                .to_string())
         }
-        _ => "UNKNOWN_RECEIPT_TYPE".to_string(),
+        _ => Err("Unknown receipt type. Cannot encode seal for on-chain submission.".to_string()),
     }
 }
 
@@ -911,12 +1094,15 @@ fn cmd_submit(
         };
         let call_data = call.abi_encode();
 
-        // Build and send transaction
-        let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+        // Build and send transaction with explicit gas limit.
+        // Claim transactions use ~510K gas (Groth16 verification + airdrop logic).
+        // Explicit limit avoids underestimation by gas estimation for complex precompiles.
+        let mut tx = alloy::rpc::types::transaction::TransactionRequest::default()
             .to(contract_address)
             .input(call_data.into());
+        tx.gas = Some(600_000);
 
-        eprintln!("Submitting claim transaction...");
+        eprintln!("Submitting claim transaction (gas limit: 600,000)...");
         let pending = provider
             .send_transaction(tx)
             .await
@@ -1032,8 +1218,6 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
         eprintln!("  Image ID: {}", hex::encode(img_id.as_bytes()));
 
         // Try to verify the full cryptographic proof using the serialized receipt.
-        // If the receipt is embedded in the proof file, deserialize and verify it.
-        // Otherwise, fall back to a clear explanation of what was/wasn't checked.
         if let Some(ref receipt_hex) = proof.receipt_hex {
             let receipt_bytes = hex::decode(receipt_hex)
                 .map_err(|e| format!("Failed to decode receipt hex: {}", e))?;
@@ -1062,7 +1246,6 @@ fn cmd_verify(proof_file: &str) -> Result<(), String> {
             eprintln!("      Only journal integrity has been verified.");
         } else {
             // Proof file has a real seal but no embedded receipt (e.g., from an external tool).
-            // On-chain verification by the RiscZeroGroth16Verifier contract is the authoritative check.
             eprintln!("  ⚠️  No embedded receipt in proof file — cannot perform local cryptographic verification.");
             eprintln!("      What was verified:");
             eprintln!("        ✓ Journal layout (84 bytes)");
@@ -1093,7 +1276,7 @@ fn cmd_check(address_str: &str) -> Result<(), String> {
     let addresses = load_eligibility_list()?;
     eprintln!("Loaded {} eligible addresses", addresses.len());
 
-    // Binary search (list should be sorted)
+    // Binary search (list must be sorted — enforced by eligibility list generation)
     match addresses.binary_search(&address) {
         Ok(idx) => {
             eprintln!("✅ ELIGIBLE (found at index {})", idx);
@@ -1193,7 +1376,11 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Fetch { cid, http } => cmd_fetch(cid.as_deref(), http),
+        Commands::Fetch {
+            cid,
+            http,
+            no_verify,
+        } => cmd_fetch(cid.as_deref(), http, no_verify),
         Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
         Commands::Submit {
             proof_file,
