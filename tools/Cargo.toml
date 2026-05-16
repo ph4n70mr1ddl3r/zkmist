@@ -1,0 +1,15 @@
+[package]
+name = "zkmist-tools"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "compute-root"
+path = "src/compute_root.rs"
+
+[dependencies]
+zkmist-merkle-tree = { path = "../merkle-tree" }
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+light-poseidon = "0.4"
+hex = "0.4"

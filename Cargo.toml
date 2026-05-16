@@ -3,5 +3,6 @@ members = [
     "guest",
     "cli",
     "merkle-tree",
+    "tools",
 ]
 resolver = "2"

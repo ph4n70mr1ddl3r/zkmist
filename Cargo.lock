@@ -6979,6 +6979,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zkmist-tools"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ff 0.5.0",
+ "hex",
+ "light-poseidon",
+ "zkmist-merkle-tree",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
