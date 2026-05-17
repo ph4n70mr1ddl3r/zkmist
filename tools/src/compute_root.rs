@@ -31,7 +31,11 @@ fn main() {
     eprintln!("ZKMist Merkle Root Computation");
     eprintln!("══════════════════════════════════");
     eprintln!("Tree depth:     {} levels", tree_depth);
-    eprintln!("Max leaves:     {} ({:.1}M)", num_leaves, num_leaves as f64 / 1e6);
+    eprintln!(
+        "Max leaves:     {} ({:.1}M)",
+        num_leaves,
+        num_leaves as f64 / 1e6
+    );
     eprintln!();
 
     // ── Read addresses ────────────────────────────────────────────────
@@ -50,7 +54,11 @@ fn main() {
         }
         let hex_str = line.strip_prefix("0x").unwrap_or(line);
         if hex_str.len() != 40 {
-            eprintln!("WARNING: Invalid address at line {}: '{}'", line_num + 1, line);
+            eprintln!(
+                "WARNING: Invalid address at line {}: '{}'",
+                line_num + 1,
+                line
+            );
             continue;
         }
         let mut addr = [0u8; 20];
@@ -59,12 +67,16 @@ fn main() {
         addresses.push(addr);
         line_num += 1;
 
-        if line_num % 10_000_000 == 0 {
+        if line_num.is_multiple_of(10_000_000) {
             eprintln!("      Read {}M addresses...", line_num / 1_000_000);
         }
     }
 
-    eprintln!("      Loaded {} addresses ({:.1}M)", addresses.len(), addresses.len() as f64 / 1e6);
+    eprintln!(
+        "      Loaded {} addresses ({:.1}M)",
+        addresses.len(),
+        addresses.len() as f64 / 1e6
+    );
 
     if addresses.is_empty() {
         eprintln!("ERROR: No addresses loaded");
@@ -108,7 +120,10 @@ fn main() {
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  MERKLE ROOT: 0x{}", hex::encode(root));
     eprintln!("  Addresses:   {}", addresses.len());
-    eprintln!("  Padding:     {} empty leaves", num_leaves - addresses.len());
+    eprintln!(
+        "  Padding:     {} empty leaves",
+        num_leaves - addresses.len()
+    );
     eprintln!("  Tree depth:  {} levels", tree_depth);
     eprintln!("  Build time:  {:.1}s", elapsed.as_secs_f64());
     eprintln!("═══════════════════════════════════════════════════════════");
@@ -124,8 +139,8 @@ fn main() {
 
     // Verify PRD test vector address is in the list
     let test_addr: [u8; 20] = [
-        0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-        0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+        0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23, 0x7e,
+        0x16, 0xaf, 0xce, 0x37, 0x7c,
     ];
     match addresses.binary_search(&test_addr) {
         Ok(idx) => eprintln!("✓ PRD test vector address found at index {}", idx),
@@ -145,9 +160,9 @@ fn main() {
 
     // Verify test vector nullifier
     let test_key: [u8; 32] = [
-        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-        0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-        0x89, 0xab, 0xcd, 0xef,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
     ];
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
     let nullifier = compute_nullifier(&test_key, &mut interior_hasher);

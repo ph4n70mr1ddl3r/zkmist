@@ -32,7 +32,11 @@ fn main() {
         eprintln!("WARNING: Unknown format");
     }
 
-    eprintln!("Size: {} bytes ({:.1} MB)", elf_data.len(), elf_data.len() as f64 / 1e6);
+    eprintln!(
+        "Size: {} bytes ({:.1} MB)",
+        elf_data.len(),
+        elf_data.len() as f64 / 1e6
+    );
 
     let image_id = risc0_zkvm::compute_image_id(&elf_data).expect("Failed to compute image ID");
     let bytes = image_id.as_bytes();

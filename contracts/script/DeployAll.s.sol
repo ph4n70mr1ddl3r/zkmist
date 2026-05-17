@@ -25,12 +25,10 @@ import {ControlID} from "risc0-ethereum/contracts/src/groth16/ControlID.sol";
 contract DeployAll is Script {
     // Default values (computed from the project)
     // Guest image ID from: cargo run -p zkmist-tools --bin compute-image-id
-    bytes32 constant DEFAULT_IMAGE_ID =
-        0x05ef31c9fea9a30ee1902fc49a7aae3e48fce139ffc9b728858dee5b36423277;
+    bytes32 constant DEFAULT_IMAGE_ID = 0x05ef31c9fea9a30ee1902fc49a7aae3e48fce139ffc9b728858dee5b36423277;
 
     // Merkle root from the CLI's KNOWN_MERKLE_ROOT constant
-    bytes32 constant DEFAULT_MERKLE_ROOT =
-        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    bytes32 constant DEFAULT_MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function run() external {
         // Resolve deployer key
@@ -77,8 +75,7 @@ contract DeployAll is Script {
         //
         // The airdrop contract is fully immutable. All parameters are set in
         // the constructor and cannot be changed after deployment.
-        ZKMAirdrop airdrop =
-            new ZKMAirdrop(address(token), address(verifier), imageId, merkleRoot);
+        ZKMAirdrop airdrop = new ZKMAirdrop(address(token), address(verifier), imageId, merkleRoot);
         console.log("ZKMAirdrop deployed at:", address(airdrop));
 
         // ── Verify deployment correctness ────────────────────────────────
