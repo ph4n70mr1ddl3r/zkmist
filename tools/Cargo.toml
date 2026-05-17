@@ -7,9 +7,14 @@ edition = "2021"
 name = "compute-root"
 path = "src/compute_root.rs"
 
+[[bin]]
+name = "compute-image-id"
+path = "src/compute_image_id.rs"
+
 [dependencies]
 zkmist-merkle-tree = { path = "../merkle-tree" }
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 light-poseidon = "0.4"
 hex = "0.4"
+risc0-zkvm = { version = "3.0.5", default-features = false }

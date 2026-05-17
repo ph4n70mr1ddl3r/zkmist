@@ -6986,6 +6986,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "hex",
  "light-poseidon",
+ "risc0-zkvm",
  "zkmist-merkle-tree",
 ]
 

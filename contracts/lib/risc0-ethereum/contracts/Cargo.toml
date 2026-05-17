@@ -1,0 +1,47 @@
+[package]
+name = "risc0-ethereum-contracts"
+description = "Ethereum contracts for RISC Zero applications"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+doctest = false
+
+[features]
+default = []
+set-verifier = []
+unstable = [
+    "dep:alloy-primitives",
+    "dep:risc0-aggregation",
+    "dep:serde",
+    "risc0-aggregation/verify",
+]
+
+[dependencies]
+alloy = { workspace = true, features = ["contract"] }
+alloy-primitives = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true }
+anyhow = { workspace = true }
+cfg-if = { workspace = true }
+hex = { workspace = true }
+risc0-aggregation = { workspace = true, optional = true }
+risc0-zkvm = { workspace = true }
+serde = { workspace = true, optional = true }
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+thiserror = { workspace = true, features = ["default"] }
+tracing = { workspace = true }
+
+[build-dependencies]
+anyhow = "1.0"
+
+[dev-dependencies]
+hex = { workspace = true }
+regex = "1.10"
+tokio = { workspace = true, features = ["macros", "rt"] }

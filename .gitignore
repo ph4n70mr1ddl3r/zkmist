@@ -1,36 +1,56 @@
-# Rust
+# ── Rust ────────────────────────────────────────────────────────────────
 target/
 **/*.rs.bk
 
-# Node.js (Solidity/Foundry)
+# ── Node.js ─────────────────────────────────────────────────────────────
 node_modules/
 
-# Foundry
+# ── Foundry ─────────────────────────────────────────────────────────────
 contracts/cache/
 contracts/broadcast/
 contracts/out/
+contracts/foundry.lock
 
-# IDE
+# ── IDE ─────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ──────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Build artifacts
+# ── Build artifacts ─────────────────────────────────────────────────────
 *.elf
 *.bin
 
-# Local environment
+# ── Environment / secrets ───────────────────────────────────────────────
 .env
-.env.local
+.env.*
+!.env.example
 
-# ZKMist CLI cache (large files downloaded by `zkmist fetch`)
-~/.zkmist/
+# ── ZKMist CLI cache ────────────────────────────────────────────────────
+# Large files downloaded by `zkmist fetch` (~2.8 GB eligibility list,
+# proof cache, guest ELF binary). Lives in the user's home directory.
+.zkmist/
 
-# Proof files (contain user-specific data)
+# ── Proof files ─────────────────────────────────────────────────────────
+# Contain user-specific nullifiers and serialized receipts.
 zkmist_proof_*.json
+
+# ── Logs ────────────────────────────────────────────────────────────────
+*.log
+.logs/
+
+# ── Coverage / test artifacts ───────────────────────────────────────────
+*.profraw
+lcov.info
+coverage/
+
+# ── Temporary / scratch files ───────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
