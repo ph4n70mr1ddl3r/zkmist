@@ -267,6 +267,28 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // ── Step 4: ZK proving ───────────────────────────────────────────────
     eprintln!("[4/4] Generating proof...");
 
+    // Validate sibling count matches the expected tree depth (26 for production).
+    // The guest program reads exactly TREE_DEPTH sibling/path_index pairs.
+    // A mismatch would cause the guest to read garbage (deserialization error)
+    // or block waiting for more input — wasting 30–90 minutes of proving time.
+    {
+        let expected_depth = zkmist_merkle_tree::TREE_DEPTH;
+        if siblings.len() != expected_depth {
+            return Err(format!(
+                "INTERNAL ERROR: Sibling count ({}) does not match tree depth ({}).                  This indicates a bug in proof cache or tree construction.",
+                siblings.len(),
+                expected_depth
+            ));
+        }
+        if path_indices.len() != expected_depth {
+            return Err(format!(
+                "INTERNAL ERROR: Path index count ({}) does not match tree depth ({}).                  This indicates a bug in proof cache or tree construction.",
+                path_indices.len(),
+                expected_depth
+            ));
+        }
+    }
+
     // Final local verification before expensive zkVM proving
     let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
     if computed_root != root {
@@ -350,6 +372,35 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     eprintln!(
         "      ⚠️  Verify this matches the image ID in the airdrop contract before submitting."
     );
+
+    // Validate image ID against the known value. A mismatch means the guest
+    // binary was built from different source code or with a different toolchain
+    // than what was used for contract deployment — proofs will be rejected on-chain.
+    // This is a WARNING, not an error: the user may have intentionally rebuilt
+    // the guest from modified source (e.g., for testing).
+    {
+        let known_id_hex = KNOWN_IMAGE_ID.strip_prefix("0x").unwrap_or(KNOWN_IMAGE_ID);
+        if let Ok(expected_bytes) = hex::decode(known_id_hex) {
+            if expected_bytes.len() == 32 {
+                let mut expected = [0u8; 32];
+                expected.copy_from_slice(&expected_bytes);
+                if computed_image_id.as_bytes() != expected.as_slice() {
+                    eprintln!("      ⚠️  WARNING: Image ID doesn't match KNOWN_IMAGE_ID constant!");
+                    eprintln!(
+                        "         Computed: 0x{}",
+                        hex::encode(computed_image_id.as_bytes())
+                    );
+                    eprintln!("         Expected: {}", KNOWN_IMAGE_ID);
+                    eprintln!("         The on-chain verifier will REJECT this proof.");
+                    eprintln!("         Rebuild the guest from the canonical source, or update");
+                    eprintln!("         KNOWN_IMAGE_ID in cli/src/constants.rs after verifying");
+                    eprintln!("         the on-chain contract's imageId().");
+                } else {
+                    eprintln!("      ✓ Image ID matches KNOWN_IMAGE_ID");
+                }
+            }
+        }
+    }
 
     // Prove with Groth16 compression for on-chain verification (~510K gas)
     let prover = risc0_zkvm::default_prover();
@@ -761,17 +812,16 @@ pub fn cmd_check(address_str: &str) -> Result<(), String> {
     eprintln!();
 
     // Load eligibility list
-    let addresses = load_eligibility_list()?;
-    eprintln!("Loaded {} eligible addresses", addresses.len());
-
-    // Binary search (list must be sorted — enforced by load_eligibility_list)
-    match addresses.binary_search(&address) {
-        Ok(idx) => {
+    // Use memory-efficient per-file search (~20 MB peak) instead of loading
+    // the full eligibility list (~1.2 GB). The `cmd_prove` command still needs
+    // the full list for Merkle tree construction.
+    match check_address_in_files(&address)? {
+        Some(idx) => {
             eprintln!("✅ ELIGIBLE (found at index {})", idx);
             eprintln!();
             eprintln!("Run `zkmist prove` to generate a claim proof.");
         }
-        Err(_) => {
+        None => {
             eprintln!("❌ NOT ELIGIBLE");
             eprintln!();
             eprintln!("This address did not pay ≥0.004 ETH in cumulative gas fees");
@@ -919,6 +969,29 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
                 "⏰ DEADLINE PASSED"
             }
         );
+
+        // Query on-chain imageId for reference (helps users verify their guest binary)
+        let image_id_call = IZKMAirdrop::imageIdCall {};
+        let image_id_tx = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(contract)
+            .input(image_id_call.abi_encode().into());
+        if let Ok(image_id_resp) = provider.call(image_id_tx).await {
+            if let Ok(on_chain_image_id) =
+                IZKMAirdrop::imageIdCall::abi_decode_returns(&image_id_resp)
+            {
+                let id_bytes: [u8; 32] = on_chain_image_id.into();
+                eprintln!("Image ID:       0x{}", hex::encode(id_bytes));
+
+                // Cross-check against the CLI's known image ID
+                let known_hex = KNOWN_IMAGE_ID.strip_prefix("0x").unwrap_or(KNOWN_IMAGE_ID);
+                if let Ok(expected) = hex::decode(known_hex) {
+                    if expected.len() == 32 && id_bytes != expected.as_slice() {
+                        eprintln!("⚠️  On-chain image ID differs from CLI's KNOWN_IMAGE_ID");
+                        eprintln!("   CLI expected: {}", KNOWN_IMAGE_ID);
+                    }
+                }
+            }
+        }
 
         Ok::<(), String>(())
     })?;

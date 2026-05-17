@@ -375,6 +375,9 @@ mod tests {
             merkle_root: "0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
                 .to_string(),
             merkle_tree_depth: 26,
+            claim_amount_wei: None,
+            max_claimants: None,
+            claim_deadline: None,
             files: vec![],
         };
         let root = manifest_root(&manifest).unwrap();
@@ -391,6 +394,9 @@ mod tests {
             total_qualified: 0,
             merkle_root: "0x0102".to_string(),
             merkle_tree_depth: 26,
+            claim_amount_wei: None,
+            max_claimants: None,
+            claim_deadline: None,
             files: vec![],
         };
         let err = manifest_root(&manifest).unwrap_err();
@@ -412,6 +418,9 @@ mod tests {
             merkle_root: "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844"
                 .to_string(),
             merkle_tree_depth: 26,
+            claim_amount_wei: None,
+            max_claimants: None,
+            claim_deadline: None,
             files: vec![],
         };
         assert!(verify_root_against_manifest(&root, &manifest).is_ok());
@@ -428,6 +437,9 @@ mod tests {
             merkle_root: "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844"
                 .to_string(),
             merkle_tree_depth: 26,
+            claim_amount_wei: None,
+            max_claimants: None,
+            claim_deadline: None,
             files: vec![],
         };
         let err = verify_root_against_manifest(&root, &manifest).unwrap_err();

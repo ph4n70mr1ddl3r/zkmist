@@ -74,6 +74,16 @@ pub struct Manifest {
     pub total_qualified: u64,
     pub merkle_root: String,
     pub merkle_tree_depth: usize,
+    /// Claim amount in wei (e.g., "10000000000000000000000" = 10,000 ZKM).
+    /// Matches CLAIM_AMOUNT in the Solidity contract.
+    #[serde(default)]
+    pub claim_amount_wei: Option<String>,
+    /// Maximum number of claimants (1,000,000).
+    #[serde(default)]
+    pub max_claimants: Option<u64>,
+    /// Claim deadline as ISO 8601 timestamp ("2027-01-01T00:00:00Z").
+    #[serde(default)]
+    pub claim_deadline: Option<String>,
     #[serde(default)]
     pub files: Vec<ManifestFile>,
 }

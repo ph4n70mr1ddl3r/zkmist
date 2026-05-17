@@ -345,6 +345,88 @@ pub fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
     Ok(addresses)
 }
 
+// ── Memory-efficient eligibility check ──────────────────────────────────
+
+/// Check if an address is eligible by searching through CSV files one at a time.
+///
+/// Unlike `load_eligibility_list` which loads ALL addresses into a single Vec
+/// (~1.2 GB), this function processes one file at a time (~20 MB peak memory)
+/// and uses binary search within each file. Files whose address range doesn't
+/// include the target are loaded but immediately freed.
+///
+/// Returns `Ok(Some(global_index))` if eligible, `Ok(None)` if not.
+/// The global index is the 0-based position across all files (cosmetic, for display).
+pub fn check_address_in_files(target: &[u8; 20]) -> Result<Option<usize>, String> {
+    let dir = eligibility_dir();
+    if !dir.exists() {
+        return Err(format!(
+            "Eligibility list not found. Run `zkmist fetch` first.\n\
+             Expected directory: {}",
+            dir.display()
+        ));
+    }
+
+    let mut csv_files: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read eligibility dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "csv"))
+        .map(|e| e.path())
+        .collect();
+    csv_files.sort();
+
+    if csv_files.is_empty() {
+        return Err("No CSV files found in eligibility directory. Run `zkmist fetch`.".to_string());
+    }
+
+    let mut global_offset = 0usize;
+
+    for path in &csv_files {
+        let addrs = load_addresses_from_file(path)?;
+
+        if addrs.is_empty() {
+            continue;
+        }
+
+        // Range check: skip file if target falls outside its address range.
+        // Since files are sorted lexicographically and non-overlapping (enforced
+        // by the eligibility pipeline), this eliminates most files quickly.
+        let first = &addrs[0];
+        let last = &addrs[addrs.len() - 1];
+        if target < first || target > last {
+            global_offset += addrs.len();
+            continue;
+        }
+
+        // Target is within this file's range — binary search.
+        // If not found here, it's not in any file (ranges don't overlap).
+        match addrs.binary_search(target) {
+            Ok(local_idx) => return Ok(Some(global_offset + local_idx)),
+            Err(_) => return Ok(None),
+        }
+    }
+
+    // Target is before the first file or after the last file.
+    Ok(None)
+}
+
+/// Load addresses from a single CSV file.
+///
+/// Returns addresses in file order (assumed sorted by the eligibility pipeline).
+/// Skips header lines starting with "address" or "qualified", and empty lines.
+fn load_addresses_from_file(path: &std::path::Path) -> Result<Vec<[u8; 20]>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let mut addresses = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("address") || line.starts_with("qualified") {
+            continue;
+        }
+        addresses.push(parse_address(line)?);
+    }
+    Ok(addresses)
+}
+
 // ── Manifest helpers ─────────────────────────────────────────────────────
 
 /// Load and parse the manifest.json from the eligibility directory.
