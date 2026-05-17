@@ -498,6 +498,7 @@ mod tests {
     fn test_proof_file_roundtrip() {
         let original = ProofFile {
             version: 1,
+            proof_format_version: PROOF_FORMAT_VERSION_V1,
             proof: "aabbccdd".to_string(),
             journal: "e".repeat(168),
             nullifier: "f".repeat(64),
@@ -512,6 +513,7 @@ mod tests {
         let parsed: ProofFile = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.version, original.version);
+        assert_eq!(parsed.proof_format_version, PROOF_FORMAT_VERSION_V1);
         assert_eq!(parsed.proof, original.proof);
         assert_eq!(parsed.journal, original.journal);
         assert_eq!(parsed.nullifier, original.nullifier);
@@ -525,6 +527,7 @@ mod tests {
     fn test_proof_file_without_receipt() {
         let pf = ProofFile {
             version: 1,
+            proof_format_version: PROOF_FORMAT_VERSION_V1,
             proof: "aabb".to_string(),
             journal: "cc".to_string(),
             nullifier: "dd".to_string(),
@@ -540,6 +543,11 @@ mod tests {
 
         let parsed: ProofFile = serde_json::from_str(&json).unwrap();
         assert!(parsed.receipt_hex.is_none());
+
+        // Verify old proof files (without proofFormatVersion) deserialize with default
+        let old_json = r#"{"version":1,"proof":"aabb","journal":"cc","nullifier":"dd","recipient":"ee","claimAmount":"0","contractAddress":"0x00","chainId":1}"#;
+        let old_parsed: ProofFile = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old_parsed.proof_format_version, PROOF_FORMAT_VERSION_V1);
     }
 
     // ── Download source parsing ─────────────────────────────────────────

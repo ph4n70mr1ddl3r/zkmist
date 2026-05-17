@@ -323,6 +323,16 @@ fn test_guest_rejects_ineligible_address() {
 }
 
 // ── Tier 2: Full STARK proof generation (slow, manual only) ──────────────
+//
+// This test builds a full 26-level Merkle tree (67M leaves, most padding)
+// and generates a real STARK + Groth16 proof via the RISC Zero prover.
+//
+// Expected runtime: 30–90 minutes on a modern machine (single-threaded).
+// Requirements: ~4 GB RAM for the prover, ~2 GB for the Merkle tree.
+//
+// The proof is cryptographically verified locally against the guest image ID.
+// This test should be run before mainnet deployment to validate the full
+// pipeline end-to-end with real (non-dev-mode) proofs.
 
 #[test]
 #[ignore] // Run with: cargo test --package zkmist-cli --test e2e_zkvm -- --ignored

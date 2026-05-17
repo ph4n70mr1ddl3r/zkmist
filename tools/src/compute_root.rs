@@ -1,7 +1,8 @@
 //! Compute the ZKMist Merkle root from the eligibility list.
 //!
 //! Usage:
-//!   cargo run --release -p zkmist-tools --bin compute-root -- /path/to/all_addresses.txt
+//!   cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv
+//!   cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv --output /path/to/root.txt
 //!
 //! Requirements: ~2 GB RAM, ~5-15 minutes for 64M addresses.
 
@@ -14,8 +15,8 @@ use zkmist_merkle_tree::{build_tree_streaming, compute_nullifier, hash_leaf, TRE
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: compute-root <addresses_file>");
+    if args.len() < 2 {
+        eprintln!("Usage: compute-root <addresses_file> [--output <output_file>]");
         std::process::exit(1);
     }
 
@@ -24,6 +25,13 @@ fn main() {
         eprintln!("File not found: {}", path);
         std::process::exit(1);
     }
+
+    // Parse optional --output flag
+    let output_path = if let Some(idx) = args.iter().position(|a| a == "--output") {
+        args.get(idx + 1).cloned()
+    } else {
+        None
+    };
 
     let tree_depth = TREE_DEPTH;
     let num_leaves = 1usize << tree_depth;
@@ -130,12 +138,14 @@ fn main() {
     eprintln!();
 
     // Save root
-    let root_file = "/home/riddler/zkmistdata/merkle_root.txt";
-    let mut f = std::fs::File::create(root_file).expect("Failed to create root file");
-    writeln!(f, "0x{}", hex::encode(root)).unwrap();
-    writeln!(f, "# Addresses: {}", addresses.len()).unwrap();
-    writeln!(f, "# Tree depth: {}", tree_depth).unwrap();
-    eprintln!("Root saved to: {}", root_file);
+    if let Some(ref out) = output_path {
+        let mut f = std::fs::File::create(out)
+            .unwrap_or_else(|e| panic!("Failed to create {}: {}", out, e));
+        writeln!(f, "0x{}", hex::encode(root)).unwrap();
+        writeln!(f, "# Addresses: {}", addresses.len()).unwrap();
+        writeln!(f, "# Tree depth: {}", tree_depth).unwrap();
+        eprintln!("Root saved to: {}", out);
+    }
 
     // Verify PRD test vector address is in the list
     let test_addr: [u8; 20] = [
