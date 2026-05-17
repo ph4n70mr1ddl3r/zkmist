@@ -28,8 +28,62 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p zkmist-merkle-tree
-      # Guest tests are skipped (test = false in Cargo.toml; requires riscv32 toolchain)
-      - run: cargo test -p zkmist-cli --no-run # compile-check the CLI
+      # CLI unit tests are compile-checked here; full e2e tests run in the guest-e2e job
+      - run: cargo test -p zkmist-cli --no-run
+
+  # ── Guest E2E (Tier 1: dev-mode, CI-friendly) ──────────────────────────
+  #
+  # Builds the guest binary with --features test-small-tree (depth=4) via
+  # cargo-risczero (Docker-based reproducible build), then runs the e2e
+  # tests under RISC0_DEV_MODE=1 (fast execution, no real STARK proving).
+  #
+  # The guest binary is cached keyed on guest source files, so subsequent
+  # runs skip the Docker build entirely (~30s saved).
+
+  guest-e2e:
+    name: Rust – Guest E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Restore cached guest binary (keyed on guest source + Cargo.toml)
+      - name: Cache guest binary
+        id: cache-guest
+        uses: actions/cache@v4
+        with:
+          path: target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin
+          key: guest-test-v1-${{ hashFiles('guest/Cargo.toml', 'guest/src/main.rs', 'guest/.cargo/config.toml') }}
+
+      # Install cargo-risczero only when the binary needs (re)building
+      - name: Install cargo-risczero
+        if: steps.cache-guest.outputs.cache-hit != 'true'
+        run: cargo install cargo-risczero --version 3.0.5
+
+      # Build the test guest binary (depth=4) inside the risc0 Docker builder.
+      # Output goes to target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest;
+      # we copy it to the path expected by the e2e test harness.
+      - name: Build test guest binary
+        if: steps.cache-guest.outputs.cache-hit != 'true'
+        run: |
+          cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree
+          GUEST_BIN=$(find target/riscv32im-risc0-zkvm-elf -name 'zkmist-guest' -type f | head -1)
+          if [ -z "$GUEST_BIN" ]; then
+            echo '::error::Guest binary not found after build'
+            find target/riscv32im-risc0-zkvm-elf -type f
+            exit 1
+          fi
+          echo "Found guest binary at: $GUEST_BIN"
+          mkdir -p target/riscv32im-risc0-zkvm-elf/docker
+          cp "$GUEST_BIN" target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin
+          echo "Copied to target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin"
+
+      # Run the e2e tests in dev mode (execute guest, no real STARK proving)
+      - name: Run e2e tests (dev mode)
+        env:
+          RISC0_DEV_MODE: "1"
+        run: cargo test -p zkmist-cli --test e2e_zkvm
 
   rust-fmt:
     name: Rust – Format

@@ -58,15 +58,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Download eligibility list from IPFS (~1.3 GB). Verifies root via streaming tree.
+    /// Download eligibility list (~2.8 GB). Verifies integrity via SHA-256 + Merkle root.
     Fetch {
-        /// IPFS CID override (defaults to the published CID)
+        /// Download source: "github" (GitHub Releases), "ipfs", or "auto" (GitHub first, IPFS fallback).
+        #[arg(long, default_value = "auto")]
+        source: String,
+        /// IPFS CID override (only used with --source ipfs)
         #[arg(long)]
         cid: Option<String>,
-        /// Use HTTP gateway instead of native IPFS
-        #[arg(long, default_value_t = true)]
-        http: bool,
-        /// Skip root verification (faster, but only checks file-level SHA-256 integrity)
+        /// Skip Merkle root verification (faster; still checks per-file SHA-256 integrity)
         #[arg(long)]
         no_verify: bool,
     },
@@ -131,14 +131,33 @@ const CHAIN_ID: u64 = 8453; // Base
 /// Default Base RPC URL
 const DEFAULT_RPC_URL: &str = "https://mainnet.base.org";
 
-/// IPFS gateway for downloading the eligibility list.
-/// Uses Pinata's gateway by default — fast and reliable for our pinned content.
-/// ipfs.io is a fallback but often times out on large files (43 MB CSVs).
+/// GitHub Release tag hosting the official eligibility list.
+/// Immutable once published — a GitHub release tag cannot be moved to a
+/// different commit without force-pushing (which is auditable).
+/// Assets (CSV files, manifest) are content-addressed by SHA-256 in manifest.json.
+const ELIGIBILITY_RELEASE_TAG: &str = "v1.0.0-eligibility";
+
+/// GitHub repository hosting the eligibility list release.
+const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
+
+/// IPFS gateway for fallback downloads.
+/// Pinata's gateway is fast for our pinned content.
+/// ipfs.io is an alternative but often times out on large files (43 MB CSVs).
 const IPFS_GATEWAY: &str = "https://gateway.pinata.cloud/ipfs";
 
 /// Published IPFS CID for the eligibility list.
-/// Pinata-pinned directory (2.6 GB, 66 files).
-const DEFAULT_CID: &str = "QmTTit9vDbzRjCffeKsd3LV3YFvdX4Kobm3uZwNd5zDUZb";
+/// Pinata-pinned directory (2.76 GB, 66 files).
+/// This is the fallback source if GitHub Releases is unavailable.
+const FALLBACK_IPFS_CID: &str = "QmTTit9vDbzRjCffeKsd3LV3YFvdX4Kobm3uZwNd5zDUZb";
+
+/// Known Merkle root for the v1.0.0 eligibility list.
+/// Sourced from the GitHub Release manifest, the IPFS manifest, and the
+/// `compute-root` tool output. This compile-time constant provides an
+/// out-of-band integrity check: even if the download source is compromised,
+/// the manifest root must match this value or the CLI refuses to proceed.
+///
+/// 64,116,228 qualified addresses (≥0.004 ETH gas fees, mainnet, before 2026-01-01).
+const KNOWN_MERKLE_ROOT: &str = "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844";
 
 /// ZKMAirdrop contract address on Base.
 /// Set after deployment.
@@ -513,44 +532,72 @@ fn verify_root_against_manifest(root: &[u8; 32], manifest: &Manifest) -> Result<
     Ok(())
 }
 
+
 // ── Command: fetch ───────────────────────────────────────────────────────
 
-fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), String> {
+/// Download source for the eligibility list.
+#[derive(Clone, Copy, PartialEq)]
+enum DownloadSource {
+    /// Try GitHub Releases first, fall back to IPFS on failure.
+    Auto,
+    /// GitHub Releases only.
+    Github,
+    /// IPFS only.
+    Ipfs,
+}
+
+fn parse_source(s: &str) -> Result<DownloadSource, String> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(DownloadSource::Auto),
+        "github" | "gh" => Ok(DownloadSource::Github),
+        "ipfs" => Ok(DownloadSource::Ipfs),
+        other => Err(format!(
+            "Unknown source '{}'. Use: github, ipfs, or auto",
+            other
+        )),
+    }
+}
+
+fn cmd_fetch(cid: Option<&str>, source: &str, no_verify: bool) -> Result<(), String> {
+    let download_source = parse_source(source)?;
     let dir = eligibility_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
 
-    let effective_cid = cid.unwrap_or(DEFAULT_CID);
-    if effective_cid.contains("FIXME") {
-        eprintln!("⚠️  Eligibility list CID has not been published yet.");
-        eprintln!("   Place eligibility CSV files manually in:");
-        eprintln!("   {}", dir.display());
-        eprintln!();
-        eprintln!("   Expected format: addresses_XXXXX.csv");
-        eprintln!("   Each file: one address per line (0x-prefixed, sorted)");
-        eprintln!("   Place manifest.json in the same directory.");
-        return Ok(());
-    }
-
-    let manifest_url = format!("{}/{}/manifest.json", IPFS_GATEWAY, effective_cid);
-
-    eprintln!("[1/3] Fetching manifest from IPFS...");
-    eprintln!("      CID: {}", effective_cid);
+    // Resolve which CID to use for IPFS downloads.
+    let ipfs_cid = cid.unwrap_or(FALLBACK_IPFS_CID);
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
-    let manifest: Manifest = rt.block_on(async {
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(&manifest_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read manifest: {}", e))?;
-        serde_json::from_str(&text).map_err(|e| format!("Failed to parse manifest: {}", e))
-    })?;
+
+    // ── Step 1: Fetch manifest and verify against known Merkle root ──────
+    //
+    // We try GitHub Releases first (immutable tag, cryptographically signed
+    // by GitHub's TLS certificate, content-addressed assets), then fall back
+    // to IPFS if GitHub is unreachable. In both cases, the manifest's Merkle
+    // root is checked against the compile-time KNOWN_MERKLE_ROOT constant
+    // before any per-file downloads proceed.
+
+    let manifest = fetch_manifest(&rt, download_source, ipfs_cid)?;
+
+    // Verify manifest merkle root against our compile-time constant.
+    // This catches a compromised download source: even if an attacker
+    // replaces the manifest in transit (TLS should prevent this), the root
+    // won't match the baked-in value.
+    let known_root = KNOWN_MERKLE_ROOT
+        .strip_prefix("0x")
+        .unwrap_or(KNOWN_MERKLE_ROOT);
+    if manifest.merkle_root.strip_prefix("0x").unwrap_or(&manifest.merkle_root) != known_root {
+        return Err(format!(
+            "⚠️  Merkle root mismatch — download source may be compromised!\n\
+               Manifest root:  {}\n\
+               Expected root:  0x{}\n\
+               \n\
+               Do NOT proceed. Verify your network and try again.\n\
+               If this persists, check the project GitHub for announcements.",
+            manifest.merkle_root, known_root
+        ));
+    }
+    eprintln!("      ✓ Merkle root matches known value");
 
     eprintln!("      Version: {}", manifest.version);
     eprintln!("      Qualified addresses: {}", manifest.total_qualified);
@@ -563,7 +610,7 @@ fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), Stri
     std::fs::write(manifest_path(), &manifest_json)
         .map_err(|e| format!("Failed to write manifest: {}", e))?;
 
-    // Download each file with integrity verification
+    // ── Step 2: Download each file with integrity verification ───────────
     eprintln!("[2/3] Downloading eligibility files...");
     let pb = progress_bar(manifest.files.len() as u64, "files");
 
@@ -576,7 +623,7 @@ fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), Stri
         let dest = dir.join(filename);
 
         if dest.exists() {
-            // Verify existing file hash
+            // Verify existing file hash — skip re-download if intact
             let data = std::fs::read(&dest)
                 .map_err(|e| format!("Failed to read {}: {}", dest.display(), e))?;
             let mut hasher = Sha256::new();
@@ -584,49 +631,34 @@ fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), Stri
             let hash = hex::encode(hasher.finalize());
             if hash == expected_hash {
                 pb.inc(1);
-                continue; // already downloaded and verified
+                continue;
             }
         }
 
-        let url = format!("{}/{}/{}", IPFS_GATEWAY, effective_cid, filename);
-        rt.block_on(async {
-            let client = reqwest::Client::new();
-            let resp = client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| format!("Failed to fetch {}: {}", filename, e))?;
-            let data = resp
-                .bytes()
-                .await
-                .map_err(|e| format!("Failed to read {}: {}", filename, e))?;
-
-            // Verify hash
-            let mut hasher = Sha256::new();
-            hasher.update(&data);
-            let hash = hex::encode(hasher.finalize());
-            if hash != expected_hash {
-                return Err(format!(
-                    "Hash mismatch for {}: expected {}, got {}",
-                    filename, expected_hash, hash
-                ));
-            }
-
-            std::fs::write(&dest, &data)
-                .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
-            Ok::<(), String>(())
-        })?;
-
+        // Try download sources in priority order
+        let downloaded = try_download_file(
+            &rt,
+            filename,
+            &dest,
+            expected_hash,
+            download_source,
+            ipfs_cid,
+        )?;
+        if !downloaded {
+            return Err(format!(
+                "Failed to download {} from any source",
+                filename
+            ));
+        }
         pb.inc(1);
     }
     pb.finish_with_message("done");
 
+    // ── Step 3: Verify Merkle root via streaming tree (optional) ─────────
     if no_verify {
         eprintln!("[3/3] Root verification skipped (--no-verify).");
         eprintln!("      File-level SHA-256 integrity verified ✓");
     } else {
-        // Verify root using streaming tree construction (~2 GB RAM vs ~8 GB for full tree).
-        // This processes one layer at a time, keeping peak memory to O(2^depth × 32 bytes).
         eprintln!("[3/3] Verifying Merkle root (streaming build)...");
         eprintln!("      ⚠️  This requires ~2 GB RAM and may take 1–2 minutes.");
 
@@ -643,6 +675,167 @@ fn cmd_fetch(cid: Option<&str>, _http: bool, no_verify: bool) -> Result<(), Stri
     eprintln!();
     eprintln!("✅ Fetch complete. Run `zkmist prove` to generate a claim proof.");
     Ok(())
+}
+
+/// Fetch and validate the manifest from the appropriate source(s).
+fn fetch_manifest(
+    rt: &tokio::runtime::Runtime,
+    source: DownloadSource,
+    ipfs_cid: &str,
+) -> Result<Manifest, String> {
+    let sources = match source {
+        DownloadSource::Auto => &["github", "ipfs"] as &[&str],
+        DownloadSource::Github => &["github"] as &[&str],
+        DownloadSource::Ipfs => &["ipfs"] as &[&str],
+    };
+
+    eprintln!("[1/3] Fetching manifest...");
+
+    let mut last_error = String::new();
+    for &src in sources {
+        let url = match src {
+            "github" => {
+                eprintln!(
+                    "      Source: GitHub Releases ({}/{})",
+                    GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
+                );
+                format!(
+                    "https://github.com/{}/{}/releases/download/{}/manifest.json",
+                    GITHUB_REPO, GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
+                )
+            }
+            "ipfs" => {
+                eprintln!("      Source: IPFS (CID: {})", ipfs_cid);
+                format!("{}/{}/manifest.json", IPFS_GATEWAY, ipfs_cid)
+            }
+            _ => unreachable!(),
+        };
+
+        match rt.block_on(fetch_json::<Manifest>(&url)) {
+            Ok(manifest) => {
+                eprintln!("      ✓ Manifest fetched from {}", src);
+                return Ok(manifest);
+            }
+            Err(e) => {
+                last_error = e.clone();
+                eprintln!("      ✗ {} failed: {}", src, e);
+                if sources.len() > 1 {
+                    eprintln!("      Trying next source...");
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "All download sources failed. Last error: {}\n\
+         \n\
+         Manual alternatives:\n\
+         1. Download from: https://github.com/{}/{}/releases/tag/{}\n\
+         2. IPFS direct: {}/{}/manifest.json\n\
+         3. Place CSV files manually in: {}",
+        last_error,
+        GITHUB_REPO,
+        GITHUB_REPO,
+        ELIGIBILITY_RELEASE_TAG,
+        IPFS_GATEWAY,
+        ipfs_cid,
+        eligibility_dir().display(),
+    ))
+}
+
+/// Fetch and deserialize JSON from a URL.
+async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} for {}", resp.status(), url));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
+/// Try downloading a single file from the available sources.
+/// Returns Ok(true) if downloaded successfully, Ok(false) if all sources failed.
+fn try_download_file(
+    rt: &tokio::runtime::Runtime,
+    filename: &str,
+    dest: &std::path::Path,
+    expected_hash: &str,
+    source: DownloadSource,
+    ipfs_cid: &str,
+) -> Result<bool, String> {
+    let sources = match source {
+        DownloadSource::Auto => &["github", "ipfs"] as &[&str],
+        DownloadSource::Github => &["github"] as &[&str],
+        DownloadSource::Ipfs => &["ipfs"] as &[&str],
+    };
+
+    for &src in sources {
+        let url = match src {
+            "github" => format!(
+                "https://github.com/{}/{}/releases/download/{}/{}",
+                GITHUB_REPO, GITHUB_REPO, ELIGIBILITY_RELEASE_TAG, filename
+            ),
+            "ipfs" => format!("{}/{}/{}", IPFS_GATEWAY, ipfs_cid, filename),
+            _ => unreachable!(),
+        };
+
+        match rt.block_on(download_and_verify(&url, expected_hash)) {
+            Ok(data) => {
+                std::fs::write(dest, &data)
+                    .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
+                return Ok(true);
+            }
+            Err(e) => {
+                // Log failure but try next source
+                eprintln!("      ⚠ {} download of {} failed: {}", src, filename, e);
+                continue;
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Download a file from a URL and verify its SHA-256 hash.
+async fn download_and_verify(url: &str, expected_hash: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120)) // large files need generous timeout
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let data = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let hash = hex::encode(hasher.finalize());
+    if hash != expected_hash {
+        return Err(format!(
+            "SHA-256 mismatch: expected {}, got {}",
+            expected_hash, hash
+        ));
+    }
+
+    Ok(data.to_vec())
 }
 
 // ── Command: prove ───────────────────────────────────────────────────────
@@ -1525,9 +1718,9 @@ fn main() {
     let result = match cli.command {
         Commands::Fetch {
             cid,
-            http,
+            source,
             no_verify,
-        } => cmd_fetch(cid.as_deref(), http, no_verify),
+        } => cmd_fetch(cid.as_deref(), &source, no_verify),
         Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
         Commands::Submit {
             proof_file,
