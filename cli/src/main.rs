@@ -135,7 +135,8 @@ const DEFAULT_RPC_URL: &str = "https://mainnet.base.org";
 const IPFS_GATEWAY: &str = "https://ipfs.io/ipfs";
 
 /// Published IPFS CID for the eligibility list.
-const DEFAULT_CID: &str = "bafybeiadqcqxmaxvijobxzpcbn4vmwxubkxv7uw32ic77wxh4dqxug6aze";
+/// Pinata-pinned directory (2.6 GB, 66 files).
+const DEFAULT_CID: &str = "QmTTit9vDbzRjCffeKsd3LV3YFvdX4Kobm3uZwNd5zDUZb";
 
 /// ZKMAirdrop contract address on Base.
 /// Set after deployment.
