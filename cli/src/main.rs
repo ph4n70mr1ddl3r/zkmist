@@ -700,8 +700,8 @@ fn fetch_manifest(
                     GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
                 );
                 format!(
-                    "https://github.com/{}/{}/releases/download/{}/manifest.json",
-                    GITHUB_REPO, GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
+                    "https://github.com/{}/releases/download/{}/manifest.json",
+                    GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
                 )
             }
             "ipfs" => {
@@ -730,11 +730,10 @@ fn fetch_manifest(
         "All download sources failed. Last error: {}\n\
          \n\
          Manual alternatives:\n\
-         1. Download from: https://github.com/{}/{}/releases/tag/{}\n\
+         1. Download from: https://github.com/{}/releases/tag/{}\n\
          2. IPFS direct: {}/{}/manifest.json\n\
          3. Place CSV files manually in: {}",
         last_error,
-        GITHUB_REPO,
         GITHUB_REPO,
         ELIGIBILITY_RELEASE_TAG,
         IPFS_GATEWAY,
@@ -783,8 +782,8 @@ fn try_download_file(
     for &src in sources {
         let url = match src {
             "github" => format!(
-                "https://github.com/{}/{}/releases/download/{}/{}",
-                GITHUB_REPO, GITHUB_REPO, ELIGIBILITY_RELEASE_TAG, filename
+                "https://github.com/{}/releases/download/{}/{}",
+                GITHUB_REPO, ELIGIBILITY_RELEASE_TAG, filename
             ),
             "ipfs" => format!("{}/{}/{}", IPFS_GATEWAY, ipfs_cid, filename),
             _ => unreachable!(),
