@@ -287,6 +287,18 @@ pub fn serialize_proof<W: Write>(
     path_indices: &[u8],
     mut writer: W,
 ) -> io::Result<()> {
+    // Validate leaf_index fits in u32 (proof cache format limitation).
+    // A 26-level tree has 2^26 = 67M leaves, well within u32 range (4.3B).
+    // This guard catches accidental misuse with deeper trees.
+    if leaf_index > u32::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "leaf_index {} exceeds u32::MAX (proof cache format limitation)",
+                leaf_index
+            ),
+        ));
+    }
     writer.write_all(&PROOF_CACHE_MAGIC)?;
     writer.write_all(root)?;
     writer.write_all(&(leaf_index as u32).to_le_bytes())?;
