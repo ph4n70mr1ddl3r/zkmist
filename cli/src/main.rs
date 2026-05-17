@@ -132,7 +132,9 @@ const CHAIN_ID: u64 = 8453; // Base
 const DEFAULT_RPC_URL: &str = "https://mainnet.base.org";
 
 /// IPFS gateway for downloading the eligibility list.
-const IPFS_GATEWAY: &str = "https://ipfs.io/ipfs";
+/// Uses Pinata's gateway by default — fast and reliable for our pinned content.
+/// ipfs.io is a fallback but often times out on large files (43 MB CSVs).
+const IPFS_GATEWAY: &str = "https://gateway.pinata.cloud/ipfs";
 
 /// Published IPFS CID for the eligibility list.
 /// Pinata-pinned directory (2.6 GB, 66 files).
