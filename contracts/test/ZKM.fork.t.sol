@@ -94,10 +94,14 @@ contract ZKMVerifierIntegrationTest is Test {
         bytes4 selector = verifier.SELECTOR();
         bytes memory fakeSeal = abi.encodePacked(
             selector,
-            uint256(1), uint256(2),     // a
-            uint256(3), uint256(4),     // b[0]
-            uint256(5), uint256(6),     // b[1]
-            uint256(7), uint256(8)      // c
+            uint256(1),
+            uint256(2), // a
+            uint256(3),
+            uint256(4), // b[0]
+            uint256(5),
+            uint256(6), // b[1]
+            uint256(7),
+            uint256(8) // c
         );
 
         vm.expectRevert();
@@ -131,8 +135,7 @@ contract ZKMVerifierIntegrationTest is Test {
         address predictedAirdrop2 = vm.computeCreateAddress(address(this), nonce + 2);
 
         ZKMToken newToken = new ZKMToken(predictedAirdrop2);
-        ZKMAirdrop newAirdrop =
-            new ZKMAirdrop(address(newToken), address(newVerifier), IMAGE_ID, MERKLE_ROOT);
+        ZKMAirdrop newAirdrop = new ZKMAirdrop(address(newToken), address(newVerifier), IMAGE_ID, MERKLE_ROOT);
         newAirdrop; // suppress unused warning
 
         uint256 gasUsed = gasBefore - gasleft();
@@ -160,11 +163,9 @@ contract ZKMVerifierIntegrationTest is Test {
         uint256 freshNonce = vm.getNonce(freshDeployer);
 
         // Predict airdrop address before deploying
-        address predictedAirdropAddr =
-            vm.computeCreateAddress(freshDeployer, freshNonce + 2);
+        address predictedAirdropAddr = vm.computeCreateAddress(freshDeployer, freshNonce + 2);
 
-        RiscZeroGroth16Verifier v =
-            new RiscZeroGroth16Verifier(ControlID.CONTROL_ROOT, ControlID.BN254_CONTROL_ID);
+        RiscZeroGroth16Verifier v = new RiscZeroGroth16Verifier(ControlID.CONTROL_ROOT, ControlID.BN254_CONTROL_ID);
         ZKMToken t = new ZKMToken(predictedAirdropAddr);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), IMAGE_ID, MERKLE_ROOT);
 
@@ -175,11 +176,7 @@ contract ZKMVerifierIntegrationTest is Test {
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    function _buildJournal(bytes32 root, bytes32 nullifier, address recipient)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    function _buildJournal(bytes32 root, bytes32 nullifier, address recipient) internal pure returns (bytes memory) {
         return bytes.concat(root, nullifier, bytes20(recipient));
     }
 }
