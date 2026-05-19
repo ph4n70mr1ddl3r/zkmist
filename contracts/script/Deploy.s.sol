@@ -5,8 +5,12 @@ import {Script, console} from "forge-std/Script.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 
-/// @notice Deploy ZKMist contracts to Base.
+/// @notice Deploy ZKMist contracts to Base (assumes verifier is already deployed).
 /// @dev Usage: forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast
+///
+/// ⚠️  Use DeployAll.s.sol instead if you need to deploy the verifier as well.
+///      This script is for deploying to a chain where the RiscZeroGroth16Verifier
+///      has already been deployed separately.
 ///
 /// Required environment variables:
 ///   VERIFIER_ADDRESS   — RISC Zero Groth16 verifier address on Base

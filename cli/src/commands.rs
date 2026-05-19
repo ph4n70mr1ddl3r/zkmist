@@ -516,6 +516,20 @@ pub fn cmd_submit(
         ));
     }
 
+    // Reject submission to the placeholder contract address.
+    // Before mainnet, AIRDROP_CONTRACT must be updated to the real deployed address.
+    if proof.contract_address == "0x000000000000000000000000000000000000dEaD"
+        || proof.contract_address.parse::<alloy::primitives::Address>() == Ok(alloy::primitives::Address::ZERO)
+    {
+        return Err(
+            "Proof file contains a placeholder contract address. \
+             The airdrop contract has not been deployed yet, \
+             or this CLI version is outdated. \
+             Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment."
+                .to_string(),
+        );
+    }
+
     // Warn (but don't reject) if proof format version is newer than what we support.
     // The on-chain Groth16 verifier doesn't care about the proof file format —
     // it only checks the seal, image ID, and journal digest.

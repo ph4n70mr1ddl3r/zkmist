@@ -6,10 +6,14 @@ import {IRiscZeroVerifier} from "./IRiscZeroVerifier.sol";
 
 /// @title ZKMAirdrop — Privacy-preserving ZKM token claim contract
 /// @notice Fully immutable. No admin, no owner, no pause, no upgrade.
-/// @dev Journal layout (84 bytes):
-///      [0:32]   merkleRoot   (bytes32)
-///      [32:64]  nullifier    (bytes32)
-///      [64:84]  recipient    (address — raw 20 bytes)
+///         Anyone can submit a valid ZK proof on behalf of any recipient.
+///         Tokens are minted directly to the recipient — the submitter receives nothing.
+/// @dev    Journal layout (84 bytes):
+///         [0:32]   merkleRoot   (bytes32)
+///         [32:64]  nullifier    (bytes32)
+///         [64:84]  recipient    (address — raw 20 bytes)
+///         The Solidity contract slices the journal by these exact offsets.
+///         Any mismatch between guest program output and this layout causes all proofs to be rejected.
 contract ZKMAirdrop {
     ZKMToken public immutable token;
     IRiscZeroVerifier public immutable verifier;
@@ -40,10 +44,15 @@ contract ZKMAirdrop {
     }
 
     /// @notice Claim ZKM tokens by submitting a valid ZK proof.
-    /// @param _proof     RISC Zero STARK proof (Groth16-wrapped seal).
-    /// @param _journal   Journal bytes (84 bytes: merkleRoot + nullifier + recipient).
-    /// @param _nullifier The nullifier for this claim (prevents double-claim).
+    /// @param _proof     RISC Zero STARK proof (Groth16-wrapped seal). First 4 bytes are the selector.
+    /// @param _journal   Journal bytes (84 bytes: merkleRoot[0:32] + nullifier[32:64] + recipient[64:84]).
+    /// @param _nullifier The nullifier for this claim — prevents double-claiming.
+    ///                   Computed as poseidon(Fr(privateKey), Fr(domain)) off-chain.
     /// @param _recipient Address to receive 10,000 ZKM.
+    /// @dev Permissionless: anyone can call this function. Tokens go to `_recipient`, not `msg.sender`.
+    ///      Reverts if: claim window closed, cap reached, nullifier already used,
+    ///      recipient is zero, journal is wrong length, proof is invalid,
+    ///      or journal fields don't match the submitted parameters.
     function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient) external {
         // Check claim window
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
@@ -76,18 +85,22 @@ contract ZKMAirdrop {
     // ── View helpers ──────────────────────────────────────────────────────
 
     /// @notice Check if a nullifier has already been used to claim.
+    /// @param nullifier The nullifier to check.
+    /// @return true if the nullifier has been used, false otherwise.
     function isClaimed(bytes32 nullifier) external view returns (bool) {
         return usedNullifiers[nullifier];
     }
 
     /// @notice Number of claims remaining before the cap is reached.
+    /// @return The number of remaining claims (MAX_CLAIMS - totalClaims), or 0 if cap reached.
     /// @dev Uses checked comparison to avoid revert if totalClaims is manipulated
     ///      beyond MAX_CLAIMS (e.g., via direct storage writes in tests).
     function claimsRemaining() external view returns (uint256) {
         return totalClaims >= MAX_CLAIMS ? 0 : MAX_CLAIMS - totalClaims;
     }
 
-    /// @notice Whether the claim window is still open.
+    /// @notice Whether the claim window is still open (before deadline AND under cap).
+    /// @return true if both conditions are met, false otherwise.
     function isClaimWindowOpen() external view returns (bool) {
         return block.timestamp < CLAIM_DEADLINE && totalClaims < MAX_CLAIMS;
     }
