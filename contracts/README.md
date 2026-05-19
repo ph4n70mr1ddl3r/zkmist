@@ -36,7 +36,7 @@ export MERKLE_ROOT=0x...        # Merkle root of eligibility tree (bytes32)
 ```
 
 ```shell
-forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast
+forge script script/DeployAll.s.sol --rpc-url $BASE_RPC_URL --broadcast
 ```
 
 ## Architecture

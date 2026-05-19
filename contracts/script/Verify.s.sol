@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Script, console} from "forge-std/Script.sol";
+import {Test, console} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 
@@ -23,7 +23,7 @@ import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 ///   TOKEN          — Deployed ZKMToken contract address (read from airdrop if not set)
 ///   IMAGE_ID       — Expected guest program image ID (bytes32 hex). If set, verified on-chain.
 ///   MERKLE_ROOT    — Expected Merkle root (bytes32 hex). If set, verified on-chain.
-contract Verify is Script {
+contract Verify is Test {
     function run() external view {
         // ── Resolve addresses ─────────────────────────────────────────────
         address airdropAddr = vm.envAddress("AIRDROP");
@@ -95,7 +95,7 @@ contract Verify is Script {
             assertEq(onChainImageId, expectedImageId, "Image ID mismatch!");
             console.log("  [OK] Image ID matches expected value");
         } else {
-            console.log("  [SKIP] IMAGE_ID not set — skipping image ID check");
+            console.log(unicode"  [SKIP] IMAGE_ID not set — skipping image ID check");
         }
 
         if (vm.envExists("MERKLE_ROOT")) {
@@ -103,7 +103,7 @@ contract Verify is Script {
             assertEq(onChainMerkleRoot, expectedRoot, "Merkle root mismatch!");
             console.log("  [OK] Merkle root matches expected value");
         } else {
-            console.log("  [SKIP] MERKLE_ROOT not set — skipping root check");
+            console.log(unicode"  [SKIP] MERKLE_ROOT not set — skipping root check");
         }
 
         // ── Summary ───────────────────────────────────────────────────────
