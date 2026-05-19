@@ -73,8 +73,8 @@ show_summary() {
     echo "    3. ZKMAirdrop (immutable, no admin)"
     echo ""
     echo "  Parameters:"
-    echo "    Image ID:       0x05ef31c9...23277"
-    echo "    Merkle Root:    0x1eafd6f3...97844"
+    echo "    Image ID:       ${IMAGE_ID:-0x05ef31c9...23277 (default)}"
+    echo "    Merkle Root:    ${MERKLE_ROOT:-0x1eafd6f3...97844 (default)}"
     echo "    Claim Amount:   10,000 ZKM"
     echo "    Max Claims:     1,000,000"
     echo "    Claim Deadline: 2027-01-01 00:00:00 UTC"
@@ -82,6 +82,10 @@ show_summary() {
     echo ""
     echo "  WARNING: CONTRACTS ARE IMMUTABLE AFTER DEPLOYMENT"
     echo "           No admin, no upgrade, no pause."
+    echo ""
+    echo "  Override defaults with env vars:"
+    echo "    export IMAGE_ID=0x...    (guest program image ID)"
+    echo "    export MERKLE_ROOT=0x... (eligibility merkle root)"
     echo "=================================================="
     echo ""
 }
@@ -93,6 +97,9 @@ deploy_dry_run() {
     info "Running DRY RUN (no broadcast)..."
     cd "$(dirname "$0")"
 
+    # Pass IMAGE_ID and MERKLE_ROOT as env overrides if set.
+    # Without overrides, DeployAll.s.sol uses its DEFAULT_* constants.
+    # To override: export IMAGE_ID=0x... MERKLE_ROOT=0x... before running.
     forge script script/DeployAll.s.sol \
         --rpc-url "$BASE_RPC_URL" \
         --private-key "$PRIVATE_KEY" \
@@ -113,6 +120,9 @@ deploy_contracts() {
     info "Deploying ZKMist contracts to Base..."
     cd "$(dirname "$0")"
 
+    # Pass IMAGE_ID and MERKLE_ROOT as env overrides if set.
+    # Without overrides, DeployAll.s.sol uses its DEFAULT_* constants.
+    # To override: export IMAGE_ID=0x... MERKLE_ROOT=0x... before running.
     forge script script/DeployAll.s.sol \
         --rpc-url "$BASE_RPC_URL" \
         --private-key "$PRIVATE_KEY" \

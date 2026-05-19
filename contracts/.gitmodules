@@ -7,6 +7,8 @@
 [submodule "lib/risc0-ethereum"]
 	path = lib/risc0-ethereum
 	url = https://github.com/risc0/risc0-ethereum
-	# Pin to risc0-ethereum v2.1.0 (matches risc0-zkvm v3.0.5 / risc0-ethereum workspace v3.1.0-alpha.1)
+	# Pin to risc0-ethereum commit (matches risc0-zkvm v3.0.5 / risc0-ethereum workspace v3.1.0-alpha.1)
 	# ControlID.CONTROL_ROOT and BN254_CONTROL_ID must match the guest program's parameters.
-	branch = release-3.1
+	# Pinned to specific commit for reproducible builds — no branch reference.
+	# The commit is recorded in the parent repo's tree object.
+	# To update: checkout new commit in the submodule, then `git add lib/risc0-ethereum`

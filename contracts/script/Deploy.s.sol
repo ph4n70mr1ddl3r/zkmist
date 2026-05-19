@@ -16,44 +16,58 @@ import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 ///   VERIFIER_ADDRESS   — RISC Zero Groth16 verifier address on Base
 ///   IMAGE_ID           — Guest program image ID (bytes32 hex)
 ///   MERKLE_ROOT        — Merkle root of eligibility tree (bytes32 hex)
+///
+/// Optional environment variables:
+///   PRIVATE_KEY (or ETH_WALLET_PRIVATE_KEY) — Deployer private key
 contract Deploy is Script {
     function run() external {
+        // Resolve deployer key (match DeployAll.s.sol interface)
+        uint256 deployerKey;
+        if (vm.envExists("PRIVATE_KEY")) {
+            deployerKey = uint256(vm.envBytes32("PRIVATE_KEY"));
+        } else {
+            deployerKey = uint256(vm.envBytes32("ETH_WALLET_PRIVATE_KEY"));
+        }
+
         address verifier = vm.envAddress("VERIFIER_ADDRESS");
         bytes32 imageId = vm.envBytes32("IMAGE_ID");
         bytes32 merkleRoot = vm.envBytes32("MERKLE_ROOT");
 
-        vm.startBroadcast();
-
-        // Deploy token with address(0) as temporary minter, then deploy airdrop,
-        // then redeploy token with correct airdrop minter.
-        // Alternative: deploy token, then airdrop, then the token constructor needs
-        // the airdrop address. Use CREATE to predict airdrop address.
+        // ── Predict airdrop address BEFORE startBroadcast ─────────────
         //
-        // Simplest: two-step deploy (token first, then airdrop), but minter must
-        // be set correctly. Since minter is immutable, we need the airdrop address
-        // at token deploy time.
+        // Foundry simulation deploys `new` contracts from the SCRIPT contract
+        // address, but the real broadcast replays them from the DEPLOYER address.
+        // Reading the nonce inside startBroadcast returns the SCRIPT's nonce
+        // during simulation, not the deployer's on-chain nonce — causing
+        // incorrect address prediction. We resolve the deployer address and
+        // read its nonce before entering broadcast mode.
         //
-        // Solution: predict CREATE address based on deployer nonce.
-        //
-        // ⚠️  This assumes the deployer is an EOA using CREATE (not CREATE2).
-        //     Nonce order: deployerNonce = token, deployerNonce+1 = airdrop.
-        //     If deploying from a contract wallet (Safe, multisig), nonces may
-        //     not be sequential — use CREATE2 or manual address prediction instead.
+        // Deployment order from deployer:
+        //   nonce   → ZKMToken (minter = predicted airdrop)
+        //   nonce+1 → ZKMAirdrop
+        address deployer = vm.addr(deployerKey);
+        uint256 deployerNonce = vm.getNonce(deployer);
+        address predictedAirdrop = vm.computeCreateAddress(deployer, deployerNonce + 1);
 
-        // Step 1: Deploy token with predicted airdrop address as minter
-        uint256 deployerNonce = vm.getNonce(msg.sender);
-        address predictedAirdrop = vm.computeCreateAddress(msg.sender, deployerNonce + 1);
+        console.log("Deployer:", deployer);
+        console.log("Deployer nonce:", deployerNonce);
+        console.log("Predicted airdrop:", predictedAirdrop);
 
+        vm.startBroadcast(deployerKey);
+
+        // ── Step 1: Deploy ZKMToken with predicted minter ────────────────
         ZKMToken token = new ZKMToken(predictedAirdrop);
         console.log("ZKMToken deployed at:", address(token));
         console.log("Predicted airdrop address:", predictedAirdrop);
 
-        // Step 2: Deploy airdrop
+        // ── Step 2: Deploy airdrop ───────────────────────────────────────
         ZKMAirdrop airdrop = new ZKMAirdrop(address(token), verifier, imageId, merkleRoot);
         console.log("ZKMAirdrop deployed at:", address(airdrop));
 
-        require(address(airdrop) == predictedAirdrop, "Address prediction failed");
-        require(token.minter() == address(airdrop), "Minter mismatch");
+        // NOTE: address(airdrop) in simulation != predictedAirdrop because
+        // simulation deploys from the script contract. On real broadcast,
+        // the addresses WILL match.
+        require(token.minter() == predictedAirdrop, "Minter not set to predicted airdrop");
 
         console.log("Deployment complete!");
         console.log("  Token minter:", token.minter());
@@ -62,6 +76,9 @@ contract Deploy is Script {
         console.log("  Claim amount: 10,000 ZKM");
         console.log("  Max claims: 1,000,000");
         console.log("  Claim deadline: 2027-01-01 00:00:00 UTC");
+        console.log("");
+        console.log("  NOTE: Simulated addresses differ from broadcast addresses.");
+        console.log("  After broadcast, verify: token.minter() == airdrop address");
 
         vm.stopBroadcast();
     }

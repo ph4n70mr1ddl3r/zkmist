@@ -808,10 +808,10 @@ pub fn cmd_verify(proof_file: &str) -> Result<(), String> {
         }
         _ => {
             eprintln!("⚠️  Journal layout and field consistency verified, but cryptographic");
-            eprintln!("   proof was NOT verified locally. On-chain verification by the");
-            eprintln!("   RiscZeroGroth16Verifier will catch an invalid proof — but you may");
-            eprintln!("   waste gas if the proof is bad. For full local verification, place");
-            eprintln!("   the guest ELF at ~/.zkmist/guest.elf.");
+            eprintln!("   proof was NOT verified locally. Submitting an invalid proof will");
+            eprintln!(   "   WASTE GAS — the on-chain RiscZeroGroth16Verifier will revert.");
+            eprintln!(   "   For full local verification (recommended before submit), place");
+            eprintln!(   "   the guest ELF at ~/.zkmist/guest.elf.");
         }
     }
     Ok(())
