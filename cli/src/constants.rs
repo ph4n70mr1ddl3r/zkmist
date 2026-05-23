@@ -23,12 +23,6 @@ pub const ELIGIBILITY_RELEASE_TAG: &str = "v1.0.0-eligibility";
 /// GitHub repository hosting the eligibility list release.
 pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 
-/// IPFS gateway for fallback downloads.
-pub const IPFS_GATEWAY: &str = "https://gateway.pinata.cloud/ipfs";
-
-/// Published IPFS CID for the eligibility list.
-pub const FALLBACK_IPFS_CID: &str = "QmTTit9vDbzRjCffeKsd3LV3YFvdX4Kobm3uZwNd5zDUZb";
-
 /// Known Merkle root for the v1.0.0 eligibility list.
 /// Sourced from the GitHub Release manifest, the IPFS manifest, and the
 /// `compute-root` tool output. This compile-time constant provides an

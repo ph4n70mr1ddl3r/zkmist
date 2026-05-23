@@ -1,29 +1,6 @@
-//! ZKMist CLI data types and download source parsing.
+//! ZKMist CLI data types.
 
 use serde::{Deserialize, Serialize};
-
-/// Download source for the eligibility list.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum DownloadSource {
-    /// Try GitHub Releases first, fall back to IPFS on failure.
-    Auto,
-    /// GitHub Releases only.
-    Github,
-    /// IPFS only.
-    Ipfs,
-}
-
-pub fn parse_source(s: &str) -> Result<DownloadSource, String> {
-    match s.to_lowercase().as_str() {
-        "auto" => Ok(DownloadSource::Auto),
-        "github" | "gh" => Ok(DownloadSource::Github),
-        "ipfs" => Ok(DownloadSource::Ipfs),
-        other => Err(format!(
-            "Unknown source '{}'. Use: github, ipfs, or auto",
-            other
-        )),
-    }
-}
 
 /// Proof file format version.
 ///

@@ -38,12 +38,6 @@ struct Cli {
 enum Commands {
     /// Download eligibility list (~2.8 GB). Verifies integrity via SHA-256 + Merkle root.
     Fetch {
-        /// Download source: "github" (GitHub Releases), "ipfs", or "auto" (GitHub first, IPFS fallback).
-        #[arg(long, default_value = "auto")]
-        source: String,
-        /// IPFS CID override (only used with --source ipfs)
-        #[arg(long)]
-        cid: Option<String>,
         /// Skip Merkle root verification (faster; still checks per-file SHA-256 integrity)
         #[arg(long)]
         no_verify: bool,
@@ -98,10 +92,8 @@ fn main() {
 
     let result = match cli.command {
         Commands::Fetch {
-            cid,
-            source,
             no_verify,
-        } => cmd_fetch(cid.as_deref(), &source, no_verify),
+        } => cmd_fetch(no_verify),
         Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
         Commands::Submit {
             proof_file,
@@ -336,11 +328,11 @@ mod tests {
         format!(
             r#"{{
   "version": 1,
-  "cutoff_timestamp": "2026-01-01T00:00:00Z",
-  "fee_threshold_eth": "0.004",
-  "total_qualified": {},
-  "merkle_root": "{}",
-  "merkle_tree_depth": 26,
+  "cutoffTimestamp": "2026-01-01T00:00:00Z",
+  "feeThresholdEth": "0.004",
+  "totalQualified": {},
+  "merkleRoot": "{}",
+  "merkleTreeDepth": 26,
   "files": [{}]
 }}"#,
             total,
@@ -560,24 +552,6 @@ mod tests {
         let old_json = r#"{"version":1,"proof":"aabb","journal":"cc","nullifier":"dd","recipient":"ee","claimAmount":"0","contractAddress":"0x00","chainId":1}"#;
         let old_parsed: ProofFile = serde_json::from_str(old_json).unwrap();
         assert_eq!(old_parsed.proof_format_version, PROOF_FORMAT_VERSION_V1);
-    }
-
-    // ── Download source parsing ─────────────────────────────────────────
-
-    #[test]
-    fn test_parse_source_all_variants() {
-        assert_eq!(parse_source("auto").unwrap(), DownloadSource::Auto);
-        assert_eq!(parse_source("github").unwrap(), DownloadSource::Github);
-        assert_eq!(parse_source("gh").unwrap(), DownloadSource::Github);
-        assert_eq!(parse_source("ipfs").unwrap(), DownloadSource::Ipfs);
-        assert_eq!(parse_source("AUTO").unwrap(), DownloadSource::Auto);
-        assert_eq!(parse_source("GitHub").unwrap(), DownloadSource::Github);
-    }
-
-    #[test]
-    fn test_parse_source_rejects_unknown() {
-        let err = parse_source("ftp").unwrap_err();
-        assert!(err.contains("Unknown source"));
     }
 
     // ── Claim ABI encoding verification ─────────────────────────────────

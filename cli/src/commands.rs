@@ -22,19 +22,15 @@ use alloy::sol_types::SolCall;
 
 // ── Command: fetch ───────────────────────────────────────────────────────
 
-pub fn cmd_fetch(cid: Option<&str>, source: &str, no_verify: bool) -> Result<(), String> {
-    let download_source = parse_source(source)?;
+pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
     let dir = eligibility_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
 
-    // Resolve which CID to use for IPFS downloads.
-    let ipfs_cid = cid.unwrap_or(FALLBACK_IPFS_CID);
-
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
 
     // ── Step 1: Fetch manifest and verify against known Merkle root ──────
-    let manifest = fetch_manifest(&rt, download_source, ipfs_cid)?;
+    let manifest = fetch_manifest(&rt)?;
 
     // Verify manifest merkle root against our compile-time constant.
     let known_root = KNOWN_MERKLE_ROOT
@@ -95,16 +91,9 @@ pub fn cmd_fetch(cid: Option<&str>, source: &str, no_verify: bool) -> Result<(),
         }
 
         // Try download sources in priority order
-        let downloaded = try_download_file(
-            &rt,
-            filename,
-            &dest,
-            expected_hash,
-            download_source,
-            ipfs_cid,
-        )?;
+        let downloaded = try_download_file(&rt, filename, &dest, expected_hash)?;
         if !downloaded {
-            return Err(format!("Failed to download {} from any source", filename));
+            return Err(format!("Failed to download {} from GitHub", filename));
         }
         pb.inc(1);
     }
