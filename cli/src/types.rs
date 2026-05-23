@@ -67,6 +67,7 @@ fn default_proof_format_version() -> u64 {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub version: u64,
     pub cutoff_timestamp: String,
