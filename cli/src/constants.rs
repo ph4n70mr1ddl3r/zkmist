@@ -56,4 +56,4 @@ pub const KNOWN_IMAGE_ID: &str =
 
 /// ZKMAirdrop contract address on Base.
 /// Set after deployment.
-pub const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD"; // placeholder
+pub const AIRDROP_CONTRACT: &str = "0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978";

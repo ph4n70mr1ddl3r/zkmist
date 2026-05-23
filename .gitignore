@@ -54,3 +54,6 @@ coverage/
 *.tmp
 *.bak
 *.orig
+
+# Third-party tool artifacts
+.antigravitycli/
