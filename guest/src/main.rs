@@ -108,6 +108,11 @@ pub fn main() {
     // ~2.6M–5.2M RISC-V cycles across 27+ hash invocations.
     //
     // light-poseidon v0.4.x: hash() requires &mut self (sponge absorption).
+    //
+    // NOTE (V2): Consider using a separate nullifier_hasher instance to eliminate
+    // any theoretical risk of sponge state cross-contamination between the Merkle
+    // proof and nullifier computation. Not done in V1 because it would change the
+    // guest binary → image ID → require contract redeployment.
     let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
 
@@ -144,6 +149,9 @@ pub fn main() {
 // ── Address derivation ───────────────────────────────────────────────────
 
 fn derive_address(key: &[u8; 32]) -> [u8; 20] {
+    // NOTE (V2): Add assert_eq!(point.as_bytes().len(), 65) to guard against
+    // unexpected k256 format changes. Not done in V1 because it would change
+    // the guest binary → image ID → require contract redeployment.
     let sk = SigningKey::from_slice(key).expect("Invalid key");
     let vk = VerifyingKey::from(&sk);
     let point = vk.to_encoded_point(false);

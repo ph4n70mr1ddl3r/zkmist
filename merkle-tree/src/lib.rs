@@ -211,6 +211,11 @@ const CACHE_MAGIC: [u8; 4] = [b'Z', b'K', b'M', b'T'];
 ///
 /// Use this to cache the full tree after `build_tree()` so subsequent runs
 /// of `zkmist prove` can skip tree construction.
+///
+/// ⚠️ **Not recommended for the production 26-level tree.** The full tree
+/// serializes to ~8.6 GB. Prefer `serialize_proof` (~900 bytes) which stores
+/// only the Merkle proof for a specific leaf index. This function is kept for
+/// testing and debugging small trees.
 pub fn serialize_tree<W: Write>(layers: &[Vec<[u8; 32]>], mut writer: W) -> io::Result<()> {
     writer.write_all(&CACHE_MAGIC)?;
     let num_layers = layers.len() as u32;

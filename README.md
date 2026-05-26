@@ -2,6 +2,8 @@
 
 **Fully community-owned, privacy-preserving ERC-20 token on Base.**
 
+[![Contracts Deployed](https://img.shields.io/badge/contracts-live-brightgreen)](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
+
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
 ~64.1 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Up to **1 million claimants** can claim before **2027-01-01**.
@@ -11,11 +13,11 @@ ZKMist is an airdrop token where 100% of supply goes to claimants — no team al
 ## How It Works
 
 ```
-  IPFS / GitHub (eligibility list, ~2.8 GB)
+  GitHub / IPFS (eligibility list, ~2.8 GB)
        │
        ▼
   Local CLI
-  $ zkmist fetch                        # download eligibility list
+  $ zkmist fetch                        # download eligibility list (GitHub + IPFS fallback)
   $ zkmist prove                        # generate ZK proof locally
        │
   ┌────┴────────────┐
@@ -100,6 +102,9 @@ cargo risczero build --manifest-path guest/Cargo.toml
 ### Claim Tokens
 
 ```shell
+# 0. Check claim window status (confirms contracts are live on Base)
+zkmist status
+
 # 1. Download the eligibility list (~2.8 GB, verifies SHA-256 + Merkle root)
 zkmist fetch
 
@@ -151,6 +156,19 @@ zkmist/
 ├── PRD.md              # Full product requirements document (1,342 lines)
 └── Cargo.toml          # Workspace root
 ```
+
+---
+
+## Deployed Contracts (Base Mainnet)
+
+| Contract | Address |
+|----------|--------|
+| **ZKMAirdrop** | [`0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978`](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) |
+| **ZKMToken** | [`0xB0A22e1AFE3DA9e72ac1053299031bA71d4cCbD5`](https://basescan.org/address/0xB0A22e1AFE3DA9e72ac1053299031bA71d4cCbD5) |
+| **RiscZeroGroth16Verifier** | [`0x47DC617e92fEbFde056a9D3D76717b4c50395bfc`](https://basescan.org/address/0x47DC617e92fEbFde056a9D3D76717b4c50395bfc) |
+
+> **Status: LIVE.** Contracts are immutable — no admin, no upgrade, no pause.
+> Verify on BaseScan using the links above.
 
 ---
 
@@ -276,6 +294,10 @@ cargo run --release -p zkmist-tools --bin compute-image-id
 ---
 
 ## Deployment
+
+> ⚠️ **Contracts are already deployed to Base mainnet.** The instructions below
+> are for reference or redeployment to a new chain. Do NOT redeploy to Base unless
+> you intend to start a new, independent instance.
 
 ```shell
 cd contracts

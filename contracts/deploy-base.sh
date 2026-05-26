@@ -134,7 +134,7 @@ deploy_contracts() {
     info ""
     info "Next steps:"
     info "  1. Save the deployed addresses"
-    info "  2. Update AIRDROP_CONTRACT in cli/src/main.rs"
+    info "  2. Update AIRDROP_CONTRACT in cli/src/constants.rs"
     info "  3. Verify contracts on BaseScan:"
     info "     forge verify-contract <TOKEN_ADDRESS> ZKMToken --chain 8453 --watch"
     info "     forge verify-contract <AIRDROP_ADDRESS> ZKMAirdrop --chain 8453 --watch --constructor-args '...'"

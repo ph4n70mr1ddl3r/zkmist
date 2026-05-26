@@ -611,10 +611,21 @@ pub fn cmd_submit(
             }
             Err(e) => {
                 eprintln!(
-                    "  ⚠️  Gas estimation failed ({}): using 700,000 fallback",
+                    "  ⚠️  Gas estimation failed: {}",
                     e
                 );
-                700_000
+                eprintln!(
+                    "      Using fallback gas limit: {}",
+                    FALLBACK_GAS_LIMIT
+                );
+                eprintln!(
+                    "      If the transaction reverts with this limit, re-run with:"
+                );
+                eprintln!(
+                    "        cast send --gas-limit 800000 {} \"claim(...)\"",
+                    proof.contract_address
+                );
+                FALLBACK_GAS_LIMIT
             }
         };
 

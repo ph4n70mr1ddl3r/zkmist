@@ -1,7 +1,11 @@
 //! Download functions for the ZKMist eligibility list.
 //!
-//! Downloads the official eligibility list from GitHub Releases
-//! with per-file SHA-256 integrity verification.
+//! Downloads the official eligibility list with per-file SHA-256 integrity
+//! verification. Tries GitHub Releases first, then IPFS as a fallback.
+//!
+//! Download sources (in priority order):
+//!   1. GitHub Releases (primary — fast, content-addressed via SHA-256 in manifest)
+//!   2. IPFS gateway (fallback — decentralized, content-addressed by CID)
 
 use sha2::{Digest as Sha2Digest, Sha256};
 
@@ -9,35 +13,75 @@ use crate::constants::*;
 use crate::helpers::*;
 use crate::types::Manifest;
 
-/// Fetch and validate the manifest from GitHub Releases.
+/// IPFS gateway for fallback downloads.
+/// Uses the public ipfs.io gateway — content-addressed, so the gateway
+/// operator cannot tamper with files (hash mismatch would be detected).
+const IPFS_GATEWAY: &str = "https://ipfs.io/ipfs";
+
+/// IPFS CID (Content Identifier) for the eligibility list directory.
+/// This is set when the eligibility list is pinned to IPFS.
+/// The CID is immutable — it references a specific directory of files.
+///
+/// ⚠️ Update this after publishing the eligibility list to IPFS.
+///     Publish with: ipfs add -r eligibility/
+const IPFS_CID: &str = "QmPENDING_PUBLISH_TO_IPFS_FIRST";
+
+/// Whether the IPFS CID has been configured (not a placeholder).
+fn ipfs_configured() -> bool {
+    !IPFS_CID.starts_with("PENDING")
+}
+
+/// Fetch and validate the manifest from GitHub Releases, falling back to IPFS.
 pub fn fetch_manifest(rt: &tokio::runtime::Runtime) -> Result<Manifest, String> {
     eprintln!("[1/3] Fetching manifest...");
-    eprintln!(
-        "      Source: GitHub Releases ({}/{})",
-        GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
-    );
-    let url = format!(
+
+    // Try GitHub first (primary source)
+    let github_url = format!(
         "https://github.com/{}/releases/download/{}/manifest.json",
         GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
     );
+    eprintln!("      Source: GitHub Releases ({}/{})", GITHUB_REPO, ELIGIBILITY_RELEASE_TAG);
 
-    match rt.block_on(fetch_json::<Manifest>(&url)) {
+    match rt.block_on(fetch_json::<Manifest>(&github_url)) {
         Ok(manifest) => {
             eprintln!("      ✓ Manifest fetched from GitHub");
-            Ok(manifest)
+            return Ok(manifest);
         }
-        Err(e) => Err(format!(
-            "Failed to fetch manifest from GitHub. Last error: {}\n\
-             \n\
-             Manual alternatives:\n\
-             1. Download from: https://github.com/{}/releases/tag/{}\n\
-             2. Place CSV files manually in: {}",
-            e,
-            GITHUB_REPO,
-            ELIGIBILITY_RELEASE_TAG,
-            eligibility_dir().display(),
-        )),
+        Err(github_err) => {
+            eprintln!("      ⚠ GitHub fetch failed: {}", github_err);
+        }
     }
+
+    // Try IPFS fallback
+    if ipfs_configured() {
+        let ipfs_url = format!("{}/{}/manifest.json", IPFS_GATEWAY, IPFS_CID);
+        eprintln!("      Fallback: IPFS (CID: {})", IPFS_CID);
+
+        match rt.block_on(fetch_json::<Manifest>(&ipfs_url)) {
+            Ok(manifest) => {
+                eprintln!("      ✓ Manifest fetched from IPFS");
+                return Ok(manifest);
+            }
+            Err(ipfs_err) => {
+                eprintln!("      ⚠ IPFS fetch failed: {}", ipfs_err);
+            }
+        }
+    } else {
+        eprintln!("      ℹ️  IPFS fallback not configured (CID is placeholder)");
+        eprintln!("         To enable: pin the eligibility list to IPFS and update IPFS_CID in download.rs");
+    }
+
+    Err(format!(
+        "Failed to fetch manifest from all sources.\n\
+         \n\
+         Manual alternatives:\n\
+         1. Download from: https://github.com/{}/releases/tag/{}\n\
+         2. Place CSV files manually in: {}\n\
+         3. (Future) Pin the eligibility list to IPFS and configure IPFS_CID in cli/src/download.rs",
+        GITHUB_REPO,
+        ELIGIBILITY_RELEASE_TAG,
+        eligibility_dir().display(),
+    ))
 }
 
 /// Fetch and deserialize JSON from a URL.
@@ -61,30 +105,50 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, 
     serde_json::from_str(&text).map_err(|e| format!("Failed to parse JSON: {}", e))
 }
 
-/// Try downloading a single file from GitHub Releases.
-/// Returns Ok(true) if downloaded successfully, Ok(false) if the download failed.
+/// Try downloading a single file from GitHub Releases, falling back to IPFS.
+/// Returns Ok(true) if downloaded successfully, Ok(false) if all sources failed.
 pub fn try_download_file(
     rt: &tokio::runtime::Runtime,
     filename: &str,
     dest: &std::path::Path,
     expected_hash: &str,
 ) -> Result<bool, String> {
-    let url = format!(
+    // Try GitHub first
+    let github_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
         GITHUB_REPO, ELIGIBILITY_RELEASE_TAG, filename
     );
 
-    match rt.block_on(download_and_verify(&url, expected_hash)) {
+    match rt.block_on(download_and_verify(&github_url, expected_hash)) {
         Ok(data) => {
             std::fs::write(dest, &data)
                 .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
-            Ok(true)
+            return Ok(true);
         }
         Err(e) => {
             eprintln!("      ⚠ GitHub download of {} failed: {}", filename, e);
-            Ok(false)
         }
     }
+
+    // Try IPFS fallback
+    if ipfs_configured() {
+        let ipfs_url = format!("{}/{}/{}", IPFS_GATEWAY, IPFS_CID, filename);
+        eprintln!("      IPFS fallback for {}...", filename);
+
+        match rt.block_on(download_and_verify(&ipfs_url, expected_hash)) {
+            Ok(data) => {
+                std::fs::write(dest, &data)
+                    .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
+                eprintln!("      ✓ Downloaded {} from IPFS", filename);
+                return Ok(true);
+            }
+            Err(e) => {
+                eprintln!("      ⚠ IPFS download of {} also failed: {}", filename, e);
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 /// Download a file from a URL and verify its SHA-256 hash.

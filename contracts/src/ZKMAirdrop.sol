@@ -53,6 +53,12 @@ contract ZKMAirdrop {
     ///      Reverts if: claim window closed, cap reached, nullifier already used,
     ///      recipient is zero, journal is wrong length, proof is invalid,
     ///      or journal fields don't match the submitted parameters.
+    ///
+    ///      Reentrancy safety: This function follows Checks-Effects-Interactions.
+    ///      All state changes (nullifier marking, totalClaims increment) happen before
+    ///      the external call to `token.mint()`. OpenZeppelin's `_mint()` does not
+    ///      invoke callbacks on the recipient, so reentrancy via `ERC1155Holder`
+    ///      or similar hooks is not possible. No explicit reentrancy guard is needed.
     function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient) external {
         // Check claim window
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");

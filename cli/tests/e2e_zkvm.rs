@@ -49,6 +49,22 @@ const TEST_GUEST_BIN_PATH: &str = concat!(
     "/../target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest-test.bin"
 );
 
+/// Alternative search paths for the test guest binary, tried if the primary
+/// path doesn't exist. Covers the standard `cargo risczero build` output
+/// locations and naming conventions.
+const TEST_GUEST_ALT_PATHS: &[&str] = &[
+    // Docker reproducible build output
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest"
+    ),
+    // Standard release build output
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/riscv32im-risc0-zkvm-elf/release/zkmist-guest"
+    ),
+];
+
 /// Path to the production guest binary (depth=26, no test features).
 /// Used by Tier 2 full-STARK proof test.
 ///
@@ -96,23 +112,41 @@ fn load_prod_guest_binary() -> Vec<u8> {
 }
 
 /// Load a guest binary from the given path, validating R0BF format.
-/// Skips the test (exits with 0) if the file doesn't exist.
+/// If the primary path doesn't exist, tries alternative search paths.
+/// Skips the test (exits with 0) if no binary is found.
 fn load_guest_binary_at(path: &str) -> Vec<u8> {
-    match std::fs::read(path) {
-        Ok(data) => {
-            assert!(
-                data.len() >= 4 && &data[0..4] == b"R0BF",
-                "Guest binary at {} is not in R0BF format. Build with: cargo risczero build",
-                path
-            );
-            data
-        }
-        Err(_) => {
-            eprintln!("SKIPPED: Guest binary not found at {}", path);
-            eprintln!("  Build with: cargo risczero build --manifest-path guest/Cargo.toml");
-            std::process::exit(0);
+    // Try the primary path first
+    if let Ok(data) = std::fs::read(path) {
+        assert_valid_guest_binary(&data, path);
+        return data;
+    }
+
+    // Try alternative paths
+    for alt_path in TEST_GUEST_ALT_PATHS {
+        if let Ok(data) = std::fs::read(alt_path) {
+            eprintln!("NOTE: Guest binary found at alternative path: {}", alt_path);
+            assert_valid_guest_binary(&data, alt_path);
+            return data;
         }
     }
+
+    eprintln!("SKIPPED: Guest binary not found.");
+    eprintln!("  Tried:");
+    eprintln!("    {}", path);
+    for alt in TEST_GUEST_ALT_PATHS {
+        eprintln!("    {}", alt);
+    }
+    eprintln!("  Build with: cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree");
+    std::process::exit(0);
+}
+
+/// Validate that a guest binary is in R0BF format.
+fn assert_valid_guest_binary(data: &[u8], path: &str) {
+    assert!(
+        data.len() >= 4 && &data[0..4] == b"R0BF",
+        "Guest binary at {} is not in R0BF format. Build with: cargo risczero build",
+        path
+    );
 }
 
 /// Build the ExecutorEnv for the guest program with the given claim parameters.

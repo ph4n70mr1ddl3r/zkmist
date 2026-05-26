@@ -75,6 +75,8 @@ When modifying code, be aware of these cross-component invariants that **must** 
 
 6. **Test vectors** — PRD Appendix D defines expected outputs for a known private key. All implementations must reproduce these exact values. Run the relevant tests after any change to hashing or address derivation.
 
+7. **⚠️ Guest program immutability** — Contracts are deployed on Base mainnet with a fixed `imageId` (SHA-256 of the guest binary). **Any change to `guest/src/main.rs` or `guest/Cargo.toml` changes the image ID, which will cause ALL proofs to be rejected by the on-chain verifier.** Do NOT modify the guest program source code unless you are intentionally preparing for a new deployment. Comments are safe to add; code changes are not. Suggestions for future versions are annotated with `NOTE (V2)` comments in the source.
+
 ## Pull Request Process
 
 1. **Create a feature branch** from `main`.
