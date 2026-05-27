@@ -4,6 +4,10 @@
 
 [![Contracts Deployed](https://img.shields.io/badge/contracts-live-brightgreen)](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
+> **🚀 V2 Now Available!** ZKMist V2 uses Halo2-KZG circuits for **~10-30 second proof generation**
+> (vs ~50 minutes in V1). Same eligibility, same privacy, new token contract.
+> See [V2_PLAN.md](./V2_PLAN.md) for the full architecture and migration guide.
+
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
 ~64.1 million Ethereum addresses that paid ≥0.004 ETH in cumulative transaction fees on mainnet before 2026 are eligible. Up to **1 million claimants** can claim before **2027-01-01**.

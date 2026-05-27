@@ -2,8 +2,13 @@
 
 **Version:** 6.1  
 **Date:** 2026-05-11  
-**Status:** Draft  
+**Status:** Archived (V1)  
 **Author:** ZKMist Community  
+
+> **NOTE (2026-05-27):** This PRD describes the V1 (RISC Zero) architecture. For the V2 (Halo2-KZG)
+> architecture, see [V2_PLAN.md](./V2_PLAN.md). V1 contracts remain deployed on Base but V2
+> is the recommended path for new claims due to dramatically faster proving (~10-30 sec vs ~50 min).
+> V1 and V2 are separate token contracts with independent supplies.  
 
 ---
 

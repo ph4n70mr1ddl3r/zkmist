@@ -1,5 +1,10 @@
 # ZKMist (ZKM) — Step-by-Step Claim Guide
 
+> **🚀 V2 Available:** This guide describes the V1 (RISC Zero) claiming process.
+> For the V2 (Halo2-KZG) claiming process with **~10-30 second proof generation**, see
+> [V2_PLAN.md](./V2_PLAN.md) and the updated claiming instructions there.
+> V1 and V2 are separate token contracts — you can claim through either.
+
 A detailed walkthrough for claiming your **10,000 ZKM** tokens via the ZKMist privacy-preserving airdrop on Base.
 
 ---

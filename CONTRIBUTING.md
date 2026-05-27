@@ -2,10 +2,27 @@
 
 Thank you for your interest in ZKMist! This project is fully community-owned — contributions are welcome and encouraged.
 
+> **Note:** ZKMist V2 uses Halo2-KZG circuits instead of RISC Zero. See [V2_PLAN.md](./V2_PLAN.md)
+> for the V2 architecture. The instructions below cover both V1 and V2 development.
+
 ## Quick Start
 
+### V2 (Halo2 — recommended)
+
 ```shell
-# Clone with submodules (needed for Solidity contracts)
+git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git
+cd zkmist
+
+# Build the CLI
+ cargo build --release -p zkmist-cli
+
+# Build and test circuits
+cargo test -p zkmist-circuits
+```
+
+### V1 (RISC Zero — legacy)
+
+```shell
 git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git
 cd zkmist
 
