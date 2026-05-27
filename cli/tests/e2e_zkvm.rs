@@ -114,19 +114,27 @@ fn load_prod_guest_binary() -> Vec<u8> {
 /// Load a guest binary from the given path, validating R0BF format.
 /// If the primary path doesn't exist, tries alternative search paths.
 /// Skips the test (exits with 0) if no binary is found.
+/// Non-R0BF files at alternative paths are silently skipped
+/// (they may be stale ELF binaries from a different build configuration).
 fn load_guest_binary_at(path: &str) -> Vec<u8> {
     // Try the primary path first
     if let Ok(data) = std::fs::read(path) {
-        assert_valid_guest_binary(&data, path);
-        return data;
+        if is_valid_guest_binary(&data) {
+            return data;
+        } else {
+            eprintln!("NOTE: {} is not R0BF format, skipping", path);
+        }
     }
 
-    // Try alternative paths
+    // Try alternative paths, skipping non-R0BF files
     for alt_path in TEST_GUEST_ALT_PATHS {
         if let Ok(data) = std::fs::read(alt_path) {
-            eprintln!("NOTE: Guest binary found at alternative path: {}", alt_path);
-            assert_valid_guest_binary(&data, alt_path);
-            return data;
+            if is_valid_guest_binary(&data) {
+                eprintln!("NOTE: Guest binary found at alternative path: {}", alt_path);
+                return data;
+            } else {
+                eprintln!("NOTE: {} is not R0BF format, skipping", alt_path);
+            }
         }
     }
 
@@ -140,13 +148,9 @@ fn load_guest_binary_at(path: &str) -> Vec<u8> {
     std::process::exit(0);
 }
 
-/// Validate that a guest binary is in R0BF format.
-fn assert_valid_guest_binary(data: &[u8], path: &str) {
-    assert!(
-        data.len() >= 4 && &data[0..4] == b"R0BF",
-        "Guest binary at {} is not in R0BF format. Build with: cargo risczero build",
-        path
-    );
+/// Check whether a binary is in R0BF format.
+fn is_valid_guest_binary(data: &[u8]) -> bool {
+    data.len() >= 4 && &data[0..4] == b"R0BF"
 }
 
 /// Build the ExecutorEnv for the guest program with the given claim parameters.

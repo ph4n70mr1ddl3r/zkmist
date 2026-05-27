@@ -1,6 +1,6 @@
 [package]
 name = "zkmist-circuits"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Halo2-KZG circuits for ZKMist V2 anonymous airdrop claims"
 
@@ -11,6 +11,13 @@ ark-bn254 = "0.5"
 ark-ff = "0.5"
 ff = "0.13"
 group = "0.13"
+# Poseidon hash — used to extract round constants and validate against
+light-poseidon = "0.4"
+# Byte reversal for ark-bn254 ↔ halo2curves field element conversion
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [dev-dependencies]
 rand = "0.8"
+hex = "0.4"
+zkmist-merkle-tree = { path = "../merkle-tree" }

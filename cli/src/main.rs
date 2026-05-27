@@ -13,6 +13,7 @@ mod commands;
 mod constants;
 mod download;
 mod guest;
+mod halo2_prover;
 mod helpers;
 mod types;
 
