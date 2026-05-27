@@ -48,11 +48,19 @@ pub const KNOWN_MERKLE_ROOT: &str =
 /// The on-chain airdrop contract's `imageId` immutable must match this value
 /// for proofs to be accepted.
 ///
-/// ⚠️  This changes with every guest program modification. Update after:
-///     1. Any change to guest/src/main.rs or guest/Cargo.toml dependencies
-///     2. RISC Zero toolchain upgrades (different compiler → different binary)
+/// Known guest program image ID (V1 — RISC Zero).
 pub const KNOWN_IMAGE_ID: &str =
     "0x05ef31c9fea9a30ee1902fc49a7aae3e48fce139ffc9b728858dee5b36423277";
+
+/// ZKMAirdrop V2 contract address on Base.
+/// TODO: Update after V2 deployment.
+pub const AIRDROP_CONTRACT_V2: &str = "0x000000000000000000000000000000000000dEaD";
+
+/// V2 nullifier domain separator.
+pub const NULLIFIER_DOMAIN_V2: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
+
+/// V2 proof format version.
+pub const PROOF_FORMAT_VERSION_V2: &str = "halo2-kzg-v1";
 
 /// ZKMAirdrop contract address on Base (deployed, live).
 ///

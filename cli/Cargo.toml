@@ -12,12 +12,18 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 # Ethereum interaction
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
-# ZK proof generation
+# ZK proof generation (V1 — RISC Zero)
 risc0-zkvm = { version = "3.0.5", features = ["client", "prove"] }
+# ZK proof generation (V2 — Halo2)
+zkmist-circuits = { path = "../circuits" }
+halo2_proofs = "0.3.0"
+halo2curves = "0.6.0"
+rand = "0.8"
 # Merkle tree (shared library)
 zkmist-merkle-tree = { path = "../merkle-tree" }
 # Crypto primitives used by CLI
 ark-bn254 = "0.5"
+ark-ff = "0.5"
 light-poseidon = "0.4"
 k256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }

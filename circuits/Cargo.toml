@@ -16,6 +16,7 @@ light-poseidon = "0.4"
 # Byte reversal for ark-bn254 ↔ halo2curves field element conversion
 num-bigint = "0.4"
 num-traits = "0.2"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 
 [dev-dependencies]
 rand = "0.8"
