@@ -1,7 +1,7 @@
 //! ZKMist CLI — claim tool for the ZKMist airdrop
 //!
 //! Commands:
-//!   zkmist fetch    — Download eligibility list from IPFS
+//!   zkmist fetch    — Download eligibility list from GitHub Releases
 //!   zkmist prove    — Generate ZK proof locally
 //!   zkmist submit   — Submit proof to ZKMAirdrop contract
 //!   zkmist verify   — Verify proof locally

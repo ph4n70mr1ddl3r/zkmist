@@ -54,7 +54,7 @@ You are eligible if your Ethereum mainnet address meets **both** criteria:
 
 > **Contract wallets** (multisigs, Safes, etc.) may appear in the eligibility list but **cannot claim** because they lack a single private key needed for proof generation.
 
-The eligibility list is published on IPFS and GitHub. You'll download it in Step 1 and check your address(es) in Step 2.
+The eligibility list is published on GitHub Releases. You'll download it in Step 1 and check your address(es) in Step 2.
 
 ---
 
@@ -134,9 +134,8 @@ You should see a list of available commands: `fetch`, `check`, `prove`, `submit`
 ```
 
 **What happens:**
-- Downloads the eligibility list from IPFS (~1.3 GB). This is a list of all ~64.1M qualified Ethereum addresses.
+- Downloads the eligibility list from GitHub Releases (~1.3 GB). This is a list of all ~64.1M qualified Ethereum addresses.
 - Verifies the data integrity using SHA-256 checksums and the Merkle root.
-- Falls back to GitHub mirror if IPFS is unavailable.
 - Builds and caches the Merkle tree locally so you won't need to rebuild it for future proof generations.
 
 **Time:** 5–15 minutes depending on your internet speed.
@@ -445,7 +444,7 @@ If you want to run a relayer for others or yourself:
 
 | Problem | Solution |
 |---------|----------|
-| IPFS download hangs | The CLI automatically falls back to GitHub mirror. Wait a moment or check your IPFS gateway connectivity. |
+| Download fails | Check your internet connection and GitHub availability. Retry `zkmist fetch`. |
 | SHA-256 checksum mismatch | Delete `~/.zkmist/eligibility/` and re-run `zkmist fetch`. The data may have been corrupted during download. |
 | Disk full | You need ~3 GB free. Clear space and retry. |
 | Fetch never completes | Try running with `--timeout 600` or check your firewall settings. |

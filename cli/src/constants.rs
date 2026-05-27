@@ -31,8 +31,7 @@ pub const ELIGIBILITY_RELEASE_TAG: &str = "v1.0.0-eligibility";
 pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 
 /// Known Merkle root for the v1.0.0 eligibility list.
-/// Sourced from the GitHub Release manifest, the IPFS manifest, and the
-/// `compute-root` tool output. This compile-time constant provides an
+/// Sourced from the GitHub Release manifest and the `compute-root` tool output. This compile-time constant provides an
 /// out-of-band integrity check: even if the download source is compromised,
 /// the manifest root must match this value or the CLI refuses to proceed.
 ///

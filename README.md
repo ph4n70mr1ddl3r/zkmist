@@ -17,11 +17,11 @@ ZKMist is an airdrop token where 100% of supply goes to claimants — no team al
 ## How It Works
 
 ```
-  GitHub / IPFS (eligibility list, ~2.8 GB)
+  GitHub (eligibility list, ~2.8 GB)
        │
        ▼
   Local CLI
-  $ zkmist fetch                        # download eligibility list (GitHub + IPFS fallback)
+  $ zkmist fetch                        # download eligibility list (GitHub Releases)
   $ zkmist prove                        # generate ZK proof locally
        │
   ┌────┴────────────┐
@@ -350,7 +350,7 @@ See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 | CLI | Rust, [clap](https://docs.rs/clap), [alloy](https://github.com/alloy-rs/alloy) |
 | Smart Contracts | Solidity 0.8.28, [Foundry](https://book.getfoundry.sh/), [OpenZeppelin](https://openzeppelin.com/contracts/) |
 | On-chain Verification | [risc0-ethereum](https://github.com/risc0/risc0-ethereum) Groth16 verifier |
-| Eligibility Data | [Google BigQuery](https://cloud.google.com/bigquery), IPFS, GitHub Releases |
+| Eligibility Data | [Google BigQuery](https://cloud.google.com/bigquery), GitHub Releases |
 
 ---
 

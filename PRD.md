@@ -260,7 +260,7 @@ Deduplicate & Normalize
     │   • Sort lexicographically
     ▼
 Final Eligibility List
-        Published to: IPFS (CID pinned), GitHub release
+        Published to: GitHub Release
 ```
 
 ### 5.3 Merkle Tree
@@ -295,7 +295,7 @@ This convention MUST be identical in the guest program, CLI tree builder, and an
 
 ### 5.4 Eligibility List Format
 
-Published as chunked files on IPFS + GitHub mirror:
+Published as chunked files on GitHub Releases:
 
 ```
 eligibility/
@@ -354,7 +354,7 @@ eligibility/
 ┌─────────────────────────────────────────────────────────────┐
 │                      PUBLISHED DATA                         │
 │                                                             │
-│  Eligibility List (~64.1M addresses) on IPFS                 │
+│  Eligibility List (~64.1M addresses) on GitHub Releases      │
 │  Merkle Root hardcoded in contract                          │
 │  Guest program source on GitHub                             │
 │                                                             │
@@ -365,7 +365,7 @@ eligibility/
 │                  CLAIMANT'S LOCAL MACHINE                    │
 │                                                             │
 │  $ zkmist prove                                             │
-│    ① Download eligibility list (IPFS, ~1.3 GB)             │
+│    ① Download eligibility list (GitHub, ~1.3 GB)             │
 │    ② Stream-build Merkle tree (processes all ~64.1M leaves, ~4 GB RAM) │
 │    ③ Enter private key (hidden) + recipient address         │
 │    ④ RISC Zero zkVM generates STARK proof                   │
@@ -636,7 +636,7 @@ fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 ### 6.6 Claim Flow (Step-by-Step)
 
-1. **Download eligibility list** — `zkmist fetch` downloads from IPFS (~1.3 GB). Cached locally.
+1. **Download eligibility list** — `zkmist fetch` downloads from GitHub Releases (~1.3 GB). Cached locally.
 
 2. **Generate proof** — `zkmist prove`:
    - Prompts for private key (hidden input)
@@ -878,7 +878,7 @@ contract ZKMAirdrop {
 ### 8.1 Commands
 
 ```
-zkmist fetch                  Download eligibility list from IPFS (~1.3 GB). Builds and caches the Merkle tree locally so `prove` doesn't need to rebuild it. Falls back to GitHub mirror if IPFS is unavailable.
+zkmist fetch                  Download eligibility list from GitHub Releases (~1.3 GB). Builds and caches the Merkle tree locally so `prove` doesn't need to rebuild it.
 zkmist prove                  Generate ZK proof (interactive). Uses the cached Merkle tree from `fetch` — does not rebuild from scratch.
 zkmist submit <proof.json>    Submit proof to ZKMAirdrop contract
 zkmist verify <proof.json>    Verify proof locally: validates the STARK proof and checks that the journal contains the expected merkleRoot, nullifier, and recipient
@@ -976,7 +976,7 @@ Cannot:
 | Crypto | `k256`, `tiny-keccak`, `light-poseidon`, `ark-bn254` |
 | CLI | Rust |
 | Chain | Base (8453) |
-| Data | IPFS + GitHub |
+| Data | GitHub Releases |
 
 ### 8.7 `zkmist check` Privacy Note
 
@@ -1014,7 +1014,7 @@ Cannot:
 | Measure | Details |
 |---------|--------|
 | Private key stays local | zkVM runs entirely on claimant's machine |
-| No server dependency | All data on IPFS |
+| No server dependency | All data on GitHub Releases |
 | No trusted setup | STARK-based |
 | Deterministic nullifier | Prevents double-claim |
 | Front-running impossible | Recipient committed to proof |
@@ -1071,7 +1071,7 @@ Since both the smart contracts and the guest program (`imageId`) are immutable, 
 |-----------|--------|----------|
 | First-come, first-served (1M cap) | Early claimants have guaranteed access; latecomers may be locked out | ✅ By design |
 | Technical barrier (CLI, 4 GB RAM) | Users without technical skill or adequate hardware are excluded | ✅ By design — acts as Sybil filter |
-| Bandwidth requirement (1.3 GB download) | Users with slow or expensive internet are disadvantaged | ✅ Accepted — mitigated by IPFS mirroring and relayer ecosystem |
+| Bandwidth requirement (1.3 GB download) | Users with slow or expensive internet are disadvantaged | ✅ Accepted — mitigated by relayer ecosystem |
 | Information asymmetry | Those who hear about ZKMist first have a major advantage | ✅ Accepted — community-driven discovery is part of the model |
 | Contract wallets excluded | Multisigs and Safes appear in the list but cannot claim | ✅ Accepted — see §5.1 note |
 
@@ -1096,9 +1096,9 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | Adversary | Why out of scope |
 |-----------|-----------------|
 | **Compromised claimant machine** | If malware runs on the claimant's machine, no protocol-level defense exists. The private key is exposed at OS level. Mitigated by recommending verification of CLI binary checksums. |
-| **IPFS censorship / unavailability** | Eligibility list is mirrored on GitHub. Community can re-pin on IPFS. No single point of failure. |
+| **GitHub censorship / unavailability** | Eligibility list is hosted on GitHub Releases. Community can mirror on other platforms. |
 | **Base chain liveness** | ZKMist relies on Base for transaction ordering and execution. If Base is down, claims cannot be submitted, but the claim window deadline is based on block timestamps, not wall-clock time. |
-| **Network-level surveillance** | Claimants should use Tor/VPN if they want to hide their IP from IPFS gateways or RPC providers. This is a user-side concern, not a protocol concern. |
+| **Network-level surveillance** | Claimants should use Tor/VPN if they want to hide their IP from GitHub or RPC providers. This is a user-side concern, not a protocol concern. |
 
 ---
 
@@ -1124,7 +1124,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | **Contract** | Fully immutable, no admin |
 | **Eligibility** | ≥0.004 ETH gas fees, mainnet, before 2026-01-01 |
 | **Qualified** | 64,116,228 addresses |
-| **Data** | IPFS + GitHub |
+| **Data** | GitHub Releases |
 
 ---
 
@@ -1133,7 +1133,7 @@ This section consolidates the security-relevant adversaries, their capabilities,
 | # | Milestone | Duration |
 |---|-----------|----------|
 | 1 | Final BigQuery extraction & validation | Week 1 |
-| 2 | Merkle tree build + publish to IPFS | Week 2 |
+| 2 | Merkle tree build + publish to GitHub Releases | Week 2 |
 | 3 | RISC Zero guest program + testing | Weeks 2–3 |
 | 4 | Smart contracts (ZKMToken + ZKMAirdrop) | Weeks 3–4 |
 | 5 | CLI tool (fetch → prove → submit) | Weeks 3–4 |
@@ -1213,7 +1213,7 @@ The user always generates a **RISC Zero STARK proof** locally. The deployed `Ris
 ### C. Architecture
 
 ```
-  IPFS (eligibility list)
+  GitHub Releases (eligibility list)
        │
        ▼
   Local CLI
