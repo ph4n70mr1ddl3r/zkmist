@@ -394,7 +394,7 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // Prove with Groth16 compression for on-chain verification (~510K gas)
     let prover = risc0_zkvm::default_prover();
     let prove_info = prover
-        .prove(env, &guest_elf)
+        .prove_with_opts(env, &guest_elf, &risc0_zkvm::ProverOpts::groth16())
         .map_err(|e| format!("zkVM proving failed: {}", e))?;
 
     let receipt = &prove_info.receipt;
