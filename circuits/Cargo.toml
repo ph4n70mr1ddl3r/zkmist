@@ -1,0 +1,16 @@
+[package]
+name = "zkmist-circuits"
+version = "0.1.0"
+edition = "2021"
+description = "Halo2-KZG circuits for ZKMist V2 anonymous airdrop claims"
+
+[dependencies]
+halo2_proofs = "0.3.0"
+halo2curves = "0.6.0"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+ff = "0.13"
+group = "0.13"
+
+[dev-dependencies]
+rand = "0.8"

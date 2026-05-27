@@ -2,25 +2,11 @@
 
 Thank you for your interest in ZKMist! This project is fully community-owned — contributions are welcome and encouraged.
 
-> **Note:** ZKMist V2 uses Halo2-KZG circuits instead of RISC Zero. See [V2_PLAN.md](./V2_PLAN.md)
-> for the V2 architecture. The instructions below cover both V1 and V2 development.
+> **Note:** ZKMist V2 (Halo2-KZG) is planned but not yet implemented. See [V2_PLAN.md](./V2_PLAN.md)
+> for the V2 architecture. The instructions below cover V1 (RISC Zero), which is the current
+> deployed version.
 
 ## Quick Start
-
-### V2 (Halo2 — recommended)
-
-```shell
-git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git
-cd zkmist
-
-# Build the CLI
- cargo build --release -p zkmist-cli
-
-# Build and test circuits
-cargo test -p zkmist-circuits
-```
-
-### V1 (RISC Zero — legacy)
 
 ```shell
 git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git
@@ -31,6 +17,10 @@ cargo build --release -p zkmist-cli
 
 # Build the guest program (requires cargo-risczero)
 cargo risczero build --manifest-path guest/Cargo.toml
+
+# Run tests
+cargo test -p zkmist-merkle-tree
+cargo test -p zkmist-cli --bin zkmist
 ```
 
 ## Development Setup
@@ -92,7 +82,8 @@ When modifying code, be aware of these cross-component invariants that **must** 
 
 6. **Test vectors** — PRD Appendix D defines expected outputs for a known private key. All implementations must reproduce these exact values. Run the relevant tests after any change to hashing or address derivation.
 
-7. **⚠️ Guest program immutability** — Contracts are deployed on Base mainnet with a fixed `imageId` (SHA-256 of the guest binary). **Any change to `guest/src/main.rs` or `guest/Cargo.toml` changes the image ID, which will cause ALL proofs to be rejected by the on-chain verifier.** Do NOT modify the guest program source code unless you are intentionally preparing for a new deployment. Comments are safe to add; code changes are not. Suggestions for future versions are annotated with `NOTE (V2)` comments in the source.
+7. **⚠️ Guest program immutability** — Contracts are deployed on Base mainnet with a fixed `imageId` (SHA-256 of the guest binary). **Any change to `guest/src/main.rs` or `guest/Cargo.toml` changes the image ID, which will cause ALL proofs to be rejected by the on-chain verifier.** Do NOT modify the guest program source code unless you are intentionally preparing for a new deployment. Comments are safe to add; code changes are not.
+8. **V2 circuit invariants** — When implementing V2 (Halo2), the same Poseidon parameters, leaf encoding, nullifier domain (`"ZKMist_V2_NULLIFIER"`), and Merkle path direction conventions apply. The V2 circuit must reproduce the exact same Poseidon outputs as the `light-poseidon` crate for test vectors to match.
 
 ## Pull Request Process
 

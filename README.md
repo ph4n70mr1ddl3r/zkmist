@@ -4,9 +4,9 @@
 
 [![Contracts Deployed](https://img.shields.io/badge/contracts-live-brightgreen)](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **🚀 V2 Now Available!** ZKMist V2 uses Halo2-KZG circuits for **~10-30 second proof generation**
-> (vs ~50 minutes in V1). Same eligibility, same privacy, new token contract.
-> See [V2_PLAN.md](./V2_PLAN.md) for the full architecture and migration guide.
+> **📋 V2 Planned.** A Halo2-KZG redesign is planned that would reduce proof generation from
+> ~50 min to ~10-30 sec. See [V2_PLAN.md](./V2_PLAN.md) for the architecture. V1 (RISC Zero)
+> is the current and deployed version — all claiming instructions below use V1.
 
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
@@ -88,6 +88,7 @@ A relayer or observer cannot link the qualified address to the receiving address
 - **RISC Zero toolchain** — `curl -L https://risczero.com/install | bash && rzup install rust`
 - **~4 GB RAM** for Merkle tree construction
 - **~3 GB disk** for eligibility list
+- **~2 GB RAM** for proof generation (30–90 min proving time)
 
 ### Build
 
@@ -341,11 +342,22 @@ See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 
 ---
 
+## V2 (Halo2-KZG) Status
+
+> **⚠️ V2 is planned but not yet implemented.** The current (and deployed) version is V1 (RISC Zero).
+>
+> The [V2_PLAN.md](./V2_PLAN.md) describes a redesign using Halo2-KZG custom circuits that would reduce
+> proof generation from ~50 minutes to ~10-30 seconds. No V2 code exists yet — the plan is the design spec.
+>
+> V1 and V2 would be separate token contracts with independent supplies. V1 contracts remain deployed on Base.
+
+---
+
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| ZK Proofs | [RISC Zero zkVM](https://risczero.com/) v3.0.5 (STARK → Groth16) |
+| ZK Proofs | [RISC Zero zkVM](https://risczero.com/) v3.0.5 (STARK → Groth16) — **V2 (Halo2) planned** |
 | Merkle Tree | Poseidon hash (BN254) via [light-poseidon](https://github.com/dmpierre/poseidon) v0.4 |
 | CLI | Rust, [clap](https://docs.rs/clap), [alloy](https://github.com/alloy-rs/alloy) |
 | Smart Contracts | Solidity 0.8.28, [Foundry](https://book.getfoundry.sh/), [OpenZeppelin](https://openzeppelin.com/contracts/) |

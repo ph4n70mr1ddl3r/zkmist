@@ -1,9 +1,9 @@
 # ZKMist (ZKM) — Step-by-Step Claim Guide
 
-> **🚀 V2 Available:** This guide describes the V1 (RISC Zero) claiming process.
-> For the V2 (Halo2-KZG) claiming process with **~10-30 second proof generation**, see
-> [V2_PLAN.md](./V2_PLAN.md) and the updated claiming instructions there.
-> V1 and V2 are separate token contracts — you can claim through either.
+> **🚀 V2 Planned:** This guide describes the V1 (RISC Zero) claiming process.
+> A V2 (Halo2-KZG) redesign is planned that would reduce proof generation to
+> **~10-30 seconds**. V2 is not yet implemented — see [V2_PLAN.md](./V2_PLAN.md).
+> V1 and V2 would be separate token contracts.
 
 A detailed walkthrough for claiming your **10,000 ZKM** tokens via the ZKMist privacy-preserving airdrop on Base.
 
@@ -64,7 +64,7 @@ The eligibility list is published on GitHub Releases. You'll download it in Step
 
 | Resource | Minimum |
 |----------|---------|
-| **RAM** | ~4 GB (for Merkle tree construction) |
+| **RAM** | ~4 GB (for Merkle tree construction + ~2 GB for proof generation) |
 | **Disk space** | ~3 GB (eligibility list + Merkle tree cache + proof files) |
 | **Internet** | To download ~1.3 GB eligibility list (one time) |
 
@@ -227,7 +227,7 @@ After confirming the inputs, the zkVM runs locally:
 
 [4/4] Generating proof...
        Guest: zkmist-claim-v1 | Cycles: 2,847,331
-       ████████████████████████████████ done (45s)
+       ████████████████████████████████ done (45 min)
 
        ✓ Proof saved: ./zkmist_proof_YYYY-MM-DD.json
 
@@ -237,7 +237,7 @@ After confirming the inputs, the zkVM runs locally:
        Or send to any relayer.
 ```
 
-**Time:** ~1–2 minutes for Merkle tree reconstruction, then ~30–90 seconds for proof generation.
+**Time:** ~1–2 minutes for Merkle tree reconstruction, then ~30–90 minutes for STARK proof generation (single-threaded). The CLI will warn you before starting this step.
 
 **Output:** A proof file saved to your current directory (e.g., `zkmist_proof_2026-05-24.json`).
 

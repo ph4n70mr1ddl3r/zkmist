@@ -1,8 +1,8 @@
 # ZKMist V2 — Architecture Redesign Plan
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Date:** 2026-05-27  
-**Status:** Draft  
+**Status:** Planning (secp256k1 spike in progress)  
 **Author:** ZKMist Community  
 
 ---
@@ -767,7 +767,9 @@ zkmist/
 | Crate | Version | Purpose |
 |-------|---------|---------|
 | `halo2_proofs` | 0.3.0 | Halo2 proof system (PSE fork, KZG backend) |
-| `halo2curves` | 0.1.0 | BN254 curve primitives for Halo2 |
+| `halo2curves` | 0.6.0 | BN254 curve primitives for Halo2 |
+| `ff` | 0.13 | Field trait (halo2curves backend) |
+| `group` | 0.13 | Group trait (halo2curves backend) |
 | `snark-verifier` | 0.1.0 | Solidity proof encoding for on-chain verification |
 | `halo2-solidity-verifier` | (tool) | Auto-generates `Halo2Verifier.sol` from verification key |
 
@@ -806,8 +808,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-halo2_proofs = { version = "0.3.0", features = ["circuit-params"] }
-halo2curves = { version = "0.1.0" }
+halo2_proofs = "0.3.0"
+halo2curves = "0.6.0"
+ff = "0.13"
+group = "0.13"
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 num-bigint = "0.4"
@@ -817,7 +821,6 @@ hex = "0.4"
 
 [dev-dependencies]
 rand = "0.8"
-proptest = "1"
 ```
 
 ### 12.5 cli/Cargo.toml (updated)
@@ -837,8 +840,8 @@ clap = { version = "4", features = ["derive"] }
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
 zkmist-circuits = { path = "../circuits" }
 zkmist-merkle-tree = { path = "../merkle-tree" }
-halo2_proofs = { version = "0.3.0" }
-halo2curves = { version = "0.1.0" }
+halo2_proofs = "0.3.0"
+halo2curves = "0.6.0"
 ark-bn254 = "0.5"
 light-poseidon = "0.4"
 k256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
@@ -1273,4 +1276,76 @@ Target: **k=19** (good balance of proving time and gas cost).
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-05-27 | Initial V2 plan |
-| 1.1 | 2026-05-27 | Review fixes: clean break from prior approach, add require() on verifier, proof length validation, pin dependency versions, expand secp256k1 timeline, add benchmarking task, remove insecure fallback, simplify gas tables |
+| 1.2 | 2026-05-27 | Spike results: validated halo2_proofs 0.3.0 + halo2curves 0.6.0, corrected API differences, added circuits/ crate with passing tests |
+
+---
+
+## Appendix E: Halo2 API Spike Results (2026-05-27)
+
+The `circuits/` crate contains a validated spike that exercises the full Halo2-KZG pipeline.
+All 7 tests pass, including real KZG proof generation and verification on BN254.
+
+### Validated Dependencies
+
+| Crate | Version | Status |
+|-------|---------|--------|
+| `halo2_proofs` | 0.3.0 | ✅ Compiles and works |
+| `halo2curves` | 0.6.0 | ✅ Compiles and works |
+| `ark-bn254` | 0.5 | ✅ Interop with halo2curves confirmed |
+| `ff` | 0.13 | Required for field trait |
+| `group` | 0.13 | Required for group trait |
+
+### API Differences from Tutorials
+
+The PSE Halo2 v0.3.0 has several API differences from the tutorials and examples
+found online (which often target the ZCash Halo2 or newer PSE versions):
+
+| Feature | Expected | Actual |
+|---------|----------|--------|
+| `Circuit::Params` associated type | Present | **Not in trait** |
+| `circuit-params` feature | Exists | **Does not exist** |
+| `meta.lookup()` args | `(name, closure)` | `(closure)` only |
+| `meta.lookup_table()` | `lookup_table(name)` | **`lookup_table_column()`** |
+| `query_fixed()` args | `(col, rotation)` | **`(col)` only** — per-region |
+| `region.instance_cell()` | Method | **Not available**; use `assign_advice_from_instance` |
+| `TranscriptReadBuffer` | Type | Use **`Blake2bRead::init()`** |
+| Curve type param | `Bn256` | **`G1Affine`** |
+| `region.constrain_equal` with instance | `instance.cur()` | **`assign_advice_from_instance`** then constrain |
+
+### Field Element Interoperability
+
+`halo2curves::bn256::Fr` and `ark_bn254::Fr` are the **same field** (BN254 scalar field).
+- `halo2curves` uses **little-endian** representation (`to_repr()`)
+- `ark-bn254` uses **big-endian** representation (`into_bigint().to_bytes_be()`)
+- Conversion: reverse bytes from one to the other
+- **This is critical for Poseidon interop** — the V2 circuit will use halo2curves Fr
+  internally but must match the existing merkle-tree crate's ark-bn254 Fr outputs.
+
+### Proof Size
+
+Trivial circuit (k=9, 512 rows): **1,600 bytes** proof.
+Full ZKMist V2 circuit (k=19, ~500K rows) is estimated at **500-800 bytes**.
+
+### Spike Test Results
+
+```
+test trivial::tests::test_api_surface_documentation ... ok
+test trivial::tests::test_field_interop ... ok
+test trivial::tests::test_trivial_mock_valid ... ok
+test trivial::tests::test_trivial_mock_wrong_input ... ok
+test trivial::tests::test_multiply_mock_valid ... ok
+test trivial::tests::test_multiply_mock_wrong_result ... ok
+test trivial::tests::test_real_kzg_proof_and_verify ... ok
+
+test result: ok. 7 passed; 0 failed
+```
+
+### Risks Updated After Spike
+
+| Risk | Before Spike | After Spike |
+|------|-------------|-------------|
+| halo2_proofs API compatibility | Unknown | ✅ Resolved — API mapped, tests pass |
+| halo2curves/ark-bn254 interop | Unknown | ✅ Resolved — same field, different endianness |
+| KZG proof generation works | Unknown | ✅ Resolved — 1.6KB proof in 2.5s |
+| Dependency version conflicts | Unknown | ✅ Resolved — pinned 0.3.0/0.6.0 |
+| secp256k1 gadget feasibility | High risk | ⚠️ Still high — needs dedicated implementation spike |

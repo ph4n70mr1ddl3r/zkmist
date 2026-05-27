@@ -4,5 +4,6 @@ members = [
     "cli",
     "merkle-tree",
     "tools",
+    "circuits",
 ]
 resolver = "2"
