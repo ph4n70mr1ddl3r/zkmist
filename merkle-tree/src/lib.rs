@@ -527,6 +527,35 @@ mod tests {
         );
     }
 
+    /// Shared test addresses used across multiple tests.
+    const TEST_ADDRESSES: [[u8; 20]; 5] = [
+        // PRD test vector address
+        [
+            0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+            0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+        ],
+        // Address 0x0000...0001 (edge case)
+        [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ],
+        // Address 0xFFff...ffFF (edge case)
+        [
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ],
+        // Arbitrary address
+        [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00, 0x11, 0x22, 0x33, 0x44,
+        ],
+        // Another arbitrary address
+        [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
+        ],
+    ];
+
     /// End-to-end integration test: build a small tree, generate proof, verify.
     ///
     /// Uses a reduced tree depth (4 levels, 16 leaves) for fast test execution.
@@ -534,65 +563,15 @@ mod tests {
     /// proof generation → proof verification → root match.
     #[test]
     fn test_end_to_end_merkle_proof() {
-        // Test addresses (arbitrary valid Ethereum addresses)
-        let addresses: [[u8; 20]; 5] = [
-            // PRD test vector address
-            [
-                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
-            ],
-            // Address 0x0000...0001 (edge case)
-            [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            ],
-            // Address 0xFFff...ffFF (edge case)
-            [
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            ],
-            // Arbitrary address
-            [
-                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
-                0xff, 0x00, 0x11, 0x22, 0x33, 0x44,
-            ],
-            // Another arbitrary address
-            [
-                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
-            ],
-        ];
-
-        // Build tree with custom depth
-        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
-
         let test_depth = 4usize;
-        let num_leaves = 1usize << test_depth;
-
-        // Build leaves
-        let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
-        for addr in &addresses {
-            leaves.push(hash_leaf(addr, &mut leaf_hasher));
-        }
-        leaves.resize(num_leaves, PADDING_SENTINEL);
-
-        // Build tree layers
-        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
-        for level in 0..test_depth {
-            let prev = &layers[level];
-            let mut next = Vec::with_capacity(prev.len() / 2);
-            for chunk in prev.chunks(2) {
-                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
-            }
-            layers.push(next);
-        }
-
-        let root = layers[test_depth][0];
+        let layers = build_tree_with_depth(&TEST_ADDRESSES, test_depth);
+        let root = tree_root(&layers);
         assert_ne!(root, [0u8; 32], "Root must not be zero");
 
+        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+
         // Generate and verify proof for each address
-        for (i, addr) in addresses.iter().enumerate() {
+        for (i, addr) in TEST_ADDRESSES.iter().enumerate() {
             let leaf = hash_leaf(addr, &mut leaf_hasher);
 
             // Generate proof
@@ -620,7 +599,7 @@ mod tests {
         assert_ne!(wrong_root, root, "Wrong leaf must not verify against root");
 
         // Negative test: wrong sibling should NOT produce the same root
-        let leaf = hash_leaf(&addresses[0], &mut leaf_hasher);
+        let leaf = hash_leaf(&TEST_ADDRESSES[0], &mut leaf_hasher);
         let mut bad_siblings = siblings.clone();
         bad_siblings[0] = [0xAAu8; 32]; // corrupt first sibling
         let bad_root = verify_merkle_proof(&leaf, &bad_siblings, &path_indices);
@@ -631,39 +610,13 @@ mod tests {
     #[test]
     fn test_tree_cache_roundtrip() {
         let addresses: [[u8; 20]; 3] = [
-            [
-                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
-            ],
-            [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            ],
-            [
-                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
-            ],
+            TEST_ADDRESSES[0],
+            TEST_ADDRESSES[1],
+            TEST_ADDRESSES[4],
         ];
 
-        // Build a small tree with custom depth
-        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
         let test_depth = 4usize;
-        let num_leaves = 1usize << test_depth;
-        let mut leaves: Vec<[u8; 32]> = addresses
-            .iter()
-            .map(|a| hash_leaf(a, &mut leaf_hasher))
-            .collect();
-        leaves.resize(num_leaves, PADDING_SENTINEL);
-        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
-        for level in 0..test_depth {
-            let prev = &layers[level];
-            let mut next = Vec::with_capacity(prev.len() / 2);
-            for chunk in prev.chunks(2) {
-                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
-            }
-            layers.push(next);
-        }
+        let layers = build_tree_with_depth(&addresses, test_depth);
         let root_before = tree_root(&layers);
 
         // Serialize and deserialize
@@ -706,18 +659,9 @@ mod tests {
     #[test]
     fn test_streaming_matches_full() {
         let addresses: [[u8; 20]; 3] = [
-            [
-                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
-            ],
-            [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            ],
-            [
-                0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-                0x67, 0x89, 0xab, 0xcd, 0xef, 0x01,
-            ],
+            TEST_ADDRESSES[0],
+            TEST_ADDRESSES[1],
+            TEST_ADDRESSES[4],
         ];
 
         let test_depth = 4;
@@ -761,38 +705,11 @@ mod tests {
     /// consistent results for the PRD test vector address.
     #[test]
     fn test_build_tree_and_proof_prd_vector() {
-        let addresses: [[u8; 20]; 1] = [
-            // PRD test vector: derived from private key 0x0123...cdef
-            [
-                0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-                0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
-            ],
-        ];
-
-        // Build with reduced depth
-        let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-        let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+        let addresses: [[u8; 20]; 1] = [TEST_ADDRESSES[0]]; // PRD test vector
 
         let test_depth = 4usize;
-        let num_leaves = 1usize << test_depth;
-
-        let mut leaves: Vec<[u8; 32]> = addresses
-            .iter()
-            .map(|a| hash_leaf(a, &mut leaf_hasher))
-            .collect();
-        leaves.resize(num_leaves, PADDING_SENTINEL);
-
-        let mut layers: Vec<Vec<[u8; 32]>> = vec![leaves];
-        for level in 0..test_depth {
-            let prev = &layers[level];
-            let mut next = Vec::with_capacity(prev.len() / 2);
-            for chunk in prev.chunks(2) {
-                next.push(hash_interior(&chunk[0], &chunk[1], &mut interior_hasher));
-            }
-            layers.push(next);
-        }
-
-        let root = layers[test_depth][0];
+        let layers = build_tree_with_depth(&addresses, test_depth);
+        let root = tree_root(&layers);
 
         // Verify leaf hash matches PRD test vector
         let expected_leaf =

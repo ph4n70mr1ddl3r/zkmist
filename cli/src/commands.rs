@@ -888,50 +888,68 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             return Ok::<(), String>(());
         }
 
-        // Call totalClaims()
-        let total_claims_call = IZKMAirdrop::totalClaimsCall {};
-        let tx = alloy::rpc::types::transaction::TransactionRequest::default()
-            .to(contract)
-            .input(total_claims_call.abi_encode().into());
-        let resp = provider
-            .call(tx)
-            .await
-            .map_err(|e| format!("totalClaims call failed: {}", e))?;
-        let total_claims_return = IZKMAirdrop::totalClaimsCall::abi_decode_returns(&resp)
-            .map_err(|e| format!("totalClaims decode failed: {}", e))?;
+        // ── Fire independent RPC calls concurrently ─────────────────────
+        //
+        // totalClaims, isClaimWindowOpen, token(), and imageId() are all
+        // independent view calls — no data dependency between them.
+        // totalSupply() depends on token()'s result, so it's chained after.
+        // Using tokio::join! sends all requests in parallel, reducing latency
+        // from 4 sequential round-trips to 1 (plus 1 for totalSupply).
+
+        let total_claims_fut = async {
+            let call = IZKMAirdrop::totalClaimsCall {};
+            let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+                .to(contract)
+                .input(call.abi_encode().into());
+            let resp = provider.call(tx).await.map_err(|e| format!("totalClaims call failed: {}", e))?;
+            IZKMAirdrop::totalClaimsCall::abi_decode_returns(&resp)
+                .map_err(|e| format!("totalClaims decode failed: {}", e))
+        };
+
+        let is_open_fut = async {
+            let call = IZKMAirdrop::isClaimWindowOpenCall {};
+            let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+                .to(contract)
+                .input(call.abi_encode().into());
+            let resp = provider.call(tx).await.map_err(|e| format!("isClaimWindowOpen call failed: {}", e))?;
+            IZKMAirdrop::isClaimWindowOpenCall::abi_decode_returns(&resp)
+                .map_err(|e| format!("isClaimWindowOpen decode failed: {}", e))
+        };
+
+        let token_fut = async {
+            let call = IZKMAirdrop::tokenCall {};
+            let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+                .to(contract)
+                .input(call.abi_encode().into());
+            let resp = provider.call(tx).await.map_err(|e| format!("token() call failed: {}", e))?;
+            IZKMAirdrop::tokenCall::abi_decode_returns(&resp)
+                .map_err(|e| format!("token() decode failed: {}", e))
+        };
+
+        let image_id_fut = async {
+            let call = IZKMAirdrop::imageIdCall {};
+            let tx = alloy::rpc::types::transaction::TransactionRequest::default()
+                .to(contract)
+                .input(call.abi_encode().into());
+            provider.call(tx).await
+                .ok()
+                .and_then(|resp| IZKMAirdrop::imageIdCall::abi_decode_returns(&resp).ok())
+        };
+
+        let (total_claims_result, is_open_result, token_result, on_chain_image_id) =
+            tokio::join!(total_claims_fut, is_open_fut, token_fut, image_id_fut);
+
+        let total_claims_return = total_claims_result?;
         let total_claims_u64: u64 = total_claims_return.try_into().map_err(
             |e: alloy::primitives::ruint::FromUintError<u64>| {
                 format!("totalClaims overflow: {}", e)
             },
         )?;
 
-        // Call isClaimWindowOpen()
-        let is_open_call = IZKMAirdrop::isClaimWindowOpenCall {};
-        let tx2 = alloy::rpc::types::transaction::TransactionRequest::default()
-            .to(contract)
-            .input(is_open_call.abi_encode().into());
-        let resp2 = provider
-            .call(tx2)
-            .await
-            .map_err(|e| format!("isClaimWindowOpen call failed: {}", e))?;
-        let is_open_return = IZKMAirdrop::isClaimWindowOpenCall::abi_decode_returns(&resp2)
-            .map_err(|e| format!("isClaimWindowOpen decode failed: {}", e))?;
-        let is_open: bool = is_open_return;
+        let is_open: bool = is_open_result?;
+        let token_addr: alloy::primitives::Address = token_result?;
 
-        // Call token() on airdrop to get the ZKMToken address
-        let token_call = IZKMAirdrop::tokenCall {};
-        let token_tx = alloy::rpc::types::transaction::TransactionRequest::default()
-            .to(contract)
-            .input(token_call.abi_encode().into());
-        let token_resp = provider
-            .call(token_tx)
-            .await
-            .map_err(|e| format!("token() call failed: {}", e))?;
-        let token_addr_return = IZKMAirdrop::tokenCall::abi_decode_returns(&token_resp)
-            .map_err(|e| format!("token() decode failed: {}", e))?;
-        let token_addr: alloy::primitives::Address = token_addr_return;
-
-        // Call totalSupply() on ZKMToken for actual on-chain supply (accounts for burns)
+        // Call totalSupply() on ZKMToken (depends on token_addr from above)
         let supply_call = IZKMToken::totalSupplyCall {};
         let supply_tx = alloy::rpc::types::transaction::TransactionRequest::default()
             .to(token_addr)
@@ -940,9 +958,8 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             .call(supply_tx)
             .await
             .map_err(|e| format!("totalSupply() call failed: {}", e))?;
-        let supply_return = IZKMToken::totalSupplyCall::abi_decode_returns(&supply_resp)
+        let on_chain_supply = IZKMToken::totalSupplyCall::abi_decode_returns(&supply_resp)
             .map_err(|e| format!("totalSupply() decode failed: {}", e))?;
-        let on_chain_supply = supply_return;
 
         let remaining = MAX_CLAIMS.saturating_sub(total_claims_u64);
         let minted_supply = total_claims_u64 * CLAIM_AMOUNT;
@@ -984,25 +1001,17 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             }
         );
 
-        // Query on-chain imageId for reference (helps users verify their guest binary)
-        let image_id_call = IZKMAirdrop::imageIdCall {};
-        let image_id_tx = alloy::rpc::types::transaction::TransactionRequest::default()
-            .to(contract)
-            .input(image_id_call.abi_encode().into());
-        if let Ok(image_id_resp) = provider.call(image_id_tx).await {
-            if let Ok(on_chain_image_id) =
-                IZKMAirdrop::imageIdCall::abi_decode_returns(&image_id_resp)
-            {
-                let id_bytes: [u8; 32] = on_chain_image_id.into();
-                eprintln!("Image ID:       0x{}", hex::encode(id_bytes));
+        // Display on-chain imageId (already fetched concurrently above)
+        if let Some(id) = on_chain_image_id {
+            let id_bytes: [u8; 32] = id.into();
+            eprintln!("Image ID:       0x{}", hex::encode(id_bytes));
 
-                // Cross-check against the CLI's known image ID
-                let known_hex = KNOWN_IMAGE_ID.strip_prefix("0x").unwrap_or(KNOWN_IMAGE_ID);
-                if let Ok(expected) = hex::decode(known_hex) {
-                    if expected.len() == 32 && id_bytes != expected.as_slice() {
-                        eprintln!("⚠️  On-chain image ID differs from CLI's KNOWN_IMAGE_ID");
-                        eprintln!("   CLI expected: {}", KNOWN_IMAGE_ID);
-                    }
+            // Cross-check against the CLI's known image ID
+            let known_hex = KNOWN_IMAGE_ID.strip_prefix("0x").unwrap_or(KNOWN_IMAGE_ID);
+            if let Ok(expected) = hex::decode(known_hex) {
+                if expected.len() == 32 && id_bytes != expected.as_slice() {
+                    eprintln!("⚠️  On-chain image ID differs from CLI's KNOWN_IMAGE_ID");
+                    eprintln!("   CLI expected: {}", KNOWN_IMAGE_ID);
                 }
             }
         }

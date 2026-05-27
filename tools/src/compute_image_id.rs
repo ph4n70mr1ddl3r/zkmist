@@ -6,22 +6,49 @@
 
 use std::path::Path;
 
+/// Primary default path (Docker reproducible build output with .bin extension).
+const DEFAULT_PATH: &str = "target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest.bin";
+
+/// Fallback search paths, tried in order when the primary path doesn't exist.
+/// Covers the standard `cargo risczero build` output locations and naming
+/// conventions (with and without .bin extension, Docker vs local release).
+const FALLBACK_PATHS: &[&str] = &[
+    // Docker reproducible build output (no .bin extension)
+    "target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest",
+    // Standard local release build output
+    "target/riscv32im-risc0-zkvm-elf/release/zkmist-guest",
+    // Standard local debug build output
+    "target/riscv32im-risc0-zkvm-elf/debug/zkmist-guest",
+];
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let default_path = "target/riscv32im-risc0-zkvm-elf/docker/zkmist-guest.bin";
     let path = if args.len() > 1 {
-        &args[1]
+        // User-provided path — use exactly as given
+        args[1].clone()
     } else {
-        default_path
+        // Try primary path, then fallbacks
+        match resolve_guest_path() {
+            Some(p) => p,
+            None => {
+                eprintln!("Guest binary not found. Tried:");
+                eprintln!("  {}", DEFAULT_PATH);
+                for p in FALLBACK_PATHS {
+                    eprintln!("  {}", p);
+                }
+                eprintln!();
+                eprintln!("Build the guest with: cargo risczero build --manifest-path guest/Cargo.toml");
+                std::process::exit(1);
+            }
+        }
     };
 
-    if !Path::new(path).exists() {
+    if !Path::new(&path).exists() {
         eprintln!("File not found: {}", path);
-        eprintln!("Build the guest with: cargo risczero build --manifest-path guest/Cargo.toml");
         std::process::exit(1);
     }
 
-    let elf_data = std::fs::read(path).expect("Failed to read guest binary");
+    let elf_data = std::fs::read(&path).expect("Failed to read guest binary");
 
     // Verify R0BF format
     if elf_data.len() >= 4 && &elf_data[0..4] == b"R0BF" {
@@ -49,4 +76,18 @@ fn main() {
     eprintln!();
     eprintln!("Use this as IMAGE_ID for contract deployment:");
     eprintln!("  export IMAGE_ID=0x{}", hex_id);
+}
+
+/// Resolve the guest binary path by trying the primary default, then fallbacks.
+fn resolve_guest_path() -> Option<String> {
+    if Path::new(DEFAULT_PATH).exists() {
+        return Some(DEFAULT_PATH.to_string());
+    }
+    for fallback in FALLBACK_PATHS {
+        if Path::new(fallback).exists() {
+            eprintln!("NOTE: Using guest binary at fallback path: {}", fallback);
+            return Some(fallback.to_string());
+        }
+    }
+    None
 }
