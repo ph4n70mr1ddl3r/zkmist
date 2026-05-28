@@ -2,25 +2,20 @@
 //!
 //! Generates Halo2-KZG proofs using the `zkmist-circuits` crate.
 //! The full circuit enforces: secp256k1 key→address, Poseidon leaf hash,
-//! 26-level Merkle proof, nullifier, and non-zero recipient.
+//! 26-level Merkle proof, nullifier (V2 domain), and non-zero recipient.
 
 use std::path::Path;
 
+use ark_ff::{BigInteger, PrimeField};
 use halo2curves::bn256::Fr;
-use ark_ff::PrimeField;
 use zkmist_circuits::{
     ZKMistV2Claim,
-    poseidon::ark_to_halo2,
-    secp256k1::decompose_key_to_bits,
     merkle::TREE_DEPTH,
+    nullifier::domain_field_element,
+    poseidon::ark_to_halo2,
+    secp256k1::native_derive_address,
 };
-use zkmist_merkle_tree::{
-    build_tree_streaming,
-    compute_nullifier,
-    hash_leaf,
-    verify_merkle_proof,
-    PADDING_SENTINEL,
-};
+use zkmist_merkle_tree::compute_nullifier_v2;
 
 use crate::constants::*;
 use crate::types::ProofFile;
@@ -52,13 +47,36 @@ pub fn generate_v2_proof(
         &ark_bn254::Fr::from_be_bytes_mod_order(merkle_root),
     );
 
-    // Compute nullifier
+    // Compute nullifier using V2 domain separator ("ZKMist_V2_NULLIFIER").
+    // This MUST match the domain used inside the Halo2 circuit's nullifier gadget.
     let mut interior_hasher = crate::helpers::ark_poseidon_hasher(2)
         .ok_or("Failed to create Poseidon hasher")?;
-    let nullifier_bytes = compute_nullifier(private_key, &mut interior_hasher);
+    let nullifier_bytes = compute_nullifier_v2(private_key, &mut interior_hasher);
     let nullifier_fr = ark_to_halo2(
         &ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes),
     );
+
+    // Cross-check: the circuit's native nullifier must match
+    {
+        let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(private_key));
+        let domain = domain_field_element();
+        let circuit_nullifier_params = zkmist_circuits::PoseidonParams::new_circom(2);
+        let circuit_nullifier = zkmist_circuits::poseidon::native_poseidon(
+            &circuit_nullifier_params,
+            &[key_field, domain],
+        );
+        let circuit_nullifier_ark = zkmist_circuits::poseidon::halo2_to_ark(&circuit_nullifier);
+        let cli_nullifier_ark = ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes);
+        if circuit_nullifier_ark != cli_nullifier_ark {
+            let circuit_bytes: Vec<u8> = circuit_nullifier_ark.into_bigint().to_bytes_be().to_vec();
+            let cli_bytes: Vec<u8> = cli_nullifier_ark.into_bigint().to_bytes_be().to_vec();
+            return Err(format!(
+                "Nullifier mismatch between CLI and circuit! CLI: 0x{}, Circuit: 0x{}",
+                hex::encode(cli_bytes),
+                hex::encode(circuit_bytes),
+            ));
+        }
+    }
 
     // Recipient as field element (left-padded to 32 bytes)
     let mut recipient_padded = [0u8; 32];
@@ -81,7 +99,7 @@ pub fn generate_v2_proof(
     use halo2_proofs::{
         poly::commitment::Params,
         plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
-        transcript::{Blake2bWrite, Blake2bRead, Challenge255},
+        transcript::{Blake2bRead, Blake2bWrite, Challenge255},
     };
     use halo2curves::bn256::G1Affine;
 
@@ -130,7 +148,7 @@ pub fn generate_v2_proof(
     // ── Save proof file ─────────────────────────────────────────────
     let proof_file = ProofFile {
         version: 2,
-        proof_format_version: 2, // V2 = Halo2-KZG
+        proof_format_version: PROOF_FORMAT_VERSION_V2,
         proof: hex::encode(&proof_bytes),
         journal: String::new(), // V2 has no journal — public inputs are direct
         nullifier: hex::encode(nullifier_bytes),
@@ -160,26 +178,39 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         return Err(format!("Expected version 2 proof, got {}", proof.version));
     }
 
+    if proof.proof_format_version != PROOF_FORMAT_VERSION_V2 {
+        return Err(format!(
+            "Expected proof format version {}, got {}",
+            PROOF_FORMAT_VERSION_V2, proof.proof_format_version
+        ));
+    }
+
     eprintln!("Verifying Halo2-KZG proof...");
     eprintln!("  Nullifier: 0x{}", proof.nullifier);
     eprintln!("  Recipient: 0x{}", proof.recipient);
 
-    // TODO: Load verification key and verify the proof
-    // For now, validate the proof file structure
+    // Validate proof file structure
     if proof.proof.is_empty() {
         return Err("Proof is empty".to_string());
     }
 
-    eprintln!("✅ Proof file structure valid (V2 Halo2-KZG)");
-    eprintln!("   Full cryptographic verification requires the verification key.");
-    Ok(())
-}
+    let proof_bytes = hex::decode(&proof.proof)
+        .map_err(|e| format!("Invalid proof hex: {}", e))?;
 
-/// Generate the Solidity verifier contract from the verification key.
-pub fn generate_solidity_verifier(_output_path: &Path) -> Result<(), String> {
-    Err(
-        "Solidity verifier generation requires the completed circuit VK. \
-         Run `cargo run --bin gen-verifier` after building the circuit."
-            .to_string(),
-    )
+    if proof_bytes.len() < 400 || proof_bytes.len() > 1200 {
+        return Err(format!(
+            "Proof length {} outside expected range [400, 1200]",
+            proof_bytes.len()
+        ));
+    }
+
+    // TODO: Load verification key and verify the proof cryptographically.
+    // This requires serializing/deserializing the VK, which depends on the
+    // final circuit layout being frozen. Once the secp256k1 and Keccak
+    // gadgets are production-ready, the VK can be serialized and embedded
+    // in the CLI for local verification.
+    eprintln!("✅ Proof file structure valid (V2 Halo2-KZG, {} bytes)", proof_bytes.len());
+    eprintln!("   Full cryptographic verification requires the serialized VK.");
+    eprintln!("   The on-chain Halo2Verifier will perform full verification on submit.");
+    Ok(())
 }

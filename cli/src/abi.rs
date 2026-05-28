@@ -7,6 +7,10 @@
 alloy::sol! {
     function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient);
 
+    /// V2 claim ABI: claim(bytes proof, bytes32 nullifier, address recipient)
+    /// No journal — public inputs are passed directly as calldata.
+    function claimV2(bytes calldata proof, bytes32 nullifier, address recipient);
+
     interface IZKMAirdrop {
         function token() external view returns (address);
         function totalClaims() external view returns (uint256);

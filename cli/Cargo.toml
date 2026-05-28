@@ -1,6 +1,6 @@
 [package]
 name = "zkmist-cli"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 
 [[bin]]
@@ -12,16 +12,17 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 # Ethereum interaction
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
-# ZK proof generation (V1 — RISC Zero)
+# ZK proof generation — V1 (RISC Zero)
 risc0-zkvm = { version = "3.0.5", features = ["client", "prove"] }
-# ZK proof generation (V2 — Halo2)
+bincode = "1"
+# ZK proof generation — V2 (Halo2)
 zkmist-circuits = { path = "../circuits" }
 halo2_proofs = "0.3.0"
 halo2curves = "0.6.0"
 rand = "0.8"
 # Merkle tree (shared library)
 zkmist-merkle-tree = { path = "../merkle-tree" }
-# Crypto primitives used by CLI
+# Crypto primitives
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 light-poseidon = "0.4"
@@ -34,7 +35,6 @@ tokio = { version = "1", features = ["full"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"

@@ -25,6 +25,10 @@ pub const PADDING_SENTINEL: [u8; 32] = [0xFFu8; 32];
 /// and requires redeploying the contract with a new image ID.
 pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V1_NULLIFIER";
 
+/// V2 nullifier domain separator. Changing this invalidates all existing V2
+/// proofs and requires redeploying the V2 contract.
+pub const NULLIFIER_DOMAIN_V2: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
+
 /// Hash a 20-byte Ethereum address into a Poseidon leaf.
 /// The address is zero-padded to 32 bytes (left-padded with zeros).
 pub fn hash_leaf(addr: &[u8; 20], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
@@ -59,9 +63,31 @@ pub fn field_element_to_bytes(elem: Fr) -> [u8; 32] {
 /// cross-version nullifier collisions. This MUST produce the same output as
 /// the guest program's `compute_nullifier`.
 pub fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
+    compute_nullifier_with_domain(key, NULLIFIER_DOMAIN, hasher)
+}
+
+/// Compute the V2 claim nullifier using the V2 domain separator.
+///
+/// V2 uses `ZKMist_V2_NULLIFIER` for domain separation from V1 nullifiers.
+/// This ensures V1 and V2 claims produce distinct nullifiers even for the
+/// same private key.
+pub fn compute_nullifier_v2(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] {
+    compute_nullifier_with_domain(key, NULLIFIER_DOMAIN_V2, hasher)
+}
+
+/// Compute a nullifier with an arbitrary domain separator.
+///
+/// `domain` must be ≤ 32 bytes. It is left-aligned and zero-padded to 32 bytes
+/// before being interpreted as a BN254 field element via `from_be_bytes_mod_order`.
+pub fn compute_nullifier_with_domain(
+    key: &[u8; 32],
+    domain: &[u8],
+    hasher: &mut Poseidon<Fr>,
+) -> [u8; 32] {
     let key_elem = Fr::from_be_bytes_mod_order(key);
     let mut domain_padded = [0u8; 32];
-    domain_padded[..NULLIFIER_DOMAIN.len()].copy_from_slice(NULLIFIER_DOMAIN);
+    let len = domain.len().min(32);
+    domain_padded[..len].copy_from_slice(&domain[..len]);
     let domain_elem = Fr::from_be_bytes_mod_order(&domain_padded);
     field_element_to_bytes(
         hasher
@@ -525,6 +551,37 @@ mod tests {
             leaf, nullifier,
             "Nullifier must differ from a simple leaf hash of the key"
         );
+    }
+
+    #[test]
+    fn test_nullifier_v2_differs_from_v1() {
+        let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key = [0x42u8; 32];
+        let v1 = compute_nullifier(&key, &mut hasher);
+        let v2 = compute_nullifier_v2(&key, &mut hasher);
+        assert_ne!(v1, v2, "V2 nullifier must differ from V1 for the same key");
+    }
+
+    #[test]
+    fn test_nullifier_v2_deterministic() {
+        let mut h1 = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let mut h2 = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key = [0xABu8; 32];
+        let n1 = compute_nullifier_v2(&key, &mut h1);
+        let n2 = compute_nullifier_v2(&key, &mut h2);
+        assert_eq!(n1, n2, "V2 nullifier must be deterministic");
+    }
+
+    #[test]
+    fn test_nullifier_with_domain_arbitrary() {
+        let mut hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid params");
+        let key = [0x01u8; 32];
+        let n_custom = compute_nullifier_with_domain(&key, b"CUSTOM_DOMAIN", &mut hasher);
+        let n_v1 = compute_nullifier(&key, &mut hasher);
+        let n_v2 = compute_nullifier_v2(&key, &mut hasher);
+        assert_ne!(n_custom, n_v1, "Custom domain nullifier must differ from V1");
+        assert_ne!(n_custom, n_v2, "Custom domain nullifier must differ from V2");
+        assert_ne!(n_v1, n_v2, "V1 and V2 nullifiers must differ");
     }
 
     /// Shared test addresses used across multiple tests.

@@ -59,8 +59,8 @@ pub const AIRDROP_CONTRACT_V2: &str = "0x000000000000000000000000000000000000dEa
 /// V2 nullifier domain separator.
 pub const NULLIFIER_DOMAIN_V2: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 
-/// V2 proof format version.
-pub const PROOF_FORMAT_VERSION_V2: &str = "halo2-kzg-v1";
+/// V2 proof format version (u64, matching ProofFile.proof_format_version).
+pub const PROOF_FORMAT_VERSION_V2: u64 = 2;
 
 /// ZKMAirdrop contract address on Base (deployed, live).
 ///

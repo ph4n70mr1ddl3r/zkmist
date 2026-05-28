@@ -69,7 +69,7 @@ contract ZKMAirdropV2 {
         //   - merkleRoot: ensures the address is in the eligibility tree
         //   - nullifier: prevents double-claims, derived from private key
         //   - recipient: front-running protection (bound inside the proof)
-        (bool success, ) = verifier.staticcall(
+        (bool success, bytes memory retval) = verifier.staticcall(
             abi.encodeWithSignature("verify(bytes,uint256[3])", proof, publicInputs)
         );
         require(success, "Verifier call failed");

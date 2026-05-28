@@ -51,6 +51,11 @@ enum Commands {
         /// Ensure the file has restricted permissions (e.g., chmod 600).
         #[arg(long)]
         key_file: Option<String>,
+
+        /// Use Halo2-KZG (V2) proving instead of RISC Zero (V1).
+        /// V2 is ~100-300x faster (~10-30 sec vs ~50 min).
+        #[arg(long)]
+        v2: bool,
     },
 
     /// Submit proof to ZKMAirdrop contract on Base.
@@ -95,7 +100,13 @@ fn main() {
         Commands::Fetch {
             no_verify,
         } => cmd_fetch(no_verify),
-        Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
+        Commands::Prove { key_file, v2 } => {
+            if v2 {
+                cmd_prove_v2(key_file.as_deref())
+            } else {
+                cmd_prove(key_file.as_deref())
+            }
+        }
         Commands::Submit {
             proof_file,
             rpc_url,

@@ -7,8 +7,8 @@ use std::io::{self, Write};
 
 use sha2::{Digest as Sha2Digest, Sha256};
 use zkmist_merkle_tree::{
-    build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
-    verify_merkle_proof, PADDING_SENTINEL,
+    build_tree_streaming, compute_nullifier, compute_nullifier_v2, deserialize_proof,
+    hash_leaf, serialize_proof, verify_merkle_proof, PADDING_SENTINEL, TREE_DEPTH,
 };
 
 use crate::abi::*;
@@ -480,6 +480,166 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+// ── Command: prove-v2 (Halo2-KZG) ──────────────────────────────────────
+
+pub fn cmd_prove_v2(key_file: Option<&str>) -> Result<(), String> {
+    // ── Step 1: Credentials ──────────────────────────────────────────────
+    eprintln!("[1/4] Enter credentials:");
+    let private_key = if let Some(path) = key_file {
+        eprintln!("      Reading private key from: {}", path);
+        read_private_key_from_file(path)?
+    } else {
+        read_private_key()?
+    };
+    let address = derive_address(&private_key)?;
+    eprintln!("      → Address: {}", format_address(&address));
+
+    // ── Step 2: Merkle proof (cached or streaming) ───────────────────────
+    eprintln!("[2/4] Preparing Merkle proof...");
+
+    let cache_path = proof_cache_path(&address);
+    let (root, siblings, path_indices) = if cache_path.exists() {
+        eprintln!("      Loading cached proof...");
+        let file = std::fs::File::open(&cache_path)
+            .map_err(|e| format!("Failed to open proof cache: {}", e))?;
+        let reader = std::io::BufReader::new(file);
+        let (cached_root, _leaf_index, cached_siblings, cached_path) =
+            deserialize_proof(reader).map_err(|e| format!("Failed to read proof cache: {}", e))?;
+
+        eprintln!("      ✓ Proof cache loaded ({} levels)", cached_siblings.len());
+        eprintln!("      Root: {}", format_bytes32(&cached_root));
+
+        if let Some(manifest) = load_manifest()? {
+            verify_root_against_manifest(&cached_root, &manifest)?;
+            eprintln!("      ✓ Root matches manifest");
+        }
+
+        (cached_root, cached_siblings, cached_path)
+    } else {
+        eprintln!("      No cached proof — building via streaming tree...");
+        eprintln!("      ⚠️  This requires ~2 GB RAM. The result will be cached for future use.");
+
+        let addresses = load_eligibility_list()?;
+        eprintln!("      Loaded {} eligible addresses", addresses.len());
+
+        let leaf_index = match addresses.binary_search(&address) {
+            Ok(idx) => idx,
+            Err(_) => {
+                return Err(format!(
+                    "Address {} is NOT in the eligibility tree.",
+                    format_address(&address)
+                ));
+            }
+        };
+
+        let (streaming_root, proof) = build_tree_streaming(&addresses, Some(leaf_index));
+        let (streaming_siblings, streaming_path) =
+            proof.ok_or("Streaming build failed to produce proof")?;
+
+        eprintln!("      ✓ Tree built ({} levels)", streaming_siblings.len());
+        eprintln!("      Root: {}", format_bytes32(&streaming_root));
+
+        if let Some(manifest) = load_manifest()? {
+            verify_root_against_manifest(&streaming_root, &manifest)?;
+            eprintln!("      ✓ Root matches manifest");
+        }
+
+        // Cache the proof
+        std::fs::create_dir_all(proofs_dir())
+            .map_err(|e| format!("Failed to create proofs dir: {}", e))?;
+        let file = std::fs::File::create(&cache_path)
+            .map_err(|e| format!("Failed to create proof cache: {}", e))?;
+        let writer = std::io::BufWriter::new(file);
+        serialize_proof(&streaming_root, leaf_index, &streaming_siblings, &streaming_path, writer)
+            .map_err(|e| format!("Failed to write proof cache: {}", e))?;
+
+        (streaming_root, streaming_siblings, streaming_path)
+    };
+
+    // Validate sibling count
+    let expected_depth = zkmist_merkle_tree::TREE_DEPTH;
+    if siblings.len() != expected_depth || path_indices.len() != expected_depth {
+        return Err(format!(
+            "Sibling/path count mismatch: {} siblings, {} path indices (expected {})",
+            siblings.len(), path_indices.len(), expected_depth
+        ));
+    }
+
+    // Verify Merkle proof locally
+    let mut leaf_hasher = ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
+    let leaf = hash_leaf(&address, &mut leaf_hasher);
+    let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
+    if computed_root != root {
+        return Err(format!(
+            "Merkle proof verification failed: {} != {}",
+            format_bytes32(&computed_root), format_bytes32(&root)
+        ));
+    }
+    eprintln!("      ✓ Merkle proof verified locally");
+
+    // Compute nullifier (V2 domain)
+    let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create interior hasher")?;
+    let nullifier = compute_nullifier_v2(&private_key, &mut interior_hasher);
+    eprintln!("      → Nullifier: {}", format_bytes32(&nullifier));
+
+    // ── Step 3: Recipient ────────────────────────────────────────────────
+    eprintln!("[3/4] Enter recipient:");
+    let recipient = read_recipient_address()?;
+    eprintln!("      → Recipient: {}", format_address(&recipient));
+
+    // ── Step 4: Halo2-KZG proving ────────────────────────────────────────
+    eprintln!("[4/4] Generating Halo2-KZG proof...");
+
+    eprintln!();
+    eprintln!("      ╔══════════════════════════════════════════════════════════╗");
+    eprintln!("      ║  Ready to generate Halo2-KZG proof (V2).               ║");
+    eprintln!("      ║  • Recipient: {}  ║", format_address(&recipient));
+    eprintln!("      ║  • Amount:    {} ZKM                           ║", CLAIM_AMOUNT);
+    eprintln!("      ║  • Duration:  ~10-30 seconds                           ║");
+    eprintln!("      ║  • ⚠️  RECIPIENT IS IRREVOCABLE after proof generation   ║");
+    eprintln!("      ╚══════════════════════════════════════════════════════════╝");
+    eprint!("      Proceed? [y/N] ");
+    io::stderr().flush().ok();
+    let mut confirm = String::new();
+    io::stdin()
+        .read_line(&mut confirm)
+        .map_err(|e| format!("Failed to read input: {}", e))?;
+    if confirm.trim().to_lowercase() != "y" && confirm.trim().to_lowercase() != "yes" {
+        return Err("Proof generation cancelled.".to_string());
+    }
+
+    // Convert siblings/path_indices to fixed arrays for the circuit
+    let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
+    let mut path_arr = [0u8; TREE_DEPTH];
+    for i in 0..TREE_DEPTH {
+        sibling_arr[i] = siblings[i];
+        path_arr[i] = path_indices[i];
+    }
+
+    // Generate V2 proof via Halo2
+    std::fs::create_dir_all(proofs_dir())
+        .map_err(|e| format!("Failed to create proofs dir: {}", e))?;
+    let timestamp = timestamp_string();
+    let proof_path = proofs_dir().join(format!("zkmist_v2_proof_{}.json", timestamp));
+
+    let nullifier_result = crate::halo2_prover::generate_v2_proof(
+        &private_key,
+        &sibling_arr,
+        &path_arr,
+        &root,
+        &recipient,
+        &proof_path,
+    )?;
+
+    eprintln!();
+    eprintln!("      ✓ V2 proof saved: {}", proof_path.display());
+    eprintln!("      {} ZKM will be minted to {} on claim.", CLAIM_AMOUNT, format_address(&recipient));
+    eprintln!("      Run: zkmist submit {}", proof_path.display());
+    eprintln!("      Or send to any relayer.");
+
+    Ok(())
+}
+
 // ── Command: submit ──────────────────────────────────────────────────────
 
 pub fn cmd_submit(
@@ -517,6 +677,11 @@ pub fn cmd_submit(
              Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment."
                 .to_string(),
         );
+    }
+
+    // Route to V1 or V2 submission based on proof version
+    if proof.version == 2 {
+        return cmd_submit_v2(&proof, rpc_url, private_key_hex, key_file);
     }
 
     // Warn (but don't reject) if proof format version is newer than what we support.
@@ -647,6 +812,133 @@ pub fn cmd_submit(
 
         if receipt.status() {
             eprintln!("  ✅ Claim successful!");
+            if let Some(block) = receipt.block_number {
+                eprintln!("  Block: {}", block);
+            }
+            eprintln!("  Gas used: {}", receipt.gas_used);
+        } else {
+            return Err("Transaction reverted on-chain".to_string());
+        }
+
+        Ok::<(), String>(())
+    })?;
+
+    Ok(())
+}
+
+// ── V2 submit helper ──────────────────────────────────────────────────
+
+fn cmd_submit_v2(
+    proof: &ProofFile,
+    rpc_url: Option<&str>,
+    private_key_hex: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<(), String> {
+    eprintln!("  Proof type: Halo2-KZG (V2)");
+
+    // Reject placeholder addresses
+    if proof.contract_address == "0x000000000000000000000000000000000000dEaD"
+        || proof.contract_address.parse::<alloy::primitives::Address>()
+            == Ok(alloy::primitives::Address::ZERO)
+    {
+        return Err(
+            "V2 airdrop contract has not been deployed yet. \
+             Update AIRDROP_CONTRACT_V2 in cli/src/constants.rs after deployment."
+                .to_string(),
+        );
+    }
+
+    let submitter_key = if let Some(key_hex) = private_key_hex {
+        let hex_str = key_hex.strip_prefix("0x").unwrap_or(key_hex);
+        if hex_str.len() != 64 {
+            return Err("Invalid private key length (expected 64 hex chars)".to_string());
+        }
+        hex_str.to_string()
+    } else if let Some(path) = key_file {
+        let key = read_private_key_from_file(path)?;
+        hex::encode(key)
+    } else {
+        eprint!("Submitter private key (for gas, hidden): ");
+        io::stderr().flush().ok();
+        let input =
+            rpassword::read_password().map_err(|e| format!("Failed to read input: {}", e))?;
+        input.strip_prefix("0x").unwrap_or(&input).to_string()
+    };
+
+    let rpc = rpc_url.unwrap_or(DEFAULT_RPC_URL);
+    eprintln!("Connecting to Base via: {}", rpc);
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime error: {}", e))?;
+    rt.block_on(async {
+        use alloy::primitives::{Address, Bytes, FixedBytes};
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::signers::local::PrivateKeySigner;
+
+        let signer: PrivateKeySigner = submitter_key
+            .parse()
+            .map_err(|e| format!("Invalid private key: {}", e))?;
+        let url: reqwest::Url = rpc.parse().map_err(|e| format!("Invalid RPC URL: {}", e))?;
+        let provider = ProviderBuilder::new().wallet(signer).connect_http(url);
+
+        let contract_address: Address = proof.contract_address.parse().map_err(|e| {
+            format!("Invalid contract address '{}': {}", proof.contract_address, e)
+        })?;
+        let nullifier_bytes: FixedBytes<32> = format!("0x{}", proof.nullifier)
+            .parse()
+            .map_err(|e| format!("Invalid nullifier: {}", e))?;
+        let recipient_address: Address = format!("0x{}", proof.recipient)
+            .parse()
+            .map_err(|e| format!("Invalid recipient: {}", e))?;
+
+        // V2 claim ABI: claim(bytes proof, bytes32 nullifier, address recipient)
+        let proof_bytes: Bytes = hex::decode(&proof.proof)
+            .map_err(|e| format!("Invalid proof hex: {}", e))?
+            .into();
+
+        // ABI-encode the V2 claim call
+        // selector: keccak256("claim(bytes,bytes32,address)") first 4 bytes
+        let call = crate::abi::claimV2Call {
+            proof: proof_bytes,
+            nullifier: nullifier_bytes,
+            recipient: recipient_address,
+        };
+        let call_data = call.abi_encode();
+
+        let base_tx = alloy::rpc::types::transaction::TransactionRequest::default()
+            .to(contract_address)
+            .input(call_data.into());
+
+        let gas_limit = match provider.estimate_gas(base_tx.clone()).await {
+            Ok(base) => {
+                let buffered = (base as u128 * 12 / 10) as u64;
+                eprintln!("  Gas estimate: {} (using {} with 20% buffer)", base, buffered);
+                buffered
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Gas estimation failed: {}", e);
+                eprintln!("      Using fallback: {}", FALLBACK_GAS_LIMIT);
+                FALLBACK_GAS_LIMIT
+            }
+        };
+
+        let mut tx = base_tx;
+        tx.gas = Some(gas_limit);
+
+        eprintln!("Submitting V2 claim transaction (gas: {})...", gas_limit);
+        let pending = provider
+            .send_transaction(tx)
+            .await
+            .map_err(|e| format!("Failed to send transaction: {}", e))?;
+        let tx_hash = *pending.tx_hash();
+        eprintln!("  TX hash: {}", tx_hash);
+
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| format!("Failed to get receipt: {}", e))?;
+
+        if receipt.status() {
+            eprintln!("  ✅ V2 claim successful!");
             if let Some(block) = receipt.block_number {
                 eprintln!("  Block: {}", block);
             }
