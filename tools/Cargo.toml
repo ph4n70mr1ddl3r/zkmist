@@ -27,7 +27,9 @@ halo2curves = "0.6.0"
 risc0-zkvm = { version = "3.0.5", default-features = false, optional = true }
 
 ff = "0.13"
+snark-verifier = { version = "0.2", optional = true }
 
 [features]
 default = ["v1"]
 v1 = ["risc0-zkvm"]
+v2 = ["snark-verifier"]
