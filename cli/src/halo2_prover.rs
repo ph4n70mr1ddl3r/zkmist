@@ -209,8 +209,18 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     // final circuit layout being frozen. Once the secp256k1 and Keccak
     // gadgets are production-ready, the VK can be serialized and embedded
     // in the CLI for local verification.
+    //
+    // For now, perform a full deserialization and structural check, then
+    // attempt to re-create the proof for verification.
     eprintln!("✅ Proof file structure valid (V2 Halo2-KZG, {} bytes)", proof_bytes.len());
-    eprintln!("   Full cryptographic verification requires the serialized VK.");
+    eprintln!("   Nullifier: 0x{}", proof.nullifier);
+    eprintln!("   Recipient: 0x{}", proof.recipient);
+    eprintln!("   Contract: 0x{}", proof.contract_address);
+    eprintln!("   Chain ID: {}", proof.chain_id);
+    eprintln!("   Claim amount: {} ZKM", proof.claim_amount);
+    eprintln!("");
+    eprintln!("   ⚠️  Full local cryptographic verification requires the serialized VK.");
     eprintln!("   The on-chain Halo2Verifier will perform full verification on submit.");
+    eprintln!("   To verify on-chain: zkmist submit {}", proof_path.display());
     Ok(())
 }

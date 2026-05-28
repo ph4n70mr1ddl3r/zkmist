@@ -477,9 +477,11 @@ impl<'a> KeccakChip<'a> {
             if rc_bits[i] {
                 // Bit is 1: XOR with a constant 1 cell
                 // We need an AssignedCell with value Fr::ONE
-                let one = region.assign_advice(
+                // Assign constant 1 to advice[4] (not advice[0]) to avoid
+            // conflicting with xor_pair which copies `a` into advice[0].
+            let one = region.assign_advice(
                     || "iota_one",
-                    self.config.advice[0],
+                    self.config.advice[4],
                     *offset,
                     || Value::known(Fr::ONE),
                 )?;

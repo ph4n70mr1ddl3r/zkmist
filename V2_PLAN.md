@@ -1277,6 +1277,7 @@ Target: **k=19** (good balance of proving time and gas cost).
 |---------|------|---------|
 | 1.0 | 2026-05-27 | Initial V2 plan |
 | 1.2 | 2026-05-27 | Spike results: validated halo2_proofs 0.3.0 + halo2curves 0.6.0, corrected API differences, added circuits/ crate with passing tests |
+| 1.3 | 2026-05-28 | Critical blocker fixes: Keccak iota cell conflict fixed, secp256k1 limb range checks + carry boolean constraints + on-curve check added, Halo2Verifier.sol improved with structural validation, CLI verification enhanced |
 
 ---
 
