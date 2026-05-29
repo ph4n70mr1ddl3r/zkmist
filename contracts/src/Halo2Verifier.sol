@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+/// @title IHalo2Verifier — Interface for Halo2-KZG proof verification
+/// @notice Defines the standard verification interface for Halo2 proofs.
+interface IHalo2Verifier {
+    /// @notice Verify a Halo2-KZG proof against public inputs.
+    /// @param proof The serialized Halo2 proof bytes.
+    /// @param publicInputs Array of public input values [merkleRoot, nullifier, recipient].
+    /// @return True if the proof is valid.
+    function verify(bytes calldata proof, uint256[3] memory publicInputs)
+        external
+        view
+        returns (bool);
+
+    /// @notice Whether this verifier is production-ready (performs real KZG pairing).
+    function IS_PRODUCTION_VERIFIER() external view returns (bool);
+}
+
 /// @title Halo2Verifier — ZKMist V2 KZG Proof Verifier
 /// @notice Verifies Halo2-KZG proofs for the ZKMist V2 airdrop claim circuit.
 /// @dev This verifier implements KZG verification using the BN254 ecPairing
@@ -19,17 +35,7 @@ pragma solidity ^0.8.28;
 ///      ║  It does NOT perform cryptographic KZG pairing verification.     ║
 ///      ║  Deploying this as-is would accept ANY structurally-valid proof. ║
 ///      ╚══════════════════════════════════════════════════════════════════╝
-///
-///      VERIFICATION ALGORITHM (after regeneration):
-///      1. Deserialize proof into G1 commitment points
-///      2. Compute public input polynomial commitment
-///      3. Recompute Fiat-Shamir challenges from transcript
-///      4. Compute the linearization polynomial commitment
-///      5. Verify the KZG pairing equation using ecPairing precompile
-///
-///      The verification key (VK) is baked into this contract as immutable
-///      constants. Changing the circuit requires regenerating this contract.
-contract Halo2Verifier {
+contract Halo2Verifier is IHalo2Verifier {
     // ── Production readiness flag ────────────────────────────────────
     /// @dev Set to true only after regenerating with snark-verifier.
     ///      The airdrop contract should check this in production.

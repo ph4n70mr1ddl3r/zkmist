@@ -7,13 +7,11 @@
 use std::path::Path;
 
 use ark_ff::{BigInteger, PrimeField};
-use halo2curves::bn256::Fr;
 use zkmist_circuits::{
     ZKMistV2Claim,
     merkle::TREE_DEPTH,
     nullifier::domain_field_element,
     poseidon::ark_to_halo2,
-    secp256k1::native_derive_address,
 };
 use zkmist_merkle_tree::compute_nullifier_v2;
 

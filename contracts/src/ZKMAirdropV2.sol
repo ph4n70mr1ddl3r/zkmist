@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {ZKMTokenV2} from "./ZKMTokenV2.sol";
-import {Halo2Verifier} from "./Halo2Verifier.sol";
+import {IHalo2Verifier} from "./Halo2Verifier.sol";
 
 /// @title ZKMAirdropV2 — Privacy-preserving ZKM token claim contract (Halo2)
 /// @notice Fully immutable. No admin, no owner, no pause, no upgrade.
@@ -10,8 +10,8 @@ import {Halo2Verifier} from "./Halo2Verifier.sol";
 ///      Public inputs are passed directly as calldata — no journal parsing needed.
 contract ZKMAirdropV2 {
     ZKMTokenV2 public immutable token;
-    /// @notice Halo2 verifier contract. Exposes verify(proof, publicInputs) returns (bool).
-    address public immutable verifier;
+    /// @notice Halo2 verifier contract. Implements IHalo2Verifier.
+    IHalo2Verifier public immutable verifier;
     bytes32 public immutable merkleRoot;
 
     uint256 public constant CLAIM_AMOUNT = 10_000e18;         // 10,000 ZKM
@@ -36,7 +36,7 @@ contract ZKMAirdropV2 {
         bytes32 _merkleRoot
     ) {
         token = ZKMTokenV2(_token);
-        verifier = _verifier;
+        verifier = IHalo2Verifier(_verifier);
         merkleRoot = _merkleRoot;
     }
 
@@ -55,7 +55,7 @@ contract ZKMAirdropV2 {
         // ⚠️ Production safety: reject claims if verifier is not production-ready.
         // Remove this check after regenerating Halo2Verifier.sol with snark-verifier.
         require(
-            Halo2Verifier(verifier).IS_PRODUCTION_VERIFIER(),
+            verifier.IS_PRODUCTION_VERIFIER(),
             "Verifier not production-ready"
         );
 
@@ -77,12 +77,7 @@ contract ZKMAirdropV2 {
         //   - merkleRoot: ensures the address is in the eligibility tree
         //   - nullifier: prevents double-claims, derived from private key
         //   - recipient: front-running protection (bound inside the proof)
-        (bool success, bytes memory retval) = verifier.staticcall(
-            abi.encodeWithSignature("verify(bytes,uint256[3])", proof, publicInputs)
-        );
-        require(success, "Verifier call failed");
-        bool valid = abi.decode(retval, (bool));
-        require(valid, "Invalid proof");
+        require(verifier.verify(proof, publicInputs), "Invalid proof");
 
         // Mark claimed and mint
         usedNullifiers[nullifier] = true;

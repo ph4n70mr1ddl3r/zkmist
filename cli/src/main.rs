@@ -12,6 +12,7 @@ mod abi;
 mod commands;
 mod constants;
 mod download;
+#[cfg(feature = "v1")]
 mod guest;
 mod halo2_prover;
 mod helpers;
@@ -22,6 +23,7 @@ pub use abi::*;
 pub use commands::*;
 pub use constants::*;
 pub use download::*;
+#[cfg(feature = "v1")]
 pub use guest::*;
 pub use helpers::*;
 pub use types::*;

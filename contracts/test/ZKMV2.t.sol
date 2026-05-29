@@ -20,7 +20,6 @@ contract ZKMV2Test is Test {
 
     function setUp() public {
         verifier = new Halo2Verifier();
-        // Deploy token with predicted airdrop address
         token = new ZKMTokenV2(MINTER);
     }
 

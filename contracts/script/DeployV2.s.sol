@@ -4,9 +4,10 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {ZKMTokenV2} from "../src/ZKMTokenV2.sol";
 import {ZKMAirdropV2} from "../src/ZKMAirdropV2.sol";
+import {Halo2Verifier} from "../src/Halo2Verifier.sol";
 
 /// @title DeployV2 — Deploy ZKMist V2 contracts (Halo2-KZG)
-/// @notice Deploys ZKMTokenV2, Halo2Verifier, and ZKMAirdropV2 to Base.
+/// @notice Deploys Halo2Verifier, ZKMTokenV2, and ZKMAirdropV2 to Base.
 ///
 /// Usage:
 ///   forge script script/DeployV2.s.sol --rpc-url $BASE_RPC_URL --broadcast
@@ -14,6 +15,28 @@ import {ZKMAirdropV2} from "../src/ZKMAirdropV2.sol";
 /// Prerequisites:
 ///   1. Halo2Verifier.sol must be generated first via gen-verifier tool
 ///   2. Deployer must have ETH on Base for gas
+
+// ── Step 1: Deploy the verifier separately ──────────────────────────────
+
+contract DeployVerifier is Script {
+    function run() external {
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(deployerKey);
+
+        Halo2Verifier verifier = new Halo2Verifier();
+        console.log("Halo2Verifier deployed at:", address(verifier));
+        console.log("  IS_PRODUCTION_VERIFIER:", verifier.IS_PRODUCTION_VERIFIER());
+        console.log("  VK_HASH:", vm.toString(verifier.VK_HASH()));
+
+        vm.stopBroadcast();
+
+        console.log("");
+        console.log("Set VERIFIER_ADDRESS in DeployV2 to: %s", address(verifier));
+    }
+}
+
+// ── Step 2: Deploy token + airdrop (after verifier is deployed) ─────────
+
 contract DeployV2 is Script {
     // ── Configuration ────────────────────────────────────────────────────
 
@@ -21,8 +44,7 @@ contract DeployV2 is Script {
     bytes32 constant MERKLE_ROOT =
         0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
-    /// Halo2Verifier contract address (deploy separately, then set here).
-    /// Generate with: cargo run --bin gen-verifier
+    /// Halo2Verifier contract address — set after deploying with DeployVerifier.
     address constant VERIFIER_ADDRESS = address(0); // TODO: set after deploying Halo2Verifier
 
     // ── Deployment ───────────────────────────────────────────────────────
@@ -33,16 +55,17 @@ contract DeployV2 is Script {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerKey);
 
-        // Step 1: Deploy ZKMTokenV2
-        // The minter will be set to the predicted airdrop address.
-        // With CREATE, if deployer nonce is N, token is at nonce N,
-        // and airdrop is at nonce N+1 (or use CREATE2 for exact prediction).
         address deployer = vm.addr(deployerKey);
-        address predictedAirdrop = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 1);
+        uint256 nonce = vm.getNonce(deployer);
 
+        // Predict airdrop address: token is deployed at nonce, airdrop at nonce+1
+        address predictedAirdrop = vm.computeCreateAddress(deployer, nonce + 1);
+
+        // Step 1: Deploy ZKMTokenV2 (minter = predicted airdrop address)
         ZKMTokenV2 token = new ZKMTokenV2(predictedAirdrop);
         console.log("ZKMTokenV2 deployed at:", address(token));
         console.log("  Minter (predicted airdrop):", predictedAirdrop);
+        console.log("  Max supply:", token.MAX_SUPPLY());
 
         // Step 2: Deploy ZKMAirdropV2
         ZKMAirdropV2 airdrop = new ZKMAirdropV2(
@@ -70,24 +93,10 @@ contract DeployV2 is Script {
         console.log("ZKMAirdropV2:  ", address(airdrop));
         console.log("Halo2Verifier: ", VERIFIER_ADDRESS);
         console.log("Chain:         Base (8453)");
-    }
-}
-
-/// @title DeployVerifier — Deploy only the Halo2Verifier contract
-/// @notice Deploy this first, then set VERIFIER_ADDRESS in DeployV2.
-contract DeployVerifier is Script {
-    function run() external {
-        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
-        vm.startBroadcast(deployerKey);
-
-        // TODO: Import and deploy Halo2Verifier.sol
-        // This will be auto-generated from the circuit verification key.
-        // Halo2Verifier verifier = new Halo2Verifier();
-        // console.log("Halo2Verifier deployed at:", address(verifier));
-
-        console.log("TODO: Deploy Halo2Verifier after generating from VK");
-        console.log("Run: cargo run --bin gen-verifier -- --vk <vk_file> --output contracts/src/Halo2Verifier.sol");
-
-        vm.stopBroadcast();
+        console.log("");
+        console.log("Next steps:");
+        console.log("  1. Verify contracts on BaseScan");
+        console.log("  2. Test claim on Base Sepolia first");
+        console.log("  3. Update cli/src/constants.rs with contract addresses");
     }
 }

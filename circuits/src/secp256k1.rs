@@ -641,6 +641,18 @@ impl<'a> Secp256k1Chip<'a> {
     ///
     /// Strategy: add limb-by-limb using s_add gates, then reduce mod p
     /// by conditionally subtracting p (witness-guided).
+    ///
+    /// # Soundness
+    ///
+    /// The s_add gate constrains BN254-level limb addition, but the modular
+    /// reduction (subtracting secp256k1 field prime p) is witness-guided —
+    /// the prover supplies the reduced result. Full soundness relies on the
+    /// final `check_on_curve` and `constrain_affine` checks at the end of
+    /// the circuit, which verify the computed EC point satisfies y² = x³ + 7.
+    ///
+    /// For production use, consider using `field_add_carried` (which has
+    /// explicit carry constraints) or a proven non-native field arithmetic
+    /// library (e.g., `scroll-tech/halo2-secp256k1`).
     pub fn field_add(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -741,7 +753,7 @@ impl<'a> Secp256k1Chip<'a> {
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        layouter.assign_region(
+        let result = layouter.assign_region(
             || "secp_field_add_carried",
             |mut region| {
                 let a_v: Value<[Fr; 4]> = a.values();
@@ -872,41 +884,10 @@ impl<'a> Secp256k1Chip<'a> {
             },
         )?;
 
-        // The result was already returned from the region above; re-extract it.
-        // Since the region returns the AssignedFieldElement, we need to re-derive.
-        // Re-derive the result from native computation.
-        let a_v: Value<[Fr; 4]> = a.values();
-        let b_v: Value<[Fr; 4]> = b.values();
-        let result_limbs = a_v.zip(b_v).map(|(a_v, b_v)| {
-            limbs_to_native(&a_v).add(&limbs_to_native(&b_v)).to_bn254_limbs()
-        });
-
-        // Re-assign result limbs in a new region to get cells
-        let result = layouter.assign_region(
-            || "secp_field_add_carried_result",
-            |mut region| {
-                let mut cells = Vec::new();
-                for i in 0..4 {
-                    let limb_val = result_limbs.map(|l| l[i]);
-                    let cell = region.assign_advice(
-                        || format!("result_limb_{}", i),
-                        self.config.advice[0],
-                        i,
-                        || limb_val,
-                    )?;
-                    cells.push(cell);
-                }
-                Ok(AssignedFieldElement {
-                    limbs: [
-                        cells[0].clone(),
-                        cells[1].clone(),
-                        cells[2].clone(),
-                        cells[3].clone(),
-                    ],
-                })
-            },
-        )?;
-
+        // Return the result from Region 1 directly — these are the SAME cells
+        // that the carry gate constrains. No re-derivation in a separate region.
+        // (Previously this re-derived the result in a new unconstrained region,
+        //  which broke the copy-constraint chain — a soundness bug.)
         Ok(result)
     }
 
@@ -915,6 +896,17 @@ impl<'a> Secp256k1Chip<'a> {
     /// Uses schoolbook decomposition: each pair (a[i], b[j]) is constrained
     /// with s_mul gates. Products are accumulated with s_add gates.
     /// The final result is reduced mod p (witness-guided).
+    ///
+    /// # Soundness
+    ///
+    /// The 16 schoolbook products are constrained via s_mul gates, and
+    /// accumulation uses s_add gates. However, the wide-to-narrow reduction
+    /// (from 8 limbs to 4 limbs mod secp256k1 field prime p) is witness-guided.
+    /// Full soundness is provided by the final `check_on_curve` and
+    /// `constrain_affine` checks.
+    ///
+    /// For production, consider adding constrained reduction with range
+    /// checks, or using a proven non-native field arithmetic library.
     pub fn field_mul(
         &self,
         layouter: &mut impl Layouter<Fr>,
