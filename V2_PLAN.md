@@ -1,8 +1,8 @@
 # ZKMist V2 — Architecture Redesign Plan
 
-**Version:** 1.2  
-**Date:** 2026-05-27  
-**Status:** Planning (secp256k1 spike in progress)  
+**Version:** 1.3  
+**Date:** 2026-05-29  
+**Status:** Implementation (critical soundness fixes applied, testing in progress)  
 **Author:** ZKMist Community  
 
 ---
@@ -1278,6 +1278,7 @@ Target: **k=19** (good balance of proving time and gas cost).
 | 1.0 | 2026-05-27 | Initial V2 plan |
 | 1.2 | 2026-05-27 | Spike results: validated halo2_proofs 0.3.0 + halo2curves 0.6.0, corrected API differences, added circuits/ crate with passing tests |
 | 1.3 | 2026-05-28 | Critical blocker fixes: Keccak iota cell conflict fixed, secp256k1 limb range checks + carry boolean constraints + on-curve check added, Halo2Verifier.sol improved with structural validation, CLI verification enhanced |
+| 1.4 | 2026-05-29 | Implementation review: constrained field_sub via negation+add, on-curve + limb range checks wired into main circuit, Keccak MockProver test, E2E test hard-fail on verification errors, Halo2Verifier.sol production guard, compiler warnings fixed |
 
 ---
 

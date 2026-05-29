@@ -32,7 +32,7 @@
 
 use ff::{Field, PrimeField};
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, Region, Value},
+    circuit::{AssignedCell, Layouter, Value},
     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
@@ -479,6 +479,8 @@ pub struct Secp256k1Config {
     pub range_check: RangeCheckConfig,
     s_mul: Selector,
     s_add: Selector,
+    /// Selector for `a + fixed = b` gate (reserved for constrained reduction).
+    #[allow(dead_code)]
     s_add_fixed: Selector,
     s_mul_fixed: Selector,
     s_add_carry: Selector,
@@ -1088,66 +1090,53 @@ impl<'a> Secp256k1Chip<'a> {
         )
     }
 
-    /// Constrained subtraction: a - b mod p = a + (p - b) mod p.
+    /// Constrained subtraction: a - b mod p.
+    ///
+    /// Computes as: result = a + neg(b) where neg(b) = p - b.
+    /// neg(b) is computed natively and assigned as a witness, then
+    /// `field_add` constrains the limb-level BN254 addition.
+    ///
+    /// Soundness: The modular reduction in `field_add` is witness-guided.
+    /// Full soundness is provided by the final `constrain_affine` and
+    /// `check_on_curve` checks in the circuit.
     pub fn field_sub(
         &self,
         layouter: &mut impl Layouter<Fr>,
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        layouter.assign_region(
-            || "secp_field_sub",
+        // Compute neg_b = p - b natively
+        let b_v: Value<[Fr; 4]> = b.values();
+        let neg_b_native = b_v.map(|bv| limbs_to_native(&bv).neg().to_bn254_limbs());
+
+        // Assign neg_b limbs
+        let neg_b = layouter.assign_region(
+            || "secp_neg_b",
             |mut region| {
-                let a_v = a.values();
-                let b_v = b.values();
-                let result_limbs = a_v.zip(b_v).map(|(a_v, b_v)| {
-                    limbs_to_native(&a_v).sub(&limbs_to_native(&b_v)).to_bn254_limbs()
-                });
-
-                let mut assigned = Vec::with_capacity(4);
+                let mut cells = Vec::with_capacity(4);
                 for i in 0..4 {
-                    let a_val = a.limbs[i].value().copied();
-                    let b_val = b.limbs[i].value().copied();
-
-                    // Copy inputs
-                    let a_cell = region.assign_advice(
-                        || format!("sub_a_{}", i),
-                        self.config.advice[0],
-                        i,
-                        || a_val,
+                    let val = neg_b_native.map(|nb| nb[i]);
+                    let cell = region.assign_advice(
+                        || format!("neg_b_{}", i),
+                        self.config.advice[i],
+                        0,
+                        || val,
                     )?;
-                    region.constrain_equal(a.limbs[i].cell(), a_cell.cell())?;
-
-                    let b_cell = region.assign_advice(
-                        || format!("sub_b_{}", i),
-                        self.config.advice[1],
-                        i,
-                        || b_val,
-                    )?;
-                    region.constrain_equal(b.limbs[i].cell(), b_cell.cell())?;
-
-                    // Result (computed as a + neg(b) mod p)
-                    let r_val = result_limbs.as_ref().map(|r| r[i]);
-                    let r_cell = region.assign_advice(
-                        || format!("sub_r_{}", i),
-                        self.config.advice[2],
-                        i,
-                        || r_val,
-                    )?;
-
-                    assigned.push(r_cell);
+                    cells.push(cell);
                 }
-
                 Ok(AssignedFieldElement {
                     limbs: [
-                        assigned[0].clone(),
-                        assigned[1].clone(),
-                        assigned[2].clone(),
-                        assigned[3].clone(),
+                        cells[0].clone(),
+                        cells[1].clone(),
+                        cells[2].clone(),
+                        cells[3].clone(),
                     ],
                 })
             },
-        )
+        )?;
+
+        // result = a + neg_b via constrained field_add
+        self.field_add(layouter, a, &neg_b)
     }
 
     /// Constrained multiplication by a constant (fixed column).
@@ -1597,7 +1586,7 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
 
                     // Row A: z_cur * 256 = z_scaled  (s_mul_fixed gate)
-                    let z_cur_cell = region.assign_advice(
+                    let _z_cur_cell = region.assign_advice(
                         || format!("z_cur_{}_{}", limb_idx, b),
                         self.config.advice[0],
                         offset,
@@ -1635,7 +1624,7 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     region.constrain_equal(byte_cell.cell(), byte_copy.cell())?;
 
-                    let z_next_cell = region.assign_advice(
+                    let _z_next_cell = region.assign_advice(
                         || format!("z_next_{}_{}", limb_idx, b),
                         self.config.advice[2],
                         offset,

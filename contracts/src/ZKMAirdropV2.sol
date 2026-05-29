@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {ZKMTokenV2} from "./ZKMTokenV2.sol";
+import {Halo2Verifier} from "./Halo2Verifier.sol";
 
 /// @title ZKMAirdropV2 — Privacy-preserving ZKM token claim contract (Halo2)
 /// @notice Fully immutable. No admin, no owner, no pause, no upgrade.
@@ -50,6 +51,13 @@ contract ZKMAirdropV2 {
     ) external {
         // Validate proof length
         require(proof.length >= MIN_PROOF_LENGTH && proof.length <= MAX_PROOF_LENGTH, "Invalid proof length");
+
+        // ⚠️ Production safety: reject claims if verifier is not production-ready.
+        // Remove this check after regenerating Halo2Verifier.sol with snark-verifier.
+        require(
+            Halo2Verifier(verifier).IS_PRODUCTION_VERIFIER(),
+            "Verifier not production-ready"
+        );
 
         // Check claim window
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");

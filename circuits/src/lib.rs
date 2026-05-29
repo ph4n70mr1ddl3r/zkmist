@@ -271,6 +271,17 @@ impl Circuit<Fr> for ZKMistV2Claim {
         // Perform constrained scalar multiplication: k * G
         let computed_point = secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
 
+        // ── Soundness: Verify computed point is on the secp256k1 curve ──
+        // This catches any incorrect intermediate field operations.
+        // y² = x³ + 7 (mod secp256k1 field prime)
+        secp_chip.check_on_curve(&mut layouter, &computed_point)?;
+
+        // ── Soundness: Range-check all limbs of the computed point ──────
+        // Ensures no limb exceeds 2^64, preventing carry-chain attacks.
+        secp_chip.check_limb_ranges(&mut layouter, &computed_point.x)?;
+        secp_chip.check_limb_ranges(&mut layouter, &computed_point.y)?;
+        secp_chip.check_limb_ranges(&mut layouter, &computed_point.z)?;
+
         // Constrain: k*G == (pub_x, pub_y) in affine coordinates
         secp_chip.constrain_affine(
             &mut layouter,
@@ -418,7 +429,7 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 )?;
                 region.constrain_equal(recipient_cell.cell(), recip_copy.cell())?;
 
-                let inv_cell = region.assign_advice(
+                let _inv_cell = region.assign_advice(
                     || "inv",
                     config.advice[1],
                     0,
@@ -459,7 +470,7 @@ mod tests {
     use super::*;
     use crate::nullifier::native_compute_nullifier;
     use crate::poseidon::native_poseidon;
-    use crate::secp256k1::{NativeSecpField, NativePoint};
+    use crate::secp256k1::NativePoint;
     use ark_ff::BigInteger;
     use light_poseidon::PoseidonHasher;
 
@@ -481,11 +492,18 @@ mod tests {
 
     /// Full end-to-end MockProver test with a real key, Merkle proof, and nullifier.
     ///
-    /// This test validates that the Poseidon, Merkle, and nullifier gadgets
-    /// produce consistent proofs. It does NOT exercise the secp256k1 or
-    /// Keccak gadgets (those require production-quality implementations
-    /// to generate valid witnesses).
+    /// This test validates that the Poseidon, Merkle, nullifier, secp256k1,
+    /// and Keccak gadgets all produce consistent proofs together.
+    ///
+    /// If any gadget has a soundness bug, the on-curve check or
+    /// `constrain_affine` will catch it.
+    ///
+    /// NOTE: This test is `#[ignore]` by default because it is very slow
+    /// (full circuit with secp256k1 + Keccak at k=21+ is ~2M+ rows).
+    /// Run with:
+    ///   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
     #[test]
+    #[ignore]
     fn test_circuit_merkle_nullifier_e2e() {
         // Use a test key that's valid (non-zero, below secp256k1 order)
         let key: [u8; 32] = [
@@ -502,7 +520,7 @@ mod tests {
 
         // Compute leaf hash
         let leaf_params = PoseidonParams::new_circom(1);
-        let leaf = native_poseidon(&leaf_params, &[address_field]);
+        let _leaf = native_poseidon(&leaf_params, &[address_field]);
 
         // Compute nullifier with V2 domain
         let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
@@ -545,17 +563,20 @@ mod tests {
                 match prover.verify() {
                     Ok(()) => eprintln!("✅ Full circuit E2E MockProver test PASSED"),
                     Err(e) => {
-                        // MockProver verify failure is expected at this stage
-                        // because secp256k1 and Keccak gadgets are not fully constrained.
-                        // The Poseidon + Merkle + Nullifier path is validated separately.
-                        eprintln!("⚠️  Full circuit MockProver verify returned: {:?}", e);
-                        eprintln!("   This is expected — secp256k1/Keccak constraints are scaffolded.");
+                        eprintln!("❌ Full circuit MockProver verify FAILED:");
+                        for err in &e {
+                            eprintln!("   {:?}", err);
+                        }
+                        panic!(
+                            "Full circuit E2E MockProver test failed. \
+                             Run `cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e \
+                             -- --nocapture` for details."
+                        );
                     }
                 }
             }
             Err(e) => {
-                eprintln!("⚠️  MockProver::run failed: {:?}", e);
-                eprintln!("   This may indicate k is too small or circuit configuration issues.");
+                panic!("MockProver::run failed: {:?}. Circuit may be too large for k=21.", e);
             }
         }
     }

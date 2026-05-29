@@ -42,7 +42,7 @@ impl RangeCheckConfig {
 
         // Lookup gate: advice[cur] must appear in the 8-bit range table.
         meta.lookup(|meta| {
-            let s = meta.query_selector(s_decompose);
+            let _s = meta.query_selector(s_decompose);
             let val = meta.query_advice(advice, Rotation::cur());
             // The selector gates the lookup — only active rows are checked.
             // Halo2 lookups don't take selectors directly, so we use a

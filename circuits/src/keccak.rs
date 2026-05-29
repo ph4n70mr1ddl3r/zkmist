@@ -31,7 +31,7 @@ use halo2_proofs::{
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
-use tiny_keccak::{Hasher as KeccakHasher, Keccak};
+use tiny_keccak::Hasher as KeccakHasher;
 
 // ── Keccak constants ─────────────────────────────────────────────────────
 
@@ -302,7 +302,7 @@ impl<'a> KeccakChip<'a> {
         let b_c = region.assign_advice(|| "xor_b", self.config.advice[1], offset, || b_val)?;
         region.constrain_equal(b.cell(), b_c.cell())?;
         // ab = a*b into advice[2]
-        let ab = region.assign_advice(|| "xor_ab", self.config.advice[2], offset, || ab_val)?;
+        let _ab = region.assign_advice(|| "xor_ab", self.config.advice[2], offset, || ab_val)?;
         // out = a XOR b into advice[3]
         let out = region.assign_advice(|| "xor_out", self.config.advice[3], offset, || out_val)?;
         self.config.s_xor.enable(region, offset)?;
@@ -327,7 +327,7 @@ impl<'a> KeccakChip<'a> {
         region.constrain_equal(a.cell(), a_c.cell())?;
         let b_c = region.assign_advice(|| "an_b", self.config.advice[1], offset, || b_val)?;
         region.constrain_equal(b.cell(), b_c.cell())?;
-        let ab = region.assign_advice(|| "an_ab", self.config.advice[2], offset, || ab_val)?;
+        let _ab = region.assign_advice(|| "an_ab", self.config.advice[2], offset, || ab_val)?;
         let out = region.assign_advice(|| "an_out", self.config.advice[3], offset, || out_val)?;
         self.config.s_andnot.enable(region, offset)?;
         Ok(out)
@@ -624,7 +624,7 @@ impl<'a> KeccakChip<'a> {
                 // Keccak-256 output = first 32 bytes of the state
                 // Lane(0,0) = bytes 0..8, Lane(1,0) = bytes 8..16,
                 // Lane(2,0) = bytes 16..24, Lane(3,0) = bytes 24..32
-                let hash_bits: Vec<AssignedCell<Fr, Fr>> = (0..4)
+                let _hash_bits: Vec<AssignedCell<Fr, Fr>> = (0..4)
                     .flat_map(|x| state[x * 5 + 0].clone())
                     .collect();
 
@@ -651,7 +651,7 @@ impl<'a> KeccakChip<'a> {
                 };
 
                 // Verify against native computation (debug check)
-                for (i, &addr_byte) in address.iter().enumerate() {
+                for (_i, &addr_byte) in address.iter().enumerate() {
                     let expected_bits = u64_to_bits(addr_byte as u64);
                     for j in 0..8 {
                         let _expected = if expected_bits[j] { Fr::ONE } else { Fr::ZERO };
@@ -786,5 +786,121 @@ mod tests {
         assert_eq!(byte_to_lane_pos(64), (3, 1, 0));
         // Byte 135: lane(1,3), byte 7 (padding end)
         assert_eq!(byte_to_lane_pos(135), (1, 3, 7));
+    }
+
+    /// MockProver test for the full Keccak-256 permutation.
+    ///
+    /// Verifies that the constrained Keccak gadget produces the same
+    /// output as `tiny_keccak` for a known public key input.
+    ///
+    /// NOTE: This test is `#[ignore]` by default because it is very slow
+    /// (the Keccak circuit at k=22 is ~4M rows). Run with:
+    ///   cargo test -p zkmist-circuits test_keccak_mock_prover_full -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_keccak_mock_prover_full() {
+        use halo2_proofs::{
+            circuit::{Layouter, SimpleFloorPlanner},
+            dev::MockProver,
+            plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
+        };
+
+        // Test input: a 64-byte public key (pub_x || pub_y)
+        let pub_x: [u8; 32] = [
+            0x46, 0x46, 0xae, 0x50, 0x47, 0x31, 0x6b, 0x42, 0x30, 0xd0, 0x08, 0x6c, 0x8a, 0xce,
+            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58,
+            0xac, 0x0a, 0x9a, 0x8f, 0xff,
+        ];
+        let pub_y: [u8; 32] = [
+            0xfe, 0x77, 0xb4, 0xdd, 0x0a, 0x4b, 0xfb, 0x95, 0x85, 0x1f, 0x3b, 0x73, 0x55, 0xc7,
+            0x81, 0xdd, 0x60, 0xf8, 0x41, 0x8f, 0xc8, 0xa6, 0x5d, 0x14, 0x90, 0x7a, 0xff, 0x47,
+            0xc9, 0x03, 0xa5, 0x59,
+        ];
+        let expected_address = extract_address(&native_hash_pubkey(&pub_x, &pub_y));
+
+        // Expected hash as a u64 (right-padded address fits in BN254 Fr)
+        let mut expected_padded = [0u8; 32];
+        expected_padded[12..32].copy_from_slice(&expected_address);
+        // We'll verify by checking the circuit output matches native output
+
+        #[derive(Clone)]
+        struct KeccakTestCircuit {
+            pub_x: [u8; 32],
+            pub_y: [u8; 32],
+        }
+
+        #[derive(Debug, Clone)]
+        struct KeccakTestConfig {
+            keccak: super::KeccakConfig,
+            instance: Column<Instance>,
+        }
+
+        impl Circuit<Fr> for KeccakTestCircuit {
+            type Config = KeccakTestConfig;
+            type FloorPlanner = SimpleFloorPlanner;
+
+            fn without_witnesses(&self) -> Self {
+                self.clone()
+            }
+
+            fn configure(meta: &mut ConstraintSystem<Fr>) -> KeccakTestConfig {
+                let advice: [Column<Advice>; 8] = std::array::from_fn(|_| {
+                    let col = meta.advice_column();
+                    meta.enable_equality(col);
+                    col
+                });
+                let instance = meta.instance_column();
+                meta.enable_equality(instance);
+                let keccak = super::KeccakConfig::configure(meta, advice);
+                KeccakTestConfig { keccak, instance }
+            }
+
+            fn synthesize(
+                &self,
+                config: KeccakTestConfig,
+                mut layouter: impl Layouter<Fr>,
+            ) -> Result<(), Error> {
+                let chip = super::KeccakChip::new(&config.keccak);
+                let (_hash_bits, address) = chip.hash_pubkey_to_address(
+                    &mut layouter,
+                    &self.pub_x,
+                    &self.pub_y,
+                )?;
+
+                // Verify the address matches native computation
+                let expected = extract_address(&native_hash_pubkey(&self.pub_x, &self.pub_y));
+                assert_eq!(address, expected, "Keccak circuit output must match native");
+                Ok(())
+            }
+        }
+
+        let circuit = KeccakTestCircuit { pub_x, pub_y };
+        // k must be large enough for 24 rounds of Keccak on 200 bytes
+        // Each round uses ~5000 gate activations (25 lanes × 64 bits × θ/χ steps)
+        // k=22 provides ~4M rows, k=21 provides ~2M rows
+        let k = 22;
+        eprintln!("   Running Keccak MockProver test with k={}...", k);
+        let result = MockProver::run(k, &circuit, vec![vec![]]);
+        match result {
+            Ok(prover) => {
+                match prover.verify() {
+                    Ok(()) => {
+                        eprintln!("   ✅ Keccak-256 MockProver test PASSED");
+                        eprintln!("      Address: 0x{}", hex::encode(expected_address));
+                    }
+                    Err(e) => {
+                        // Print detailed errors for debugging
+                        eprintln!("   ⚠️  Keccak MockProver verify returned errors:");
+                        for err in &e {
+                            eprintln!("      {:?}", err);
+                        }
+                        panic!("Keccak MockProver verification failed — see errors above");
+                    }
+                }
+            }
+            Err(e) => {
+                panic!("Keccak MockProver::run failed (k={}): {:?}", k, e);
+            }
+        }
     }
 }
