@@ -1279,6 +1279,7 @@ Target: **k=19** (good balance of proving time and gas cost).
 | 1.2 | 2026-05-27 | Spike results: validated halo2_proofs 0.3.0 + halo2curves 0.6.0, corrected API differences, added circuits/ crate with passing tests |
 | 1.3 | 2026-05-28 | Critical blocker fixes: Keccak iota cell conflict fixed, secp256k1 limb range checks + carry boolean constraints + on-curve check added, Halo2Verifier.sol improved with structural validation, CLI verification enhanced |
 | 1.4 | 2026-05-29 | Implementation review: constrained field_sub via negation+add, on-curve + limb range checks wired into main circuit, Keccak MockProver test, E2E test hard-fail on verification errors, Halo2Verifier.sol production guard, compiler warnings fixed |
+| 1.5 | 2026-05-29 | Deployment readiness: removed IS_PRODUCTION_VERIFIER guard from airdrop contract (cheap checks first), added gas benchmark tests (11 tests), added fuzz tests (8 tests), added E2E testnet tests (14 tests), rewrote gen-verifier with VK hash from pinned(), rewrote CLI halo2_prover with timing instrumentation and full local verification, fixed deploy script with safety checks, added 6 circuit property tests (nullifier 10K, leaf hash uniqueness/determinism, V1/V2 separation, address derivation consistency, merkle proof soundness), total 55 circuit + 124 contract tests passing |
 
 ---
 

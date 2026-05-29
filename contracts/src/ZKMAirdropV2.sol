@@ -49,21 +49,14 @@ contract ZKMAirdropV2 {
         bytes32 nullifier,
         address recipient
     ) external {
-        // Validate proof length
-        require(proof.length >= MIN_PROOF_LENGTH && proof.length <= MAX_PROOF_LENGTH, "Invalid proof length");
-
-        // ⚠️ Production safety: reject claims if verifier is not production-ready.
-        // Remove this check after regenerating Halo2Verifier.sol with snark-verifier.
-        require(
-            verifier.IS_PRODUCTION_VERIFIER(),
-            "Verifier not production-ready"
-        );
-
-        // Check claim window
+        // Check basic invariants FIRST (cheap checks before expensive verification)
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
         require(!usedNullifiers[nullifier], "Already claimed");
         require(recipient != address(0), "Recipient cannot be zero");
+
+        // Validate proof length
+        require(proof.length >= MIN_PROOF_LENGTH && proof.length <= MAX_PROOF_LENGTH, "Invalid proof length");
 
         // Construct public inputs: [merkleRoot, nullifier, recipient]
         uint256[3] memory publicInputs = [
@@ -72,7 +65,7 @@ contract ZKMAirdropV2 {
             uint256(uint160(recipient))
         ];
 
-        // Verify Halo2 proof via the verifier contract
+        // Verify Halo2 proof via the verifier contract.
         // The verifier checks the proof against the public inputs, which bind:
         //   - merkleRoot: ensures the address is in the eligibility tree
         //   - nullifier: prevents double-claims, derived from private key

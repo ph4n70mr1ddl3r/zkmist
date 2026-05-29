@@ -18,6 +18,10 @@ use zkmist_merkle_tree::compute_nullifier_v2;
 use crate::constants::*;
 use crate::types::ProofFile;
 
+/// Default k parameter for the circuit (2^22 = 4M rows).
+/// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle.
+const CIRCUIT_K: u32 = 22;
+
 /// Generate a Halo2-KZG proof for a V2 claim.
 ///
 /// # Arguments
@@ -101,20 +105,32 @@ pub fn generate_v2_proof(
     };
     use halo2curves::bn256::G1Affine;
 
-    let k = 22; // 2^22 = 4M rows — required for full circuit (secp256k1 + Keccak + Poseidon + Merkle)
-    eprintln!("      Generating KZG parameters (k={})...", k);
-    let params: Params<G1Affine> = Params::new(k);
+    let k = CIRCUIT_K;
+    let start = std::time::Instant::now();
 
-    eprintln!("      Generating verification key...");
+    eprintln!("      [1/5] Loading KZG parameters (k={})...", k);
+    let params: Params<G1Affine> = Params::new(k);
+    eprintln!(
+        "      [1/5] KZG params loaded ({:.1}s)",
+        start.elapsed().as_secs_f64()
+    );
+
+    eprintln!("      [2/5] Generating verification key...");
+    let vk_start = std::time::Instant::now();
     let vk = keygen_vk(&params, &circuit)
         .map_err(|e| format!("VK generation failed: {:?}", e))?;
     let pk = keygen_pk(&params, vk, &circuit)
         .map_err(|e| format!("PK generation failed: {:?}", e))?;
+    eprintln!(
+        "      [2/5] VK/PK generated ({:.1}s)",
+        vk_start.elapsed().as_secs_f64()
+    );
 
     let public_inputs = [root_fr, nullifier_fr, recipient_fr];
     let mut rng = rand::rngs::OsRng;
 
-    eprintln!("      Creating Halo2-KZG proof...");
+    eprintln!("      [3/5] Creating Halo2-KZG proof...");
+    let prove_start = std::time::Instant::now();
     let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<G1Affine>>::init(vec![]);
     create_proof(
         &params,
@@ -127,11 +143,19 @@ pub fn generate_v2_proof(
     .map_err(|e| format!("Proof generation failed: {:?}", e))?;
 
     let proof_bytes = transcript.finalize();
-    eprintln!("      ✓ Proof generated: {} bytes", proof_bytes.len());
+    let prove_time = prove_start.elapsed();
+    eprintln!(
+        "      [3/5] Proof generated: {} bytes ({:.1}s)",
+        proof_bytes.len(),
+        prove_time.as_secs_f64()
+    );
 
     // ── Verify locally before saving ─────────────────────────────────
+    eprintln!("      [4/5] Verifying proof locally...");
+    let verify_start = std::time::Instant::now();
     let strategy = SingleVerifier::new(&params);
-    let mut read_transcript = Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
+    let mut read_transcript =
+        Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
     let vk_ref = pk.get_vk();
     verify_proof(
         &params,
@@ -141,9 +165,13 @@ pub fn generate_v2_proof(
         &mut read_transcript,
     )
     .map_err(|e| format!("Local verification failed: {:?}", e))?;
-    eprintln!("      ✓ Proof verified locally");
+    eprintln!(
+        "      [4/5] Proof verified locally ({:.1}s)",
+        verify_start.elapsed().as_secs_f64()
+    );
 
     // ── Save proof file ─────────────────────────────────────────────
+    eprintln!("      [5/5] Saving proof file...");
     let proof_file = ProofFile {
         version: 2,
         proof_format_version: PROOF_FORMAT_VERSION_V2,
@@ -162,10 +190,24 @@ pub fn generate_v2_proof(
     std::fs::write(output_path, &json)
         .map_err(|e| format!("Failed to write proof: {}", e))?;
 
+    let total_time = start.elapsed();
+    eprintln!("      Total proving pipeline: {:.1}s", total_time.as_secs_f64());
+    eprintln!(
+        "      Breakdown: params={:.1}s, keygen={:.1}s, prove={:.1}s, verify={:.1}s",
+        0.0, // params time included in start
+        vk_start.elapsed().as_secs_f64(),
+        prove_time.as_secs_f64(),
+        verify_start.elapsed().as_secs_f64(),
+    );
+
     Ok(nullifier_bytes)
 }
 
 /// Verify a Halo2-KZG proof locally.
+///
+/// Performs cryptographic verification by regenerating the VK from the
+/// circuit and verifying the proof against it. This is the same
+/// verification that the on-chain Halo2Verifier performs, but locally.
 pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     let content = std::fs::read_to_string(proof_path)
         .map_err(|e| format!("Failed to read {}: {}", proof_path.display(), e))?;
@@ -202,23 +244,109 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         ));
     }
 
-    // TODO: Load verification key and verify the proof cryptographically.
-    // This requires serializing/deserializing the VK, which depends on the
-    // final circuit layout being frozen. Once the secp256k1 and Keccak
-    // gadgets are production-ready, the VK can be serialized and embedded
-    // in the CLI for local verification.
+    // Perform full cryptographic verification by regenerating the VK
+    // and verifying the proof against it.
     //
-    // For now, perform a full deserialization and structural check, then
-    // attempt to re-create the proof for verification.
-    eprintln!("✅ Proof file structure valid (V2 Halo2-KZG, {} bytes)", proof_bytes.len());
-    eprintln!("   Nullifier: 0x{}", proof.nullifier);
-    eprintln!("   Recipient: 0x{}", proof.recipient);
-    eprintln!("   Contract: 0x{}", proof.contract_address);
-    eprintln!("   Chain ID: {}", proof.chain_id);
-    eprintln!("   Claim amount: {} ZKM", proof.claim_amount);
-    eprintln!("");
-    eprintln!("   ⚠️  Full local cryptographic verification requires the serialized VK.");
-    eprintln!("   The on-chain Halo2Verifier will perform full verification on submit.");
-    eprintln!("   To verify on-chain: zkmist submit {}", proof_path.display());
-    Ok(())
+    // This approach re-derives the VK from the circuit definition, which
+    // ensures the proof was generated for the correct circuit. The VK
+    // uniquely identifies the circuit's constraint system.
+    //
+    // For production, the VK should be cached/loaded from a serialized file
+    // generated by `gen-verifier` to avoid the overhead of key generation.
+    eprintln!("  Regenerating verification key for verification...");
+    let start = std::time::Instant::now();
+
+    use halo2_proofs::{
+        poly::commitment::Params,
+        plonk::{keygen_vk, verify_proof, SingleVerifier},
+        transcript::{Blake2bRead, Challenge255},
+    };
+    use halo2curves::bn256::G1Affine;
+
+    // Create a dummy circuit to derive the VK
+    let circuit = ZKMistV2Claim {
+        private_key: [0u8; 32],
+        siblings: [[0u8; 32]; TREE_DEPTH],
+        path_indices: [0u8; TREE_DEPTH],
+        merkle_root: halo2curves::bn256::Fr::from(0u64),
+        nullifier: halo2curves::bn256::Fr::from(0u64),
+        recipient: halo2curves::bn256::Fr::from(1u64), // non-zero
+    };
+
+    let k = CIRCUIT_K;
+    let params: Params<G1Affine> = Params::new(k);
+    let vk = keygen_vk(&params, &circuit)
+        .map_err(|e| format!("VK generation failed: {:?}", e))?;
+
+    eprintln!(
+        "  VK regenerated ({:.1}s)",
+        start.elapsed().as_secs_f64()
+    );
+
+    // Reconstruct public inputs from the proof file
+    let nullifier_bytes = hex::decode(&proof.nullifier)
+        .map_err(|e| format!("Invalid nullifier hex: {}", e))?;
+    let recipient_bytes = hex::decode(&proof.recipient)
+        .map_err(|e| format!("Invalid recipient hex: {}", e))?;
+
+    if nullifier_bytes.len() != 32 {
+        return Err(format!("Nullifier must be 32 bytes, got {}", nullifier_bytes.len()));
+    }
+    if recipient_bytes.len() != 20 {
+        return Err(format!("Recipient must be 20 bytes, got {}", recipient_bytes.len()));
+    }
+
+    let mut nullifier_arr = [0u8; 32];
+    nullifier_arr.copy_from_slice(&nullifier_bytes);
+    let nullifier_fr = ark_to_halo2(
+        &ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_arr),
+    );
+
+    let mut recipient_padded = [0u8; 32];
+    recipient_padded[12..32].copy_from_slice(&recipient_bytes);
+    let recipient_fr = ark_to_halo2(
+        &ark_bn254::Fr::from_be_bytes_mod_order(&recipient_padded),
+    );
+
+    // The merkle root is a known constant — extract from proof file or use known value
+    let known_root_hex = KNOWN_MERKLE_ROOT.strip_prefix("0x").unwrap_or(KNOWN_MERKLE_ROOT);
+    let root_bytes = hex::decode(known_root_hex)
+        .map_err(|e| format!("Invalid known merkle root hex: {}", e))?;
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(&root_bytes);
+    let root_fr = ark_to_halo2(
+        &ark_bn254::Fr::from_be_bytes_mod_order(&root_arr),
+    );
+
+    let public_inputs = [root_fr, nullifier_fr, recipient_fr];
+
+    // Verify the proof
+    eprintln!("  Verifying proof cryptographically...");
+    let strategy = SingleVerifier::new(&params);
+    let mut read_transcript =
+        Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
+
+    match verify_proof(
+        &params,
+        &vk,
+        strategy,
+        &[&[&public_inputs[..]]],
+        &mut read_transcript,
+    ) {
+        Ok(()) => {
+            eprintln!("  ✅ Proof is cryptographically valid ({:.1}s total)", start.elapsed().as_secs_f64());
+            eprintln!("     Merkle root: 0x{}", KNOWN_MERKLE_ROOT);
+            eprintln!("     Nullifier:   0x{}", proof.nullifier);
+            eprintln!("     Recipient:   0x{}", proof.recipient);
+            eprintln!("     Proof size:  {} bytes", proof_bytes.len());
+            Ok(())
+        }
+        Err(e) => {
+            Err(format!(
+                "❌ Cryptographic proof verification FAILED: {:?}\n\
+                 The proof is invalid. Do NOT submit this proof.",
+                e
+            ))
+        }
+    }
 }

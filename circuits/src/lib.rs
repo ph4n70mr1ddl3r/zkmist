@@ -620,7 +620,7 @@ mod tests {
             0x67, 0x89, 0xab, 0xcd, 0xef,
         ];
 
-        let (address, pub_x_bytes, pub_y_bytes) = native_derive_address(&key);
+        let (address, _pub_x_bytes, _pub_y_bytes) = native_derive_address(&key);
         assert_eq!(
             hex::encode(address),
             "fcad0b19bb29d4674531d6f115237e16afce377c"
@@ -1164,5 +1164,168 @@ mod tests {
             );
         }
         eprintln!("✅ 100 nullifiers all unique — no collisions");
+    }
+
+    /// Property test: verify nullifier collision resistance with more keys.
+    /// Tests 10,000 random-ish keys for nullifier uniqueness.
+    #[test]
+    fn test_nullifier_collision_resistance_10k() {
+        let params = PoseidonParams::new_circom(2);
+        let mut nullifiers = std::collections::HashSet::new();
+
+        for key_val in 1u64..=10_000 {
+            let key_field = ark_to_halo2(&ark_bn254::Fr::from(key_val));
+            let nullifier = native_compute_nullifier(&key_field, &params);
+            let nullifier_bytes = {
+                let ark = crate::poseidon::halo2_to_ark(&nullifier);
+                ark.into_bigint().to_bytes_be()
+            };
+            assert!(
+                nullifiers.insert(nullifier_bytes),
+                "Nullifier collision for key {}",
+                key_val
+            );
+        }
+        eprintln!("✅ 10,000 nullifiers all unique — no collisions");
+    }
+
+    /// Property test: leaf hash is deterministic for any address.
+    #[test]
+    fn test_leaf_hash_deterministic() {
+        let leaf_params = PoseidonParams::new_circom(1);
+
+        // Test multiple addresses
+        for addr_val in 1u64..=50 {
+            let mut addr_bytes = [0u8; 20];
+            addr_bytes[12..20].copy_from_slice(&addr_val.to_be_bytes());
+
+            let mut padded = [0u8; 32];
+            padded[12..32].copy_from_slice(&addr_bytes);
+            let address_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&padded));
+
+            let leaf1 = native_poseidon(&leaf_params, &[address_field]);
+            let leaf2 = native_poseidon(&leaf_params, &[address_field]);
+            assert_eq!(leaf1, leaf2, "Leaf hash not deterministic for address {}", addr_val);
+        }
+        eprintln!("✅ 50 leaf hashes all deterministic");
+    }
+
+    /// Property test: different addresses produce different leaf hashes.
+    #[test]
+    fn test_leaf_hash_uniqueness() {
+        let leaf_params = PoseidonParams::new_circom(1);
+        let mut leaves = std::collections::HashSet::new();
+
+        for addr_val in 1u64..=100 {
+            let mut addr_bytes = [0u8; 20];
+            addr_bytes[12..20].copy_from_slice(&addr_val.to_be_bytes());
+
+            let mut padded = [0u8; 32];
+            padded[12..32].copy_from_slice(&addr_bytes);
+            let address_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&padded));
+
+            let leaf = native_poseidon(&leaf_params, &[address_field]);
+            let leaf_bytes = {
+                let ark = crate::poseidon::halo2_to_ark(&leaf);
+                ark.into_bigint().to_bytes_be()
+            };
+            assert!(
+                leaves.insert(leaf_bytes),
+                "Leaf collision for address {}",
+                addr_val
+            );
+        }
+        eprintln!("✅ 100 leaf hashes all unique");
+    }
+
+    /// Property test: V2 nullifiers differ from V1 for all tested keys.
+    #[test]
+    fn test_v2_nullifiers_always_differ_from_v1() {
+        let interior_params = PoseidonParams::new_circom(2);
+
+        for key_val in 1u64..=50 {
+            let key_field = ark_to_halo2(&ark_bn254::Fr::from(key_val));
+            let v2_nullifier = native_compute_nullifier(&key_field, &interior_params);
+
+            // Compute V1 nullifier
+            let v1_bytes = b"ZKMist_V1_NULLIFIER";
+            let mut v1_padded = [0u8; 32];
+            v1_padded[..v1_bytes.len()].copy_from_slice(v1_bytes);
+            let v1_domain = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&v1_padded));
+            let v1_nullifier = native_poseidon(&interior_params, &[key_field, v1_domain]);
+
+            assert_ne!(v2_nullifier, v1_nullifier, "V1/V2 nullifier match for key {}", key_val);
+        }
+        eprintln!("✅ 50 keys: V2 nullifiers all differ from V1");
+    }
+
+    /// Property test: secp256k1 address derivation is consistent.
+    #[test]
+    fn test_address_derivation_consistency() {
+        // Test multiple private keys
+        let test_keys: Vec<[u8; 32]> = (1u8..=10).map(|i| {
+            let mut key = [0u8; 32];
+            key[31] = i;
+            key
+        }).collect();
+
+        for key in &test_keys {
+            // Derive address twice — must match
+            let (addr1, px1, py1) = native_derive_address(key);
+            let (addr2, px2, py2) = native_derive_address(key);
+            assert_eq!(addr1, addr2, "Address derivation inconsistent");
+            assert_eq!(px1, px2, "Public key X inconsistent");
+            assert_eq!(py1, py2, "Public key Y inconsistent");
+
+            // Verify Keccak hash matches
+            let hash = crate::keccak::native_hash_pubkey(&px1, &py1);
+            let hash_addr = &hash[12..32];
+            assert_eq!(addr1, hash_addr, "Keccak-derived address doesn't match");
+
+            // Address must be 20 bytes and non-zero
+            assert_ne!(addr1, [0u8; 20], "Derived address is zero");
+        }
+        eprintln!("✅ 10 keys: address derivation consistent and matches Keccak");
+    }
+
+    /// Property test: Merkle proof verification is sound for small trees.
+    #[test]
+    fn test_merkle_proof_soundness() {
+        use zkmist_merkle_tree::{build_tree_streaming_with_depth, verify_merkle_proof, hash_leaf};
+        use light_poseidon::PoseidonHasher;
+
+        // Build trees of different sizes and verify proofs
+        for num_addrs in 1usize..=8 {
+            let addresses: Vec<[u8; 20]> = (0..num_addrs)
+                .map(|i| {
+                    let mut addr = [0u8; 20];
+                    addr[19] = i as u8;
+                    addr
+                })
+                .collect();
+
+            // Depth must be >= ceil(log2(num_addrs)) for the tree to fit all addresses
+            let min_depth = std::cmp::max(1, num_addrs.next_power_of_two().trailing_zeros() as usize);
+            for depth in min_depth..=(min_depth + 2) {
+                for target_idx in 0..num_addrs {
+                    let (root, proof) = build_tree_streaming_with_depth(
+                        &addresses, depth, Some(target_idx),
+                    );
+                    let (siblings, path_indices) = proof.expect("proof failed");
+
+                    // Verify proof
+                    let mut hasher = light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(1).unwrap();
+                    let leaf = hash_leaf(&addresses[target_idx], &mut hasher);
+                    let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
+
+                    assert_eq!(
+                        computed_root, root,
+                        "Merkle root mismatch: {} addrs, depth {}, idx {}",
+                        num_addrs, depth, target_idx
+                    );
+                }
+            }
+        }
+        eprintln!("✅ Merkle proofs verified for trees of sizes 1-8, appropriate depths");
     }
 }

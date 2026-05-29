@@ -348,13 +348,12 @@ See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 >
 > The [V2_PLAN.md](./V2_PLAN.md) describes a redesign using Halo2-KZG custom circuits that reduces
 > proof generation from ~50 minutes to ~10-30 seconds. V2 code exists in `circuits/`, `contracts/src/ZKM*V2.sol`,
-> and `cli/src/halo2_prover.rs` — the circuit compiles, 49 unit tests pass (including negative tests),
-> and 18 contract tests pass.
+> and `cli/src/halo2_prover.rs` — the circuit compiles, **55 unit tests pass** (including negative and property tests),
+> and **51 V2 contract tests pass** (including gas benchmarks, fuzz tests, and E2E tests).
 >
 > **Remaining blockers before deployment:**
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier` (currently a structural placeholder)
 > - Run full E2E circuit test (`test_circuit_merkle_nullifier_e2e` — currently `#[ignore]`d due to size)
-> - Validate k=21 is sufficient for the full circuit
 > - External security review of secp256k1 non-native field arithmetic
 > - Testnet deployment on Base Sepolia
 >
