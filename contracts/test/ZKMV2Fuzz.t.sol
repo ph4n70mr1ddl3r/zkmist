@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMTokenV2} from "../src/ZKMTokenV2.sol";
 import {ZKMAirdropV2} from "../src/ZKMAirdropV2.sol";
-import {Halo2Verifier} from "../src/Halo2Verifier.sol";
+import {MockHalo2Verifier} from "./TestUtils.sol";
 
 /// @title ZKM V2 Fuzz Tests
 /// @notice Property-based tests for V2 contracts.
@@ -12,14 +12,14 @@ import {Halo2Verifier} from "../src/Halo2Verifier.sol";
 contract ZKMV2FuzzTest is Test {
     ZKMTokenV2 public token;
     ZKMAirdropV2 public airdrop;
-    Halo2Verifier public verifier;
+    MockHalo2Verifier public verifier;
 
     address constant MINTER = address(0x1);
     bytes32 constant MERKLE_ROOT =
         0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function setUp() public {
-        verifier = new Halo2Verifier();
+        verifier = new MockHalo2Verifier();
         token = new ZKMTokenV2(MINTER);
         airdrop = new ZKMAirdropV2(address(token), address(verifier), MERKLE_ROOT);
     }
@@ -109,7 +109,7 @@ contract ZKMV2FuzzTest is Test {
             vm.expectRevert("Invalid proof length");
             airdrop.claim(fakeProof, nullifier, recipient);
         } else {
-            // Valid length, dev verifier returns true, but airdrop is not minter
+            // Valid length, mock verifier returns true, but airdrop is not minter
             vm.expectRevert("Only airdrop contract");
             airdrop.claim(fakeProof, nullifier, recipient);
         }

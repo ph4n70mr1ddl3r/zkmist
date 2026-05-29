@@ -35,6 +35,7 @@ contract ZKMAirdropV2 {
         address _verifier,
         bytes32 _merkleRoot
     ) {
+        require(IHalo2Verifier(_verifier).IS_PRODUCTION_VERIFIER(), "Verifier not production-ready");
         token = ZKMTokenV2(_token);
         verifier = IHalo2Verifier(_verifier);
         merkleRoot = _merkleRoot;

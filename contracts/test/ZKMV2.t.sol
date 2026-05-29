@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ZKMTokenV2} from "../src/ZKMTokenV2.sol";
 import {ZKMAirdropV2} from "../src/ZKMAirdropV2.sol";
 import {Halo2Verifier} from "../src/Halo2Verifier.sol";
+import {MockHalo2Verifier} from "./TestUtils.sol";
 
 /// @title ZKM V2 Contract Tests
 /// @notice Tests for the Halo2-KZG airdrop contract and token.
@@ -13,13 +14,13 @@ contract ZKMV2Test is Test {
     ZKMAirdropV2 public airdrop;
 
     address constant MINTER = address(0x1);
-    Halo2Verifier public verifier;
+    MockHalo2Verifier public verifier;
     address constant VERIFIER_ADDR = address(0x2);
     bytes32 constant MERKLE_ROOT =
         0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function setUp() public {
-        verifier = new Halo2Verifier();
+        verifier = new MockHalo2Verifier();
         token = new ZKMTokenV2(MINTER);
     }
 
@@ -88,6 +89,14 @@ contract ZKMV2Test is Test {
         assertEq(airdrop.CLAIM_DEADLINE(), 1_798_761_600);
     }
 
+    function test_airdrop_rejects_non_production_verifier() public {
+        // Deploying with the placeholder Halo2Verifier (IS_PRODUCTION_VERIFIER = false)
+        // MUST revert to prevent mainnet deployment with a non-cryptographic verifier.
+        Halo2Verifier devVerifier = new Halo2Verifier();
+        vm.expectRevert("Verifier not production-ready");
+        new ZKMAirdropV2(address(token), address(devVerifier), MERKLE_ROOT);
+    }
+
     function test_airdrop_is_claim_window_open() public {
         airdrop = new ZKMAirdropV2(address(token), address(verifier), MERKLE_ROOT);
         // Before deadline and before cap: should be open
@@ -99,17 +108,22 @@ contract ZKMV2Test is Test {
         assertEq(airdrop.claimsRemaining(), 1_000_000);
     }
 
-    function test_airdrop_claim_rejects_non_production_verifier() public {
+    function test_airdrop_claim_with_mock_verifier() public {
         // Deploy with correct minter prediction
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMTokenV2 t = new ZKMTokenV2(predictedAirdrop);
         ZKMAirdropV2 a = new ZKMAirdropV2(address(t), address(verifier), MERKLE_ROOT);
 
         bytes memory validLengthProof = new bytes(500);
-        // The dev verifier returns true for structurally valid proofs.
+        bytes32 nullifier = bytes32(uint256(1));
+        address recipient = address(0xB0B);
+
+        // Mock verifier returns true for structurally valid proofs.
         // With a production verifier, only cryptographically valid proofs pass.
-        a.claim(validLengthProof, bytes32(uint256(1)), address(0xB0B));
+        a.claim(validLengthProof, nullifier, recipient);
         assertEq(a.totalClaims(), 1);
+        assertTrue(a.isClaimed(nullifier));
+        assertEq(t.balanceOf(recipient), 10_000e18);
     }
 
     function test_airdrop_is_claimed_initial() public {

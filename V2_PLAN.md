@@ -1,8 +1,8 @@
 # ZKMist V2 — Architecture Redesign Plan
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Date:** 2026-05-29  
-**Status:** Implementation (alpha — circuit soundness review in progress, verifier generation pending)  
+**Status:** Implementation (beta — circuit soundness hardened, production verifier generation remaining)  
 **Author:** ZKMist Community  
 
 ---

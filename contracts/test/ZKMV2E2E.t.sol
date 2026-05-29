@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMTokenV2} from "../src/ZKMTokenV2.sol";
 import {ZKMAirdropV2} from "../src/ZKMAirdropV2.sol";
-import {Halo2Verifier} from "../src/Halo2Verifier.sol";
+import {MockHalo2Verifier} from "./TestUtils.sol";
 
 /// @title ZKM V2 E2E Testnet Tests
 /// @notice Tests for V2 testnet deployment validation.
@@ -18,14 +18,14 @@ import {Halo2Verifier} from "../src/Halo2Verifier.sol";
 contract ZKMV2E2ETest is Test {
     ZKMTokenV2 public token;
     ZKMAirdropV2 public airdrop;
-    Halo2Verifier public verifier;
+    MockHalo2Verifier public verifier;
 
     address constant MINTER = address(0x1);
     bytes32 constant MERKLE_ROOT =
         0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function setUp() public {
-        verifier = new Halo2Verifier();
+        verifier = new MockHalo2Verifier();
         token = new ZKMTokenV2(MINTER);
         airdrop = new ZKMAirdropV2(address(token), address(verifier), MERKLE_ROOT);
     }
@@ -53,9 +53,9 @@ contract ZKMV2E2ETest is Test {
         assertFalse(airdrop.isClaimed(keccak256("test")));
     }
 
-    // ── Claim rejection tests (with non-production verifier) ────────────
+    // ── Claim tests (with mock verifier) ────────────────────────────────
 
-    function test_e2e_claim_with_dev_verifier() public {
+    function test_e2e_claim_with_mock_verifier() public {
         // Deploy with correct minter prediction
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMTokenV2 t = new ZKMTokenV2(predictedAirdrop);
@@ -65,15 +65,28 @@ contract ZKMV2E2ETest is Test {
         bytes32 nullifier = keccak256("test_nullifier");
         address recipient = address(0xB0B);
 
-        // Dev verifier returns true for structurally valid proofs
         a.claim(fakeProof, nullifier, recipient);
         assertEq(a.totalClaims(), 1);
         assertTrue(a.isClaimed(nullifier));
         assertEq(t.balanceOf(recipient), 10_000e18);
     }
 
+    function test_e2e_double_claim_rejected() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMTokenV2 t = new ZKMTokenV2(predictedAirdrop);
+        ZKMAirdropV2 a = new ZKMAirdropV2(address(t), address(verifier), MERKLE_ROOT);
+
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = keccak256("test_nullifier");
+        address recipient = address(0xB0B);
+
+        a.claim(fakeProof, nullifier, recipient);
+
+        vm.expectRevert("Already claimed");
+        a.claim(fakeProof, nullifier, address(0x123));
+    }
+
     function test_e2e_claim_rejected_zero_recipient() public {
-        // Deploy with correct minter prediction
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMTokenV2 t = new ZKMTokenV2(predictedAirdrop);
         ZKMAirdropV2 a = new ZKMAirdropV2(address(t), address(verifier), MERKLE_ROOT);
@@ -144,7 +157,7 @@ contract ZKMV2E2ETest is Test {
     // ── Full deployment simulation (gas measurement) ────────────────────
 
     function test_e2e_gas_full_deploy() public {
-        Halo2Verifier v = new Halo2Verifier();
+        MockHalo2Verifier v = new MockHalo2Verifier();
         address predictedAirdrop = vm.computeCreateAddress(
             address(this),
             vm.getNonce(address(this)) + 1

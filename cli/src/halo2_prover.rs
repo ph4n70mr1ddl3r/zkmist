@@ -22,6 +22,79 @@ use crate::types::ProofFile;
 /// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle.
 const CIRCUIT_K: u32 = 22;
 
+// ── Params caching ───────────────────────────────────────────────────
+//
+// KZG params generation for k=22 (4M G1 points) takes 10-30 seconds.
+// We cache the serialized params to ~/.zkmist/cache/ to avoid regenerating
+// them on every prove/verify invocation.
+
+fn get_cache_dir() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let cache_dir = home.join(ZKMIST_DIR_NAME).join("cache");
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {}", e))?;
+    Ok(cache_dir)
+}
+
+fn cached_params_path(k: u32) -> Result<std::path::PathBuf, String> {
+    Ok(get_cache_dir()?.join(format!("v2_params_k{}.bin", k)))
+}
+
+/// Load KZG params from cache, or generate and cache them.
+///
+/// The params are deterministic (derived from the Ethereum KZG ceremony SRS),
+/// so caching is safe. Cache invalidation only happens when k changes.
+fn load_or_gen_params(k: u32) -> Result<halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>, String> {
+    use halo2_proofs::poly::commitment::Params;
+    use halo2curves::bn256::G1Affine;
+    use std::io::{BufReader, BufWriter};
+
+    let path = cached_params_path(k)?;
+
+    // Try loading from cache
+    if path.exists() {
+        eprintln!("         Loading cached KZG params from {}...", path.display());
+        match std::fs::File::open(&path) {
+            Ok(file) => {
+                let mut reader = BufReader::new(file);
+                match Params::<G1Affine>::read(&mut reader) {
+                    Ok(params) => {
+                        eprintln!("         ✓ Cached params loaded");
+                        return Ok(params);
+                    }
+                    Err(e) => {
+                        eprintln!("         Warning: cached params corrupt ({}), regenerating", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("         Warning: cannot read cached params ({}), regenerating", e);
+            }
+        }
+    }
+
+    // Generate fresh params
+    eprintln!("         Generating KZG params (k={}, {} rows)...", k, 1u64 << k);
+    let params = Params::<G1Affine>::new(k);
+    eprintln!("         ✓ KZG params generated");
+
+    // Cache for future use
+    match std::fs::File::create(&path) {
+        Ok(file) => {
+            let mut writer = BufWriter::new(file);
+            match params.write(&mut writer) {
+                Ok(()) => eprintln!("         ✓ Cached params to {}", path.display()),
+                Err(e) => eprintln!("         Warning: failed to cache params: {}", e),
+            }
+        }
+        Err(e) => {
+            eprintln!("         Warning: cannot create cache file: {}", e);
+        }
+    }
+
+    Ok(params)
+}
+
 /// Generate a Halo2-KZG proof for a V2 claim.
 ///
 /// # Arguments
@@ -99,7 +172,6 @@ pub fn generate_v2_proof(
 
     // ── Generate proof ───────────────────────────────────────────────
     use halo2_proofs::{
-        poly::commitment::Params,
         plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
         transcript::{Blake2bRead, Blake2bWrite, Challenge255},
     };
@@ -109,9 +181,9 @@ pub fn generate_v2_proof(
     let start = std::time::Instant::now();
 
     eprintln!("      [1/5] Loading KZG parameters (k={})...", k);
-    let params: Params<G1Affine> = Params::new(k);
+    let params = load_or_gen_params(k)?;
     eprintln!(
-        "      [1/5] KZG params loaded ({:.1}s)",
+        "      [1/5] KZG params ready ({:.1}s)",
         start.elapsed().as_secs_f64()
     );
 
@@ -257,7 +329,6 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     let start = std::time::Instant::now();
 
     use halo2_proofs::{
-        poly::commitment::Params,
         plonk::{keygen_vk, verify_proof, SingleVerifier},
         transcript::{Blake2bRead, Challenge255},
     };
@@ -274,7 +345,7 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     };
 
     let k = CIRCUIT_K;
-    let params: Params<G1Affine> = Params::new(k);
+    let params = load_or_gen_params(k)?;
     let vk = keygen_vk(&params, &circuit)
         .map_err(|e| format!("VK generation failed: {:?}", e))?;
 

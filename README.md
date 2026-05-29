@@ -4,8 +4,7 @@
 
 [![Contracts Deployed](https://img.shields.io/badge/contracts-live-brightgreen)](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **📋 V2 Alpha.** Halo2-KZG circuits implemented, 49 tests passing. Verifier generation and testnet
-> deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for status. V1 (RISC Zero)
+> **📋 V2 Beta.** Halo2-KZG circuits implemented, 55 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic and intermediate range checks. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for status. V1 (RISC Zero)
 > is the current and deployed version — all claiming instructions below use V1.
 
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
@@ -344,16 +343,23 @@ See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 
 ## V2 (Halo2-KZG) Status
 
-> **⚠️ V2 is implemented (alpha) but not yet deployed.** The current (and deployed) version is V1 (RISC Zero).
+> **⚠️ V2 is implemented (beta) but not yet deployed.** The current (and deployed) version is V1 (RISC Zero).
 >
 > The [V2_PLAN.md](./V2_PLAN.md) describes a redesign using Halo2-KZG custom circuits that reduces
 > proof generation from ~50 minutes to ~10-30 seconds. V2 code exists in `circuits/`, `contracts/src/ZKM*V2.sol`,
 > and `cli/src/halo2_prover.rs` — the circuit compiles, **55 unit tests pass** (including negative and property tests),
-> and **51 V2 contract tests pass** (including gas benchmarks, fuzz tests, and E2E tests).
+> and **53 V2 contract tests pass** (including double-claim prevention, non-production verifier rejection, fuzz tests, and E2E tests).
+>
+> **Soundness hardening (this sprint):**
+> - secp256k1 scalar multiplication now uses carry-propagated field addition (`field_add_carried`) instead of witness-guided `field_add`
+> - Intermediate limb range checks every 32 steps during scalar multiplication (7 checkpoints)
+> - `IS_PRODUCTION_VERIFIER` guard in airdrop constructor prevents deployment with placeholder verifier
+> - KZG params caching in `~/.zkmist/cache/` eliminates 10-30s regeneration overhead
 >
 > **Remaining blockers before deployment:**
-> - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier` (currently a structural placeholder)
+> - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier` / `halo2-solidity-verifier` (currently a structural placeholder)
 > - Run full E2E circuit test (`test_circuit_merkle_nullifier_e2e` — currently `#[ignore]`d due to size)
+> - Run secp256k1 isolated MockProver test (`test_secp256k1_mock_prover` — `#[ignore]`d)
 > - External security review of secp256k1 non-native field arithmetic
 > - Testnet deployment on Base Sepolia
 >

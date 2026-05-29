@@ -1127,8 +1127,8 @@ impl<'a> Secp256k1Chip<'a> {
             },
         )?;
 
-        // result = a + neg_b via constrained field_add
-        self.field_add(layouter, a, &neg_b)
+        // result = a + neg_b via constrained field_add_carried (carry-propagated)
+        self.field_add_carried(layouter, a, &neg_b)
     }
 
     /// Constrained multiplication by a constant (fixed column).
@@ -1223,7 +1223,7 @@ impl<'a> Secp256k1Chip<'a> {
         let x2 = self.field_mul(layouter, &p.x, &p.x)?;
         // m = 3 * x2 = x2 + double(x2)
         let two_x2 = self.field_double(layouter, &x2)?;
-        let m = self.field_add(layouter, &x2, &two_x2)?;
+        let m = self.field_add_carried(layouter, &x2, &two_x2)?;
         // m2 = m * m
         let m2 = self.field_mul(layouter, &m, &m)?;
         // two_s = 2 * s
@@ -1322,11 +1322,21 @@ impl<'a> Secp256k1Chip<'a> {
         // Start with the base point (first bit is always 1 for non-zero scalar)
         let mut accumulator = base_point.clone();
 
-        for bit_idx in (0..255).rev() {
+        for (step, bit_idx) in (0..255).rev().enumerate() {
             let doubled = self.point_double(layouter, &accumulator)?;
             let added = self.point_add(layouter, &doubled, base_point)?;
             accumulator =
                 self.conditional_select_point(layouter, &added, &doubled, scalar_bits[bit_idx])?;
+
+            // Intermediate soundness: range-check coordinate limbs every 32
+            // steps to detect overflow or invalid field elements during scalar
+            // multiplication, rather than only at the final check_on_curve.
+            // 7 intermediate checks × 3 coords × 4 limbs = 84 range checks.
+            if step > 0 && step % 32 == 0 {
+                self.check_limb_ranges(layouter, &accumulator.x)?;
+                self.check_limb_ranges(layouter, &accumulator.y)?;
+                self.check_limb_ranges(layouter, &accumulator.z)?;
+            }
         }
 
         Ok(accumulator)
