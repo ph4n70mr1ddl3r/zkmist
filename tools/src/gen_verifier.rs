@@ -25,7 +25,7 @@ use zkmist_circuits::ZKMistV2Claim;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_path = PathBuf::from("../contracts/src/Halo2Verifier.sol");
-    let mut k: u32 = 21;
+    let mut k: u32 = 22;
 
     let mut i = 1;
     while i < args.len() {

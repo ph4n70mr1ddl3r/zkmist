@@ -973,7 +973,7 @@ impl<'a> Secp256k1Chip<'a> {
                     let contribs: Vec<AssignedCell<Fr, Fr>> = (0..4)
                         .filter_map(|i| {
                             let j = k as isize - i as isize;
-                            if j >= 0 && j < 4 { products[i][j as usize].clone() } else { None }
+                            if (0..4).contains(&j) { products[i][j as usize].clone() } else { None }
                         })
                         .collect();
 
@@ -1727,7 +1727,7 @@ impl<'a> Secp256k1Chip<'a> {
 
 /// Convert 4 BN254 field elements (limbs) to a native secp256k1 field element.
 fn limbs_to_native(limbs: &[Fr; 4]) -> NativeSecpField {
-    let native_limbs: [u64; 4] = limbs.map(|l| limb_to_u64(l));
+    let native_limbs: [u64; 4] = limbs.map(limb_to_u64);
     NativeSecpField::from_limbs(native_limbs)
 }
 

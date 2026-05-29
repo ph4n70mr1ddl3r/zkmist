@@ -486,8 +486,8 @@ mod tests {
             recipient: Fr::ONE,
         };
         let public_inputs = vec![Fr::ZERO, Fr::ZERO, Fr::ONE];
-        let _ = halo2_proofs::dev::MockProver::run(21, &circuit, vec![public_inputs]);
-        eprintln!("✅ ZKMistV2Claim circuit configuration valid");
+        let _ = halo2_proofs::dev::MockProver::run(22, &circuit, vec![public_inputs]);
+        eprintln!("✅ ZKMistV2Claim circuit configuration valid (k=22)");
     }
 
     /// Full end-to-end MockProver test with a real key, Merkle proof, and nullifier.
@@ -555,28 +555,275 @@ mod tests {
             recipient,
         };
 
+        // The full circuit (secp256k1 + Keccak + Poseidon + Merkle) requires k=22+.
+        // k=21 (2M rows) is insufficient — the Synthesis error confirms the circuit
+        // exceeds 2M rows. k=22 (4M rows) provides headroom.
+        //
+        // Expected runtime: 15-30 minutes (MockProver is a debug tool, not optimized
+        // for speed). The Keccak gadget alone takes ~16 min at k=22.
+        let k = 22;
+        eprintln!("   Running full circuit E2E MockProver test with k={}...", k);
         let public_inputs = vec![root_field, nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(21, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
         match result {
             Ok(prover) => {
                 match prover.verify() {
-                    Ok(()) => eprintln!("✅ Full circuit E2E MockProver test PASSED"),
+                    Ok(()) => eprintln!("✅ Full circuit E2E MockProver test PASSED (k={})", k),
                     Err(e) => {
-                        eprintln!("❌ Full circuit MockProver verify FAILED:");
+                        eprintln!("❌ Full circuit MockProver verify FAILED (k={}):", k);
                         for err in &e {
                             eprintln!("   {:?}", err);
                         }
                         panic!(
-                            "Full circuit E2E MockProver test failed. \
-                             Run `cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e \
-                             -- --nocapture` for details."
+                            "Full circuit E2E MockProver test failed at k={}. \
+                             Run with --nocapture for details.",
+                            k
                         );
                     }
                 }
             }
             Err(e) => {
-                panic!("MockProver::run failed: {:?}. Circuit may be too large for k=21.", e);
+                panic!(
+                    "MockProver::run failed at k={}: {:?}. \
+                     The full circuit (secp256k1 + Keccak + Poseidon + Merkle) \
+                     may need k=23 or higher.",
+                    k, e
+                );
+            }
+        }
+    }
+
+    /// Isolated secp256k1 MockProver test.
+    ///
+    /// Validates that the constrained secp256k1 scalar multiplication gadget
+    /// produces correct proofs when tested in isolation (without Keccak/Poseidon).
+    ///
+    /// This is a focused soundness test for the most complex gadget in the circuit.
+    /// If this fails, the full E2E test will also fail.
+    ///
+    /// NOTE: Still `#[ignore]`d because secp256k1 alone is ~300K+ rows at k=22.
+    /// Run with:
+    ///   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_secp256k1_mock_prover() {
+        use halo2_proofs::{
+            circuit::{Layouter, SimpleFloorPlanner},
+            dev::MockProver,
+            plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
+        };
+
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
+            0x67, 0x89, 0xab, 0xcd, 0xef,
+        ];
+
+        let (address, pub_x_bytes, pub_y_bytes) = native_derive_address(&key);
+        assert_eq!(
+            hex::encode(address),
+            "fcad0b19bb29d4674531d6f115237e16afce377c"
+        );
+
+        #[derive(Clone)]
+        struct SecpTestCircuit {
+            private_key: [u8; 32],
+        }
+
+        #[derive(Debug, Clone)]
+        struct SecpTestConfig {
+            secp: crate::secp256k1::Secp256k1Config,
+            instance: Column<Instance>,
+            advice: [Column<Advice>; 16],
+        }
+
+        impl Circuit<Fr> for SecpTestCircuit {
+            type Config = SecpTestConfig;
+            type FloorPlanner = SimpleFloorPlanner;
+
+            fn without_witnesses(&self) -> Self {
+                self.clone()
+            }
+
+            fn configure(meta: &mut ConstraintSystem<Fr>) -> SecpTestConfig {
+                let advice: [Column<Advice>; 16] = std::array::from_fn(|_| {
+                    let col = meta.advice_column();
+                    meta.enable_equality(col);
+                    col
+                });
+                let instance = meta.instance_column();
+                meta.enable_equality(instance);
+                let secp = crate::secp256k1::Secp256k1Config::configure(
+                    meta,
+                    [
+                        advice[0], advice[1], advice[2], advice[3],
+                        advice[4], advice[5], advice[6], advice[7],
+                    ],
+                    advice[13],
+                );
+                SecpTestConfig { secp, instance, advice }
+            }
+
+            fn synthesize(
+                &self,
+                config: SecpTestConfig,
+                mut layouter: impl Layouter<Fr>,
+            ) -> Result<(), Error> {
+                config.secp.load_tables(&mut layouter)?;
+
+                let (addr, pub_x_bytes, pub_y_bytes) = native_derive_address(&self.private_key);
+
+                let secp_chip = crate::secp256k1::Secp256k1Chip::new(&config.secp);
+
+                // Assign expected public key
+                let pub_x = crate::secp256k1::NativeSecpField::from_bytes_be(&pub_x_bytes);
+                let pub_y = crate::secp256k1::NativeSecpField::from_bytes_be(&pub_y_bytes);
+                let pub_x_limbs = pub_x.to_bn254_limbs();
+                let pub_y_limbs = pub_y.to_bn254_limbs();
+
+                let pub_x_assigned = layouter.assign_region(
+                    || "pub_x",
+                    |mut region| {
+                        let mut assigned = Vec::with_capacity(4);
+                        for (i, limb) in pub_x_limbs.iter().enumerate() {
+                            let cell = region.assign_advice(
+                                || format!("pub_x_limb_{}", i),
+                                config.advice[i],
+                                0,
+                                || Value::known(*limb),
+                            )?;
+                            assigned.push(cell);
+                        }
+                        Ok(crate::secp256k1::AssignedFieldElement {
+                            limbs: [
+                                assigned[0].clone(), assigned[1].clone(),
+                                assigned[2].clone(), assigned[3].clone(),
+                            ],
+                        })
+                    },
+                )?;
+
+                let pub_y_assigned = layouter.assign_region(
+                    || "pub_y",
+                    |mut region| {
+                        let mut assigned = Vec::with_capacity(4);
+                        for (i, limb) in pub_y_limbs.iter().enumerate() {
+                            let cell = region.assign_advice(
+                                || format!("pub_y_limb_{}", i),
+                                config.advice[i],
+                                0,
+                                || Value::known(*limb),
+                            )?;
+                            assigned.push(cell);
+                        }
+                        Ok(crate::secp256k1::AssignedFieldElement {
+                            limbs: [
+                                assigned[0].clone(), assigned[1].clone(),
+                                assigned[2].clone(), assigned[3].clone(),
+                            ],
+                        })
+                    },
+                )?;
+
+                // Assign generator point
+                let g = crate::secp256k1::NativePoint::GENERATOR;
+                let g_assigned = layouter.assign_region(
+                    || "generator",
+                    |mut region| {
+                        let g_x_limbs = g.x.to_bn254_limbs();
+                        let g_y_limbs = g.y.to_bn254_limbs();
+                        let mut x_a = Vec::new();
+                        for (i, l) in g_x_limbs.iter().enumerate() {
+                            x_a.push(region.assign_advice(|| "gx", config.advice[i], 0, || Value::known(*l))?);
+                        }
+                        let mut y_a = Vec::new();
+                        for (i, l) in g_y_limbs.iter().enumerate() {
+                            y_a.push(region.assign_advice(|| "gy", config.advice[i], 1, || Value::known(*l))?);
+                        }
+                        let mut z_a = Vec::new();
+                        for i in 0..4 {
+                            let v = if i == 0 { Fr::ONE } else { Fr::ZERO };
+                            z_a.push(region.assign_advice(|| "gz", config.advice[i], 2, || Value::known(v))?);
+                        }
+                        Ok(crate::secp256k1::AssignedPoint {
+                            x: crate::secp256k1::AssignedFieldElement {
+                                limbs: [x_a[0].clone(), x_a[1].clone(), x_a[2].clone(), x_a[3].clone()],
+                            },
+                            y: crate::secp256k1::AssignedFieldElement {
+                                limbs: [y_a[0].clone(), y_a[1].clone(), y_a[2].clone(), y_a[3].clone()],
+                            },
+                            z: crate::secp256k1::AssignedFieldElement {
+                                limbs: [z_a[0].clone(), z_a[1].clone(), z_a[2].clone(), z_a[3].clone()],
+                            },
+                        })
+                    },
+                )?;
+
+                // Scalar multiplication
+                let scalar_bits_bool = crate::secp256k1::decompose_key_to_bits(&self.private_key);
+                let scalar_bits: [Value<Fr>; 256] = std::array::from_fn(|i| {
+                    Value::known(if scalar_bits_bool[i] { Fr::ONE } else { Fr::ZERO })
+                });
+
+                let computed_point = secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
+
+                // Soundness checks
+                secp_chip.check_on_curve(&mut layouter, &computed_point)?;
+                secp_chip.check_limb_ranges(&mut layouter, &computed_point.x)?;
+                secp_chip.check_limb_ranges(&mut layouter, &computed_point.y)?;
+                secp_chip.check_limb_ranges(&mut layouter, &computed_point.z)?;
+
+                // Constrain k*G == (pub_x, pub_y)
+                secp_chip.constrain_affine(&mut layouter, &computed_point, &pub_x_assigned, &pub_y_assigned)?;
+
+                // Constrain the derived address as a public output
+                let mut addr_padded = [0u8; 32];
+                addr_padded[12..32].copy_from_slice(&addr);
+                let address_field = crate::poseidon::ark_to_halo2(
+                    &ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded),
+                );
+                let addr_cell = layouter.assign_region(
+                    || "address",
+                    |mut region| {
+                        region.assign_advice(|| "addr", config.advice[0], 0, || Value::known(address_field))
+                    },
+                )?;
+                layouter.constrain_instance(addr_cell.cell(), config.instance, 0)?;
+
+                Ok(())
+            }
+        }
+
+        let circuit = SecpTestCircuit { private_key: key };
+        let k = 22;
+        eprintln!("   Running secp256k1 MockProver test with k={}...", k);
+
+        let mut addr_padded = [0u8; 32];
+        addr_padded[12..32].copy_from_slice(&address);
+        let address_field = crate::poseidon::ark_to_halo2(
+            &ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded),
+        );
+
+        let result = MockProver::run(k, &circuit, vec![vec![address_field]]);
+        match result {
+            Ok(prover) => {
+                match prover.verify() {
+                    Ok(()) => {
+                        eprintln!("   ✅ secp256k1 MockProver test PASSED (k={})", k);
+                        eprintln!("      Address: 0x{}", hex::encode(address));
+                    }
+                    Err(e) => {
+                        eprintln!("   ❌ secp256k1 MockProver verify FAILED:");
+                        for err in &e {
+                            eprintln!("      {:?}", err);
+                        }
+                        panic!("secp256k1 MockProver verification failed");
+                    }
+                }
+            }
+            Err(e) => {
+                panic!("secp256k1 MockProver::run failed (k={}): {:?}", k, e);
             }
         }
     }
@@ -740,10 +987,9 @@ mod tests {
             recipient,
         };
 
-        // Public inputs claim the wrong root — the circuit should compute
-        // the correct root and fail the constraint.
+        let k = 22;
         let public_inputs = vec![wrong_root, nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(21, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
         match result {
             Ok(prover) => {
@@ -752,12 +998,14 @@ mod tests {
                     verify_result.is_err(),
                     "Circuit should REJECT a wrong Merkle root, but it passed!"
                 );
-                eprintln!("✅ Wrong Merkle root correctly rejected");
+                eprintln!("✅ Wrong Merkle root correctly rejected (k={})", k);
             }
-            Err(_) => {
-                // If MockProver::run fails, the circuit is too large for k=21
-                eprintln!("⚠️  MockProver::run failed (circuit may be too large for k=21)");
-                eprintln!("   Skipping negative test — would need larger k");
+            Err(e) => {
+                eprintln!(
+                    "⚠️  MockProver::run failed at k={}: {:?} \
+                     — negative test could not be executed",
+                    k, e
+                );
             }
         }
     }
@@ -806,8 +1054,9 @@ mod tests {
             recipient,
         };
 
+        let k = 22;
         let public_inputs = vec![root_field, wrong_nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(21, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
         match result {
             Ok(prover) => {
@@ -816,10 +1065,14 @@ mod tests {
                     verify_result.is_err(),
                     "Circuit should REJECT a wrong nullifier, but it passed!"
                 );
-                eprintln!("✅ Wrong nullifier correctly rejected");
+                eprintln!("✅ Wrong nullifier correctly rejected (k={})", k);
             }
-            Err(_) => {
-                eprintln!("⚠️  MockProver::run failed — circuit may need larger k");
+            Err(e) => {
+                eprintln!(
+                    "⚠️  MockProver::run failed at k={}: {:?} \
+                     — negative test could not be executed",
+                    k, e
+                );
             }
         }
     }
@@ -868,8 +1121,9 @@ mod tests {
             recipient: Fr::ZERO, // Zero recipient — should fail
         };
 
+        let k = 22;
         let public_inputs = vec![root_field, nullifier, Fr::ZERO];
-        let result = halo2_proofs::dev::MockProver::run(21, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
         match result {
             Ok(prover) => {
@@ -878,10 +1132,14 @@ mod tests {
                     verify_result.is_err(),
                     "Circuit should REJECT a zero recipient, but it passed!"
                 );
-                eprintln!("✅ Zero recipient correctly rejected");
+                eprintln!("✅ Zero recipient correctly rejected (k={})", k);
             }
-            Err(_) => {
-                eprintln!("⚠️  MockProver::run failed — circuit may need larger k");
+            Err(e) => {
+                eprintln!(
+                    "⚠️  MockProver::run failed at k={}: {:?} \
+                     — negative test could not be executed",
+                    k, e
+                );
             }
         }
     }

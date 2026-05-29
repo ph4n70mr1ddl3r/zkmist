@@ -48,7 +48,7 @@ contract Halo2Verifier is IHalo2Verifier {
 
     // ── Verification parameters ─────────────────────────────────────
     uint256 public constant NUM_INSTANCES = 3;
-    uint256 public constant K = 21;
+    uint256 public constant K = 22;
 
     // ── BN254 pairing precompile ────────────────────────────────────
     address constant BN254_PAIRING = address(0x08);

@@ -391,7 +391,7 @@ impl<'a> KeccakChip<'a> {
         let mut c_cols: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::with_capacity(5);
         for x in 0..5 {
             // C[x] = state[x*5+0] ^ state[x*5+1] ^ state[x*5+2] ^ state[x*5+3] ^ state[x*5+4]
-            let mut acc = state[x * 5 + 0].clone();
+            let mut acc = state[x * 5].clone();
             for y in 1..5 {
                 acc = self.xor_lanes(region, offset, &acc, &state[x * 5 + y])?;
             }
@@ -625,7 +625,7 @@ impl<'a> KeccakChip<'a> {
                 // Lane(0,0) = bytes 0..8, Lane(1,0) = bytes 8..16,
                 // Lane(2,0) = bytes 16..24, Lane(3,0) = bytes 24..32
                 let _hash_bits: Vec<AssignedCell<Fr, Fr>> = (0..4)
-                    .flat_map(|x| state[x * 5 + 0].clone())
+                    .flat_map(|x| state[x * 5].clone())
                     .collect();
 
                 // Step 4: Extract address bits (bits 96..255 of the hash,
@@ -638,11 +638,11 @@ impl<'a> KeccakChip<'a> {
                 //   - bits 192..255 = lane(3,0)
                 let address_bits: Vec<AssignedCell<Fr, Fr>> = {
                     // Lane(1,0) bits 32..63 (32 bits)
-                    let lane1 = &state[1 * 5 + 0];
+                    let lane1 = &state[5];
                     // Lane(2,0) bits 0..63 (64 bits)
-                    let lane2 = &state[2 * 5 + 0];
+                    let lane2 = &state[2 * 5];
                     // Lane(3,0) bits 0..63 (64 bits)
-                    let lane3 = &state[3 * 5 + 0];
+                    let lane3 = &state[3 * 5];
                     let mut abits: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(160);
                     abits.extend(lane1[32..64].iter().cloned());
                     abits.extend(lane2.iter().cloned());
@@ -651,7 +651,7 @@ impl<'a> KeccakChip<'a> {
                 };
 
                 // Verify against native computation (debug check)
-                for (_i, &addr_byte) in address.iter().enumerate() {
+                for &addr_byte in address.iter() {
                     let expected_bits = u64_to_bits(addr_byte as u64);
                     for j in 0..8 {
                         let _expected = if expected_bits[j] { Fr::ONE } else { Fr::ZERO };

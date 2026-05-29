@@ -101,7 +101,7 @@ pub fn generate_v2_proof(
     };
     use halo2curves::bn256::G1Affine;
 
-    let k = 21; // 2^21 = 2M rows — sufficient for full circuit
+    let k = 22; // 2^22 = 4M rows — required for full circuit (secp256k1 + Keccak + Poseidon + Merkle)
     eprintln!("      Generating KZG parameters (k={})...", k);
     let params: Params<G1Affine> = Params::new(k);
 
