@@ -86,3 +86,34 @@ Before mainnet deployment, ALL of the following must be completed:
 - [ ] Fuzz test the circuit with random private keys (not just test vector)
 - [ ] Benchmark proving time on reference hardware (target: <60 seconds)
 - [ ] Set up monitoring/alerting for the deployed contracts
+
+## Post-Deployment Monitoring
+
+Once the contracts are deployed on Base mainnet, the following should be monitored:
+
+### On-Chain Metrics (query via RPC or BaseScan API)
+
+| Metric | Method | Alert Threshold |
+|--------|--------|-----------------|
+| Claims per hour | `airdrop.totalClaims()` diff over 1h | > 10,000/h (abnormal surge) |
+| Gas price spike during claims | Block base fee | > 10 gwei sustained |
+| Duplicate nullifier attempt | Watch `Claimed` event revert logs | Any occurrence |
+| Supply anomaly | `token.totalSupply()` vs `claims × 10,000` | Mismatch |
+
+### Simple Monitoring Script (example)
+
+```bash
+# Poll every 60 seconds, alert on anomalies
+while true; do
+  claims=$(cast call $AIRDROP_ADDR "totalClaims()(uint256)" --rpc-url https://mainnet.base.org)
+  supply=$(cast call $TOKEN_ADDR "totalSupply()(uint256)" --rpc-url https://mainnet.base.org)
+  echo "$(date) claims=$claims supply=$supply"
+  sleep 60
+done
+```
+
+### Recommended Tools
+- **BaseScan alerts**: Set up email/webhook for all transactions to the airdrop contract
+- **Tenderly** or **OpenZeppelin Defender**: Transaction monitoring + anomaly detection
+- **Dune dashboard**: Track cumulative claims, supply, and burn rate over time
+- **GitHub Actions scheduled job**: Run a lightweight health-check daily (see `ci.yml` schedule)

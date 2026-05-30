@@ -49,9 +49,8 @@ jobs:
       - name: Run ignored circuit tests
         run: |
           echo "Running full E2E and secp256k1 MockProver tests (these are slow)..."
-          cargo test -p zkmist-circuits -- --ignored --nocapture || true
-          echo "NOTE: These tests require k=22 (~4M rows) and may take 15-30 minutes each."
-          echo "They MUST pass before mainnet deployment."
+          cargo test -p zkmist-circuits -- --ignored --nocapture
+          echo "✅ All ignored circuit tests passed."
 
   rust-fmt:
     name: Rust – Format

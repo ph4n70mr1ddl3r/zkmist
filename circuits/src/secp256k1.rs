@@ -107,7 +107,11 @@ impl NativeSecpField {
     pub fn from_bytes_be(bytes: &[u8; 32]) -> Self {
         let mut limbs = [0u64; 4];
         for i in 0..4 {
-            limbs[i] = u64::from_be_bytes(bytes[i * 8..(i + 1) * 8].try_into().unwrap());
+            limbs[i] = u64::from_be_bytes(
+                bytes[i * 8..(i + 1) * 8]
+                    .try_into()
+                    .expect("from_bytes_be: slice is always 8 bytes"),
+            );
         }
         limbs.reverse(); // big-endian byte order → little-endian limb order
         Self(limbs)
@@ -443,7 +447,11 @@ impl NativePoint {
 pub fn native_derive_address(private_key: &[u8; 32]) -> ([u8; 20], [u8; 32], [u8; 32]) {
     let mut limbs = [0u64; 4];
     for i in 0..4 {
-        limbs[i] = u64::from_be_bytes(private_key[i * 8..(i + 1) * 8].try_into().unwrap());
+        limbs[i] = u64::from_be_bytes(
+            private_key[i * 8..(i + 1) * 8]
+                .try_into()
+                .expect("native_derive_address: slice is always 8 bytes"),
+        );
     }
     limbs.reverse();
     let point = NativePoint::scalar_mul(&limbs);
@@ -1183,7 +1191,11 @@ impl<'a> Secp256k1Chip<'a> {
                 let c = NativeSecpField(constant.map(|f| {
                     let repr = f.to_repr();
                     let bytes: &[u8] = repr.as_ref();
-                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                    u64::from_le_bytes(
+                        bytes[..8]
+                            .try_into()
+                            .expect("field element repr is at least 8 bytes"),
+                    )
                 }));
                 let result = na.map(|a| a.mul(&c).to_bn254_limbs());
 
@@ -1746,7 +1758,11 @@ impl<'a> Secp256k1Chip<'a> {
             limb.value().assert_if_known(|v| {
                 let repr = v.to_repr();
                 let bytes: &[u8] = repr.as_ref();
-                result = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                result = u64::from_le_bytes(
+                    bytes[..8]
+                        .try_into()
+                        .expect("field element repr is at least 8 bytes"),
+                );
                 true
             });
             result
@@ -1938,7 +1954,11 @@ fn limbs_to_native(limbs: &[Fr; 4]) -> NativeSecpField {
 fn limb_to_u64(limb: Fr) -> u64 {
     let repr = limb.to_repr();
     let bytes: &[u8] = repr.as_ref();
-    u64::from_le_bytes(bytes[..8].try_into().unwrap())
+    u64::from_le_bytes(
+        bytes[..8]
+            .try_into()
+            .expect("field element repr is always 32 bytes, so first 8 are valid"),
+    )
 }
 
 #[cfg(test)]

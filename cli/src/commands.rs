@@ -517,7 +517,7 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             || contract
                 == "0x000000000000000000000000000000000000dEaD"
                     .parse::<Address>()
-                    .unwrap()
+                    .expect("hardcoded dead address is valid")
         {
             eprintln!("⚠️  Contract not deployed yet (address is placeholder).");
             eprintln!("   On-chain status unavailable until deployment.");
