@@ -7,20 +7,12 @@ edition = "2021"
 name = "zkmist"
 path = "src/main.rs"
 
-[features]
-default = ["v1", "v2"]
-v1 = ["risc0-zkvm", "bincode"]
-v2 = []
-
 [dependencies]
 # CLI framework
 clap = { version = "4", features = ["derive"] }
 # Ethereum interaction
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
-# ZK proof generation — V1 (RISC Zero, optional)
-risc0-zkvm = { version = "3.0.5", features = ["client", "prove"], optional = true }
-bincode = { version = "1", optional = true }
-# ZK proof generation — V2 (Halo2)
+# ZK proof generation — Halo2-KZG
 zkmist-circuits = { path = "../circuits" }
 halo2_proofs = "0.3.0"
 halo2curves = "0.6.0"

@@ -2,111 +2,93 @@
 pragma solidity ^0.8.28;
 
 import {ZKMToken} from "./ZKMToken.sol";
-import {IRiscZeroVerifier} from "./IRiscZeroVerifier.sol";
+import {IHalo2Verifier} from "./Halo2Verifier.sol";
 
-/// @title ZKMAirdrop — Privacy-preserving ZKM token claim contract
+/// @title ZKMAirdrop — Privacy-preserving ZKM token claim contract (Halo2-KZG)
 /// @notice Fully immutable. No admin, no owner, no pause, no upgrade.
-///         Anyone can submit a valid ZK proof on behalf of any recipient.
-///         Tokens are minted directly to the recipient — the submitter receives nothing.
-/// @dev    Journal layout (84 bytes):
-///         [0:32]   merkleRoot   (bytes32)
-///         [32:64]  nullifier    (bytes32)
-///         [64:84]  recipient    (address — raw 20 bytes)
-///         The Solidity contract slices the journal by these exact offsets.
-///         Any mismatch between guest program output and this layout causes all proofs to be rejected.
+/// @dev Uses Halo2-KZG proof verification. Public inputs are passed directly
+///      as calldata — no journal parsing needed.
 contract ZKMAirdrop {
     ZKMToken public immutable token;
-    IRiscZeroVerifier public immutable verifier;
-    bytes32 public immutable imageId;
+    /// @notice Halo2 verifier contract. Implements IHalo2Verifier.
+    IHalo2Verifier public immutable verifier;
     bytes32 public immutable merkleRoot;
 
-    uint256 public constant CLAIM_AMOUNT = 10_000e18; // 10,000 ZKM
+    uint256 public constant CLAIM_AMOUNT = 10_000e18;         // 10,000 ZKM
     uint256 public constant MAX_CLAIMS = 1_000_000;
-    // 2027-01-01 00:00:00 UTC — claims after this timestamp are rejected.
-    // Verified: new Date(1798761600 * 1000).toUTCString() = "Fri, 01 Jan 2027 00:00:00 GMT"
-    uint256 public constant CLAIM_DEADLINE = 1_798_761_600;
+    uint256 public constant CLAIM_DEADLINE = 1_798_761_600;    // 2027-01-01 00:00:00 UTC
+    uint256 public constant MIN_PROOF_LENGTH = 400;
+    uint256 public constant MAX_PROOF_LENGTH = 1200;
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;
 
-    /// @notice Emitted when a claim succeeds.
-    /// @param nullifier  The claim's nullifier (opaque, not the qualified address).
-    /// @param amount     Always CLAIM_AMOUNT (10,000 ZKM).
-    /// @param recipient  Address that received the tokens.
-    /// @param totalClaims Updated claim count after this claim.
-    event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient, uint256 totalClaims);
+    event Claimed(
+        bytes32 indexed nullifier,
+        uint256 amount,
+        address indexed recipient,
+        uint256 totalClaims
+    );
 
-    constructor(address _token, address _verifier, bytes32 _imageId, bytes32 _merkleRoot) {
+    constructor(
+        address _token,
+        address _verifier,
+        bytes32 _merkleRoot
+    ) {
+        require(IHalo2Verifier(_verifier).IS_PRODUCTION_VERIFIER(), "Verifier not production-ready");
         token = ZKMToken(_token);
-        verifier = IRiscZeroVerifier(_verifier);
-        imageId = _imageId;
+        verifier = IHalo2Verifier(_verifier);
         merkleRoot = _merkleRoot;
     }
 
-    /// @notice Claim ZKM tokens by submitting a valid ZK proof.
-    /// @param _proof     RISC Zero STARK proof (Groth16-wrapped seal). First 4 bytes are the selector.
-    /// @param _journal   Journal bytes (84 bytes: merkleRoot[0:32] + nullifier[32:64] + recipient[64:84]).
-    /// @param _nullifier The nullifier for this claim — prevents double-claiming.
-    ///                   Computed as poseidon(Fr(privateKey), Fr(domain)) off-chain.
-    /// @param _recipient Address to receive 10,000 ZKM.
-    /// @dev Permissionless: anyone can call this function. Tokens go to `_recipient`, not `msg.sender`.
-    ///      Reverts if: claim window closed, cap reached, nullifier already used,
-    ///      recipient is zero, journal is wrong length, proof is invalid,
-    ///      or journal fields don't match the submitted parameters.
-    ///
-    ///      Reentrancy safety: This function follows Checks-Effects-Interactions.
-    ///      All state changes (nullifier marking, totalClaims increment) happen before
-    ///      the external call to `token.mint()`. OpenZeppelin's `_mint()` does not
-    ///      invoke callbacks on the recipient, so reentrancy via `ERC1155Holder`
-    ///      or similar hooks is not possible. No explicit reentrancy guard is needed.
-    function claim(bytes calldata _proof, bytes calldata _journal, bytes32 _nullifier, address _recipient) external {
-        // Check claim window
+    /// @notice Claim ZKM tokens with a valid Halo2 proof.
+    /// @param proof The Halo2 KZG proof bytes.
+    /// @param nullifier The claim's nullifier (poseidon(key, domain)).
+    /// @param recipient Address to receive 10,000 ZKM.
+    function claim(
+        bytes calldata proof,
+        bytes32 nullifier,
+        address recipient
+    ) external {
+        // Check basic invariants FIRST (cheap checks before expensive verification)
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
-        require(!usedNullifiers[_nullifier], "Already claimed");
-        require(_recipient != address(0), "Recipient cannot be zero address");
+        require(!usedNullifiers[nullifier], "Already claimed");
+        require(recipient != address(0), "Recipient cannot be zero");
 
-        // Validate journal layout: must be exactly 84 bytes
-        // Layout: merkleRoot[0:32] ++ nullifier[32:64] ++ recipient[64:84]
-        require(_journal.length == 84, "Invalid journal length");
+        // Validate proof length
+        require(proof.length >= MIN_PROOF_LENGTH && proof.length <= MAX_PROOF_LENGTH, "Invalid proof length");
 
-        // Verify RISC Zero proof
-        // Journal digest: SHA-256 of raw journal bytes
-        bytes32 journalDigest = bytes32(sha256(_journal));
-        verifier.verify(_proof, imageId, journalDigest);
+        // Construct public inputs: [merkleRoot, nullifier, recipient]
+        uint256[3] memory publicInputs = [
+            uint256(merkleRoot),
+            uint256(nullifier),
+            uint256(uint160(recipient))
+        ];
 
-        // Validate journal contents match claim parameters
-        require(bytes32(_journal[0:32]) == merkleRoot, "Root mismatch");
-        require(bytes32(_journal[32:64]) == _nullifier, "Nullifier mismatch");
-        require(address(bytes20(_journal[64:84])) == _recipient, "Recipient mismatch");
+        // Verify Halo2 proof via the verifier contract.
+        // The verifier checks the proof against the public inputs, which bind:
+        //   - merkleRoot: ensures the address is in the eligibility tree
+        //   - nullifier: prevents double-claims, derived from private key
+        //   - recipient: front-running protection (bound inside the proof)
+        require(verifier.verify(proof, publicInputs), "Invalid proof");
 
         // Mark claimed and mint
-        usedNullifiers[_nullifier] = true;
+        usedNullifiers[nullifier] = true;
         totalClaims++;
-        token.mint(_recipient, CLAIM_AMOUNT);
+        token.mint(recipient, CLAIM_AMOUNT);
 
-        emit Claimed(_nullifier, CLAIM_AMOUNT, _recipient, totalClaims);
+        emit Claimed(nullifier, CLAIM_AMOUNT, recipient, totalClaims);
     }
 
-    // ── View helpers ──────────────────────────────────────────────────────
-
-    /// @notice Check if a nullifier has already been used to claim.
-    /// @param nullifier The nullifier to check.
-    /// @return true if the nullifier has been used, false otherwise.
     function isClaimed(bytes32 nullifier) external view returns (bool) {
         return usedNullifiers[nullifier];
     }
 
-    /// @notice Number of claims remaining before the cap is reached.
-    /// @return The number of remaining claims (MAX_CLAIMS - totalClaims), or 0 if cap reached.
-    /// @dev Uses checked comparison to avoid revert if totalClaims is manipulated
-    ///      beyond MAX_CLAIMS (e.g., via direct storage writes in tests).
     function claimsRemaining() external view returns (uint256) {
         return totalClaims >= MAX_CLAIMS ? 0 : MAX_CLAIMS - totalClaims;
     }
 
-    /// @notice Whether the claim window is still open (before deadline AND under cap).
-    /// @return true if both conditions are met, false otherwise.
     function isClaimWindowOpen() external view returns (bool) {
         return block.timestamp < CLAIM_DEADLINE && totalClaims < MAX_CLAIMS;
     }

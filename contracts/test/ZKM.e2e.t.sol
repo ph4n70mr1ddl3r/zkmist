@@ -4,247 +4,172 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
-import {NoopVerifier} from "./TestUtils.sol";
+import {MockHalo2Verifier} from "./TestUtils.sol";
 
-/// @title ZKME2ETest
-/// @notice End-to-end integration test simulating the full claim pipeline:
-///         eligibility list → Merkle tree → proof generation → claim → mint.
+/// @title ZKM V2 E2E Testnet Tests
+/// @notice Tests for V2 testnet deployment validation.
+///         These tests simulate the full claim flow that would be
+///         executed on Base Sepolia after V2 deployment.
 ///
-///         Uses a NoopVerifier (real proofs require the RISC Zero zkVM).
-///         Tests the complete data flow: address → leaf → tree → journal → contract.
-contract ZKME2ETest is Test {
-    // ── Test parameters ──────────────────────────────────────────────────
-    // Small tree for testing: 4 levels, 16 leaves
-    // Matches the Rust test_end_to_end_merkle_proof test in merkle-tree/src/lib.rs
-    uint256 constant TEST_TREE_DEPTH = 4;
+///         Run with: forge test --match-contract ZKMV2E2E -vvv
+///
+///         For fork tests against a real deployment:
+///         forge test --match-contract ZKMV2E2E --fork-url $BASE_SEPOLIA_RPC
+contract ZKMV2E2ETest is Test {
+    ZKMToken public token;
+    ZKMAirdrop public airdrop;
+    MockHalo2Verifier public verifier;
 
-    // PRD test vector private key: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    // Derived address: 0xfcad0b19bb29d4674531d6f115237e16afce377c
-    // Leaf hash:       0x1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9
-    // Computed via Poseidon(1 input, t=2) over BN254.
+    address constant MINTER = address(0x1);
+    bytes32 constant MERKLE_ROOT =
+        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
-    bytes32 constant IMAGE_ID = bytes32(uint256(0x01));
-
-    // PRD test addresses
-    address constant RECIPIENT = address(0xB0B);
-    address constant PRD_ADDRESS = 0xFCAd0B19bB29D4674531d6f115237E16AfCE377c;
-
-    // ── Deploy helper ────────────────────────────────────────────────────
-
-    /// @notice Deploys a fresh set of test contracts with address prediction.
-    /// @param _root The merkle root to use for the airdrop contract.
-    /// @return testToken The deployed ZKMToken.
-    /// @return testAirdrop The deployed ZKMAirdrop.
-    function _deployTestSystem(bytes32 _root) internal returns (ZKMToken testToken, ZKMAirdrop testAirdrop) {
-        uint256 nonceBefore = vm.getNonce(address(this));
-        address predictedAirdrop = vm.computeCreateAddress(address(this), nonceBefore + 2);
-
-        NoopVerifier testVerifier = new NoopVerifier();
-        testToken = new ZKMToken(predictedAirdrop);
-        testAirdrop = new ZKMAirdrop(address(testToken), address(testVerifier), IMAGE_ID, _root);
-
-        require(address(testAirdrop) == predictedAirdrop, "Address prediction failed");
-        require(testToken.minter() == address(testAirdrop), "Minter mismatch");
+    function setUp() public {
+        verifier = new MockHalo2Verifier();
+        token = new ZKMToken(MINTER);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
     }
 
-    // ── E2E Test 1: Full claim flow with precomputed tree data ───────────
-    //
-    // Simulates the complete pipeline:
-    // 1. Construct journal bytes (merkleRoot + nullifier + recipient)
-    // 2. Submit claim to ZKMAirdrop contract
-    // 3. Verify tokens minted correctly
-    // 4. Verify nullifier prevents double-claim
-    function test_e2e_fullClaimFlow() public {
-        bytes32 testRoot = bytes32(uint256(0xDEAD));
-        bytes32 testNullifier = bytes32(uint256(0xBEEF));
-        address testRecipient = address(0xCAFE);
+    // ── Deployment integrity tests ──────────────────────────────────────
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
+    function test_e2e_deployment_integrity() public view {
+        // All immutable parameters must be correct
+        assertEq(address(airdrop.token()), address(token));
+        assertEq(address(airdrop.verifier()), address(verifier));
+        assertEq(airdrop.merkleRoot(), MERKLE_ROOT);
+        assertEq(airdrop.CLAIM_AMOUNT(), 10_000e18);
+        assertEq(airdrop.MAX_CLAIMS(), 1_000_000);
+        assertEq(airdrop.CLAIM_DEADLINE(), 1_798_761_600);
+        assertEq(airdrop.totalClaims(), 0);
+        assertEq(token.minter(), MINTER);
+        assertEq(token.MAX_SUPPLY(), 10_000_000_000e18);
+    }
 
-        // Build journal
-        bytes memory journal = _buildJournal(testRoot, testNullifier, testRecipient);
+    function test_e2e_initial_state() public view {
+        assertTrue(airdrop.isClaimWindowOpen());
+        assertEq(airdrop.claimsRemaining(), 1_000_000);
+        assertFalse(airdrop.isClaimed(bytes32(uint256(1))));
+        assertFalse(airdrop.isClaimed(bytes32(uint256(0))));
+        assertFalse(airdrop.isClaimed(keccak256("test")));
+    }
 
-        // Verify journal layout
-        assertEq(journal.length, 84);
-        bytes32 jRoot;
-        bytes32 jNullifier;
-        address jRecipient;
-        assembly {
-            jRoot := mload(add(journal, 0x20))
-            jNullifier := mload(add(journal, 0x40))
-            jRecipient := mload(add(journal, 0x54))
-        }
-        assertEq(jRoot, testRoot);
-        assertEq(jNullifier, testNullifier);
-        assertEq(jRecipient, testRecipient);
+    // ── Claim tests (with mock verifier) ────────────────────────────────
 
-        // Claim
-        testAirdrop.claim("", journal, testNullifier, testRecipient);
+    function test_e2e_claim_with_mock_verifier() public {
+        // Deploy with correct minter prediction
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        // Verify mint
-        assertEq(testToken.balanceOf(testRecipient), 10_000e18);
-        assertEq(testToken.totalSupply(), 10_000e18);
-        assertTrue(testAirdrop.isClaimed(testNullifier));
-        assertEq(testAirdrop.totalClaims(), 1);
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = keccak256("test_nullifier");
+        address recipient = address(0xB0B);
 
-        // Double-claim must fail
+        a.claim(fakeProof, nullifier, recipient);
+        assertEq(a.totalClaims(), 1);
+        assertTrue(a.isClaimed(nullifier));
+        assertEq(t.balanceOf(recipient), 10_000e18);
+    }
+
+    function test_e2e_double_claim_rejected() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = keccak256("test_nullifier");
+        address recipient = address(0xB0B);
+
+        a.claim(fakeProof, nullifier, recipient);
+
         vm.expectRevert("Already claimed");
-        testAirdrop.claim("", journal, testNullifier, testRecipient);
+        a.claim(fakeProof, nullifier, address(0x123));
     }
 
-    // ── E2E Test 2: Multi-claim scenario ─────────────────────────────────
-    function test_e2e_multipleClaimsBuildSupply() public {
-        bytes32 testRoot = bytes32(uint256(0xABCD));
+    function test_e2e_claim_rejected_zero_recipient() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = keccak256("test_nullifier");
 
-        // Claim 100 times
-        uint256 numClaims = 100;
-        for (uint256 i = 1; i <= numClaims; i++) {
-            bytes32 nullifier = bytes32(uint256(i));
-            address recipient = address(uint160(i));
-            bytes memory journal = _buildJournal(testRoot, nullifier, recipient);
-            testAirdrop.claim("", journal, nullifier, recipient);
-        }
-
-        assertEq(testAirdrop.totalClaims(), numClaims);
-        assertEq(testAirdrop.claimsRemaining(), 1_000_000 - numClaims);
-        assertEq(testToken.totalSupply(), numClaims * 10_000e18);
+        vm.expectRevert("Recipient cannot be zero");
+        a.claim(fakeProof, nullifier, address(0));
     }
 
-    // ── E2E Test 3: Burn after claim ─────────────────────────────────────
-    function test_e2e_claimThenBurn() public {
-        bytes32 testRoot = bytes32(uint256(0xFACE));
+    function test_e2e_claim_rejected_short_proof() public {
+        bytes memory shortProof = new bytes(100);
+        bytes32 nullifier = keccak256("test_nullifier");
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
-
-        // Claim
-        bytes32 nullifier = bytes32(uint256(0x42));
-        address recipient = address(0xB0B);
-        bytes memory journal = _buildJournal(testRoot, nullifier, recipient);
-        testAirdrop.claim("", journal, nullifier, recipient);
-
-        assertEq(testToken.balanceOf(recipient), 10_000e18);
-        assertEq(testToken.totalSupply(), 10_000e18);
-
-        // Burn half
-        vm.prank(recipient);
-        testToken.burn(5_000e18);
-
-        assertEq(testToken.balanceOf(recipient), 5_000e18);
-        assertEq(testToken.totalSupply(), 5_000e18); // supply decreased
-
-        // Transfer remaining to another address
-        vm.prank(recipient);
-        testToken.transfer(address(0xCAFE), 5_000e18);
-
-        assertEq(testToken.balanceOf(recipient), 0);
-        assertEq(testToken.balanceOf(address(0xCAFE)), 5_000e18);
-        assertEq(testToken.totalSupply(), 5_000e18); // unchanged by transfer
+        vm.expectRevert("Invalid proof length");
+        airdrop.claim(shortProof, nullifier, address(0xB0B));
     }
 
-    // ── E2E Test 4: Claim window boundary ────────────────────────────────
-    function test_e2e_claimWindowCloses() public {
-        bytes32 testRoot = bytes32(uint256(0xBEEF));
+    function test_e2e_claim_rejected_long_proof() public {
+        bytes memory longProof = new bytes(2000);
+        bytes32 nullifier = keccak256("test_nullifier");
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
-
-        // Claim before deadline
-        assertTrue(testAirdrop.isClaimWindowOpen());
-        bytes32 nullifier = bytes32(uint256(1));
-        address recipient = address(1);
-        bytes memory journal = _buildJournal(testRoot, nullifier, recipient);
-        testAirdrop.claim("", journal, nullifier, recipient);
-
-        // Warp past deadline: 2027-01-01 00:00:00 UTC
-        vm.warp(1_798_761_600);
-        assertFalse(testAirdrop.isClaimWindowOpen());
-
-        // Claim should fail
-        bytes32 nullifier2 = bytes32(uint256(2));
-        address recipient2 = address(2);
-        bytes memory journal2 = _buildJournal(testRoot, nullifier2, recipient2);
-        vm.expectRevert("Claim period ended");
-        testAirdrop.claim("", journal2, nullifier2, recipient2);
+        vm.expectRevert("Invalid proof length");
+        airdrop.claim(longProof, nullifier, address(0xB0B));
     }
 
-    // ── E2E Test 5: Relayer submits for someone else ─────────────────────
-    function test_e2e_relayerSubmitsForClaimant() public {
-        bytes32 testRoot = bytes32(uint256(0x1234));
+    // ── Boundary proof length tests ─────────────────────────────────────
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
-
-        // Relayer submits proof on behalf of claimant
-        bytes32 nullifier = bytes32(uint256(0x42));
-        address claimant = address(0xB0B);
-        address relayer = address(0xDEAD);
-        bytes memory journal = _buildJournal(testRoot, nullifier, claimant);
-
-        vm.prank(relayer); // relayer submits, not the claimant
-        testAirdrop.claim("", journal, nullifier, claimant);
-
-        // Tokens go to the claimant, not the relayer
-        assertEq(testToken.balanceOf(claimant), 10_000e18);
-        assertEq(testToken.balanceOf(relayer), 0);
+    function test_e2e_claim_rejected_proof_length_399() public {
+        bytes memory proof = new bytes(399);
+        vm.expectRevert("Invalid proof length");
+        airdrop.claim(proof, keccak256("n"), address(0xB0B));
     }
 
-    // ── E2E Test 6: Max supply cap ───────────────────────────────────────
-    function test_e2e_maxSupplyCap() public {
-        bytes32 testRoot = bytes32(uint256(0x5678));
-
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
-
-        // Simulate 999,999 claims
-        vm.store(address(testAirdrop), bytes32(uint256(0)), bytes32(uint256(999_999)));
-
-        // 1,000,000th claim succeeds
-        bytes32 nullifier = bytes32(uint256(1_000_000));
-        address recipient = address(uint160(1_000_000));
-        bytes memory journal = _buildJournal(testRoot, nullifier, recipient);
-        testAirdrop.claim("", journal, nullifier, recipient);
-        assertEq(testAirdrop.totalClaims(), 1_000_000);
-
-        // 1,000,001st fails
-        bytes32 nullifier2 = bytes32(uint256(1_000_001));
-        address recipient2 = address(uint160(1_000_001));
-        bytes memory journal2 = _buildJournal(testRoot, nullifier2, recipient2);
-        vm.expectRevert("Claim cap reached");
-        testAirdrop.claim("", journal2, nullifier2, recipient2);
+    function test_e2e_claim_rejected_proof_length_1201() public {
+        bytes memory proof = new bytes(1201);
+        vm.expectRevert("Invalid proof length");
+        airdrop.claim(proof, keccak256("n"), address(0xB0B));
     }
 
-    // ── E2E Test 7: Journal tampering detection ──────────────────────────
-    function test_e2e_journalTamperingDetected() public {
-        bytes32 testRoot = bytes32(uint256(0x9ABC));
+    // ── Immutability tests ──────────────────────────────────────────────
 
-        (ZKMToken testToken, ZKMAirdrop testAirdrop) = _deployTestSystem(testRoot);
-
-        bytes32 nullifier = bytes32(uint256(0x42));
-        address recipient = address(0xB0B);
-
-        // Tampered root in journal
-        bytes memory badJournal1 = _buildJournal(bytes32(uint256(0xBAD)), nullifier, recipient);
-        vm.expectRevert("Root mismatch");
-        testAirdrop.claim("", badJournal1, nullifier, recipient);
-
-        // Tampered nullifier in journal
-        bytes memory badJournal2 = _buildJournal(testRoot, bytes32(uint256(0xBAD)), recipient);
-        vm.expectRevert("Nullifier mismatch");
-        testAirdrop.claim("", badJournal2, nullifier, recipient);
-
-        // Tampered recipient in journal
-        bytes memory badJournal3 = _buildJournal(testRoot, nullifier, address(0xBAD));
-        vm.expectRevert("Recipient mismatch");
-        testAirdrop.claim("", badJournal3, nullifier, recipient);
-
-        // Valid journal works
-        bytes memory goodJournal = _buildJournal(testRoot, nullifier, recipient);
-        testAirdrop.claim("", goodJournal, nullifier, recipient);
-        assertEq(testToken.balanceOf(recipient), 10_000e18);
+    function test_e2e_token_name_and_symbol() public view {
+        assertEq(token.name(), "ZKMist");
+        assertEq(token.symbol(), "ZKM");
+        assertEq(token.decimals(), 18);
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
-
-    function _buildJournal(bytes32 root, bytes32 nullifier, address recipient) internal pure returns (bytes memory) {
-        return bytes.concat(root, nullifier, bytes20(recipient));
+    function test_e2e_token_initial_supply_zero() public view {
+        assertEq(token.totalSupply(), 0);
     }
+
+    // ── Gas measurement for view functions ──────────────────────────────
+
+    function test_e2e_gas_isClaimWindowOpen() public view {
+        airdrop.isClaimWindowOpen();
+    }
+
+    function test_e2e_gas_claimsRemaining() public view {
+        airdrop.claimsRemaining();
+    }
+
+    function test_e2e_gas_isClaimed() public view {
+        airdrop.isClaimed(keccak256("test"));
+    }
+
+    // ── Full deployment simulation (gas measurement) ────────────────────
+
+    function test_e2e_gas_full_deploy() public {
+        MockHalo2Verifier v = new MockHalo2Verifier();
+        address predictedAirdrop = vm.computeCreateAddress(
+            address(this),
+            vm.getNonce(address(this)) + 1
+        );
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), MERKLE_ROOT);
+
+        // Verify deployment integrity
+        assertEq(t.minter(), address(a));
+        assertEq(a.merkleRoot(), MERKLE_ROOT);
+        assertEq(a.CLAIM_AMOUNT(), 10_000e18);
+    }
+
+    receive() external payable {}
 }

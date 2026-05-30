@@ -4,82 +4,160 @@ pragma solidity ^0.8.28;
 import {Script, console} from "forge-std/Script.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
+import {Halo2Verifier} from "../src/Halo2Verifier.sol";
 
-/// @notice Deploy ZKMist contracts to Base (assumes verifier is already deployed).
-/// @dev Usage: forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast
+/// @title Deploy — Deploy ZKMist contracts (Halo2-KZG)
+/// @notice Deploys Halo2Verifier, ZKMToken, and ZKMAirdrop to Base.
 ///
-/// ⚠️  Use DeployAll.s.sol instead if you need to deploy the verifier as well.
-///      This script is for deploying to a chain where the RiscZeroGroth16Verifier
-///      has already been deployed separately.
+/// Usage:
+///   # Testnet (Base Sepolia):
+///   forge script script/Deploy.s.sol --rpc-url $BASE_SEPOLIA_RPC --broadcast
 ///
-/// Required environment variables:
-///   VERIFIER_ADDRESS   — RISC Zero Groth16 verifier address on Base
-///   IMAGE_ID           — Guest program image ID (bytes32 hex)
-///   MERKLE_ROOT        — Merkle root of eligibility tree (bytes32 hex)
+///   # Mainnet (Base):
+///   forge script script/Deploy.s.sol --rpc-url $BASE_RPC --broadcast
 ///
-/// Optional environment variables:
-///   PRIVATE_KEY (or ETH_WALLET_PRIVATE_KEY) — Deployer private key
+/// Prerequisites:
+///   1. Halo2Verifier.sol must be regenerated with snark-verifier:
+///      cargo run --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
+///   2. Verify IS_PRODUCTION_VERIFIER is true in the generated verifier
+///   3. Deployer must have ETH on Base for gas (~$0.50 for all 3 contracts)
+///
+/// Safety checks:
+///   - Verifier must be production-ready (IS_PRODUCTION_VERIFIER == true)
+///   - Merkle root matches known eligibility tree root
+///   - Chain ID must be 8453 (Base) or 84532 (Base Sepolia)
+///   - Claim deadline must be in the future
+
 contract Deploy is Script {
+    // ── Configuration ────────────────────────────────────────────────────
+
+    /// Merkle root of the eligibility tree.
+    /// 64,116,228 qualified addresses, 26-level Poseidon, BN254.
+    bytes32 constant MERKLE_ROOT =
+        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+
+    /// Expected claim deadline: 2027-01-01 00:00:00 UTC
+    uint256 constant EXPECTED_CLAIM_DEADLINE = 1_798_761_600;
+
+    /// Expected claim amount: 10,000 ZKM
+    uint256 constant EXPECTED_CLAIM_AMOUNT = 10_000e18;
+
+    /// Expected max claims: 1,000,000
+    uint256 constant EXPECTED_MAX_CLAIMS = 1_000_000;
+
+    // ── Deployment ───────────────────────────────────────────────────────
+
     function run() external {
-        // Resolve deployer key (match DeployAll.s.sol interface)
-        uint256 deployerKey;
-        if (vm.envExists("PRIVATE_KEY")) {
-            deployerKey = uint256(vm.envBytes32("PRIVATE_KEY"));
-        } else {
-            deployerKey = uint256(vm.envBytes32("ETH_WALLET_PRIVATE_KEY"));
-        }
-
-        address verifier = vm.envAddress("VERIFIER_ADDRESS");
-        bytes32 imageId = vm.envBytes32("IMAGE_ID");
-        bytes32 merkleRoot = vm.envBytes32("MERKLE_ROOT");
-
-        // ── Predict airdrop address BEFORE startBroadcast ─────────────
-        //
-        // Foundry simulation deploys `new` contracts from the SCRIPT contract
-        // address, but the real broadcast replays them from the DEPLOYER address.
-        // Reading the nonce inside startBroadcast returns the SCRIPT's nonce
-        // during simulation, not the deployer's on-chain nonce — causing
-        // incorrect address prediction. We resolve the deployer address and
-        // read its nonce before entering broadcast mode.
-        //
-        // Deployment order from deployer:
-        //   nonce   → ZKMToken (minter = predicted airdrop)
-        //   nonce+1 → ZKMAirdrop
+        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
-        uint256 deployerNonce = vm.getNonce(deployer);
-        address predictedAirdrop = vm.computeCreateAddress(deployer, deployerNonce + 1);
-
-        console.log("Deployer:", deployer);
-        console.log("Deployer nonce:", deployerNonce);
-        console.log("Predicted airdrop:", predictedAirdrop);
 
         vm.startBroadcast(deployerKey);
 
-        // ── Step 1: Deploy ZKMToken with predicted minter ────────────────
-        ZKMToken token = new ZKMToken(predictedAirdrop);
-        console.log("ZKMToken deployed at:", address(token));
-        console.log("Predicted airdrop address:", predictedAirdrop);
-
-        // ── Step 2: Deploy airdrop ───────────────────────────────────────
-        ZKMAirdrop airdrop = new ZKMAirdrop(address(token), verifier, imageId, merkleRoot);
-        console.log("ZKMAirdrop deployed at:", address(airdrop));
-
-        // NOTE: address(airdrop) in simulation != predictedAirdrop because
-        // simulation deploys from the script contract. On real broadcast,
-        // the addresses WILL match.
-        require(token.minter() == predictedAirdrop, "Minter not set to predicted airdrop");
-
-        console.log("Deployment complete!");
-        console.log("  Token minter:", token.minter());
-        console.log("  Merkle root:", vm.toString(merkleRoot));
-        console.log("  Image ID:", vm.toString(imageId));
-        console.log("  Claim amount: 10,000 ZKM");
-        console.log("  Max claims: 1,000,000");
-        console.log("  Claim deadline: 2027-01-01 00:00:00 UTC");
+        // ── Pre-deployment validation ─────────────────────────────────
+        console.log("=== ZKMist Deployment ===");
+        console.log("Deployer:", deployer);
+        console.log("Chain ID:", block.chainid);
         console.log("");
-        console.log("  NOTE: Simulated addresses differ from broadcast addresses.");
-        console.log("  After broadcast, verify: token.minter() == airdrop address");
+
+        // Validate chain
+        require(
+            block.chainid == 8453 || block.chainid == 84532,
+            "Must deploy on Base (8453) or Base Sepolia (84532)"
+        );
+
+        // Validate deadline is in the future
+        require(
+            block.timestamp < EXPECTED_CLAIM_DEADLINE,
+            "Claim deadline has already passed"
+        );
+
+        // ── Step 1: Deploy Halo2Verifier ──────────────────────────────
+        console.log("Step 1: Deploying Halo2Verifier...");
+        Halo2Verifier verifier = new Halo2Verifier();
+        console.log("  Halo2Verifier:", address(verifier));
+        console.log("  IS_PRODUCTION_VERIFIER:", verifier.IS_PRODUCTION_VERIFIER());
+        console.log("  VK_HASH:", vm.toString(verifier.VK_HASH()));
+        console.log("  K:", verifier.K());
+
+        // SAFETY: Reject deployment with a non-production verifier
+        require(
+            verifier.IS_PRODUCTION_VERIFIER(),
+            "ABORT: Halo2Verifier is not production-ready. Regenerate with snark-verifier."
+        );
+
+        // ── Step 2: Predict airdrop address ───────────────────────────
+        uint256 nonce = vm.getNonce(deployer);
+        // verifier at nonce, token at nonce+1, airdrop at nonce+2
+        address predictedAirdrop = vm.computeCreateAddress(deployer, nonce + 2);
+        console.log("");
+        console.log("Step 2: Predicting addresses...");
+        console.log("  Current nonce:", nonce);
+        console.log("  Predicted airdrop:", predictedAirdrop);
+
+        // ── Step 3: Deploy ZKMToken ──────────────────────────────────
+        console.log("");
+        console.log("Step 3: Deploying ZKMToken...");
+        ZKMToken token = new ZKMToken(predictedAirdrop);
+        console.log("  ZKMToken:", address(token));
+        console.log("  Minter (predicted airdrop):", predictedAirdrop);
+        console.log("  Max supply:", token.MAX_SUPPLY());
+        require(token.minter() == predictedAirdrop, "Minter prediction failed");
+
+        // ── Step 4: Deploy ZKMAirdrop ─────────────────────────────────
+        console.log("");
+        console.log("Step 4: Deploying ZKMAirdrop...");
+        ZKMAirdrop airdrop = new ZKMAirdrop(
+            address(token),
+            address(verifier),
+            MERKLE_ROOT
+        );
+        console.log("  ZKMAirdrop:", address(airdrop));
+
+        // ── Post-deployment validation ────────────────────────────────
+        console.log("");
+        console.log("=== Post-deployment validation ===");
+
+        // Verify minter matches actual airdrop address
+        require(token.minter() == address(airdrop), "Minter mismatch");
+        console.log("  [OK] Minter matches airdrop address");
+
+        // Verify airdrop parameters
+        require(airdrop.merkleRoot() == MERKLE_ROOT, "Root mismatch");
+        console.log("  [OK] Merkle root matches");
+
+        require(airdrop.CLAIM_AMOUNT() == EXPECTED_CLAIM_AMOUNT, "Claim amount mismatch");
+        console.log("  [OK] Claim amount: 10,000 ZKM");
+
+        require(airdrop.MAX_CLAIMS() == EXPECTED_MAX_CLAIMS, "Max claims mismatch");
+        console.log("  [OK] Max claims: 1,000,000");
+
+        require(airdrop.CLAIM_DEADLINE() == EXPECTED_CLAIM_DEADLINE, "Deadline mismatch");
+        console.log("  [OK] Claim deadline: 2027-01-01 00:00:00 UTC");
+
+        require(address(airdrop.token()) == address(token), "Token mismatch");
+        console.log("  [OK] Token reference correct");
+
+        require(address(airdrop.verifier()) == address(verifier), "Verifier mismatch");
+        console.log("  [OK] Verifier reference correct");
 
         vm.stopBroadcast();
+
+        // ── Summary ───────────────────────────────────────────────────
+        console.log("");
+        console.log("=== Deployment Summary ===");
+        console.log("Halo2Verifier: ", address(verifier));
+        console.log("ZKMToken:      ", address(token));
+        console.log("ZKMAirdrop:    ", address(airdrop));
+        console.log("Chain:         %s", block.chainid == 8453 ? "Base (mainnet)" : "Base Sepolia (testnet)");
+        console.log("");
+        console.log("Next steps:");
+        console.log("  1. Verify contracts on BaseScan:");
+        console.log("     forge verify-contract <address> Halo2Verifier --chain base");
+        console.log("     forge verify-contract <address> ZKMToken --chain base");
+        console.log("     forge verify-contract <address> ZKMAirdrop --chain base");
+        console.log("  2. Update cli/src/constants.rs:");
+        console.log("     AIRDROP_CONTRACT = \"%s\"", address(airdrop));
+        console.log("  3. Test claim on testnet first (if testnet)");
+        console.log("  4. Generate a proof and submit to validate E2E");
     }
 }

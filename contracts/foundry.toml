@@ -5,14 +5,11 @@ libs = ["lib"]
 solc_version = "0.8.28"
 evm_version = "cancun"
 
-# Remappings for risc0-ethereum dependency resolution
-# Explicit remappings ensure reproducible builds regardless of auto_detect_remappings setting.
-# risc0-ethereum uses "openzeppelin/" (not "openzeppelin-contracts/")
+# Remappings for dependency resolution
 remappings = [
-    "openzeppelin/=lib/risc0-ethereum/lib/openzeppelin-contracts/",
-    "openzeppelin-contracts/=lib/openzeppelin-contracts/",
+    "openzeppelin/=lib/openzeppelin-contracts/",
+    "@openzeppelin/=lib/openzeppelin-contracts/",
     "forge-std/=lib/forge-std/src/",
-    "risc0-ethereum/=lib/risc0-ethereum/",
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

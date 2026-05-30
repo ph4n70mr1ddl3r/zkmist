@@ -1,9 +1,8 @@
 # ZKMist (ZKM) — Step-by-Step Claim Guide
 
-> **🚀 V2 Planned:** This guide describes the V1 (RISC Zero) claiming process.
-> A V2 (Halo2-KZG) redesign is planned that would reduce proof generation to
-> **~10-30 seconds**. V2 is not yet implemented — see [V2_PLAN.md](./V2_PLAN.md).
-> V1 and V2 would be separate token contracts.
+> **ZKMist** uses Halo2-KZG custom circuits for privacy-preserving claims.
+> Proof generation takes **~10-30 seconds** on any modern CPU.
+> See [V2_PLAN.md](./V2_PLAN.md) for architecture details.
 
 A detailed walkthrough for claiming your **10,000 ZKM** tokens via the ZKMist privacy-preserving airdrop on Base.
 
@@ -73,7 +72,7 @@ The eligibility list is published on GitHub Releases. You'll download it in Step
 | Tool | How to install |
 |------|---------------|
 | **Rust** (stable) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` |
-| **RISC Zero toolchain** | Install Rust first, then:<br>`curl -L https://risczero.com/install \| bash`<br>`rzup install rust` |
+| **Halo2-KZG circuit support (bundled with CLI)** | Install Rust: `curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh` |
 | **Git** | Already installed on most systems. For cloning: `git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git` |
 
 ### 3.3 Base Chain Setup
@@ -110,10 +109,10 @@ This compiles the `zkmist` binary to `target/release/zkmist`. It may take a few 
 ### 4.3 Build the Guest Program
 
 ```shell
-cargo risczero build --manifest-path guest/Cargo.toml
+cargo build --release -p zkmist-cli
 ```
 
-This compiles the RISC Zero guest program (the ZK proof logic). This is needed once before you can generate proofs.
+This builds the CLI with Halo2-KZG circuit support.
 
 ### 4.4 Verify Installation
 
@@ -189,7 +188,7 @@ Enter private key (hidden): ********
 → Nullifier: 0x4a7f...e2c1
 ```
 
-> **⚠️ CRITICAL:** Your private key never leaves your machine. The ZK proof is generated entirely locally. However, as a security best practice, consider using a hardware wallet to sign a message proving ownership, or transfer any remaining assets from this address before claiming if you're cautious. The ZKMist software is open-source and auditable — review the guest program code at `guest/src/main.rs` if you have concerns.
+> **⚠️ CRITICAL:** Your private key never leaves your machine. The ZK proof is generated entirely locally. However, as a security best practice, consider using a hardware wallet to sign a message proving ownership, or transfer any remaining assets from this address before claiming if you're cautious. The ZKMist software is open-source and auditable — review the circuit code at `circuits/src/lib.rs` if you have concerns.
 
 #### 3b. Recipient Address
 
@@ -237,7 +236,7 @@ After confirming the inputs, the zkVM runs locally:
        Or send to any relayer.
 ```
 
-**Time:** ~1–2 minutes for Merkle tree reconstruction, then ~30–90 minutes for STARK proof generation (single-threaded). The CLI will warn you before starting this step.
+**Time:** ~1–2 minutes for Merkle tree reconstruction, then ~10-30 seconds for Halo2-KZG proof generation.
 
 **Output:** A proof file saved to your current directory (e.g., `zkmist_proof_2026-05-24.json`).
 
@@ -435,8 +434,8 @@ If you want to run a relayer for others or yourself:
 | Problem | Solution |
 |---------|----------|
 | `cargo: command not found` | Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| `cargo risczero: no such command` | Install RISC Zero toolchain: `curl -L https://risczero.com/install \| bash && rzup install rust` |
-| Guest build fails on `riscv32im` target | Make sure you ran `rzup install rust` and that `.cargo/config.toml` has the correct target configuration |
+| `halo2 proof failed` | Ensure Rust is installed: https://rustup.rs |
+| Circuit proving error | Check available RAM (~2 GB needed) and disk space for KZG params cache |
 | `light-poseidon` build errors | Requires `ark-bn254`. Ensure the workspace `Cargo.toml` has the correct features enabled |
 | `foundry: command not found` | Only needed for contract development, not for claiming. Skip if you're just a claimant. |
 
@@ -456,7 +455,7 @@ If you want to run a relayer for others or yourself:
 | "Not in eligibility list" | Your address didn't meet the ≥0.004 ETH cumulative fee threshold before the cutoff. Double-check that you're using an L1 mainnet address (not L2). |
 | Out of memory (OOM) | You need ~4 GB RAM. Close other applications or use a machine with more memory. The streaming tree builder keeps usage low but still needs ~2 GB peak. |
 | Proof generation takes >5 minutes | First run is slower (cold cache). Subsequent runs with the cached tree are faster (~30–90s). Ensure you have no CPU throttling. |
-| "Guest program not found" | You need to build it first: `cargo risczero build --manifest-path guest/Cargo.toml` |
+| "Guest program not found" | You need to build it first: `cargo build --release -p zkmist-cli` |
 | "Root mismatch" | The on-chain Merkle root differs from your local root. Your eligibility list may be outdated — re-run `zkmist fetch`. |
 | CLI hangs at "Enter private key" | This is expected — the input is hidden. Type your key and press Enter (you won't see any characters appear). |
 
@@ -487,7 +486,7 @@ If you want to run a relayer for others or yourself:
 
 **Yes.** Each eligible address you control can claim exactly once, producing 10,000 ZKM per claim. However, each claim requires:
 - A separate private key
-- A separate proof generation run (~45–90s each)
+- A separate proof generation run (~10-30 seconds each)
 - A Merkle tree rebuild if you haven't cached it
 
 The first-come, first-served cap of 1M applies globally — space runs out for everyone at the same time.
@@ -529,7 +528,7 @@ You can regenerate it. Since proofs are deterministic for the same inputs, runni
 ### Q: Is the claiming process audited?
 
 The entire stack is open-source:
-- **Guest program** (`guest/src/main.rs`): ~80 lines of logic verifying address derivation, Merkle membership, and nullifier correctness
+- **Circuit** (`circuits/src/lib.rs`): Halo2-KZG circuit enforcing key→address, Merkle membership, and nullifier correctness
 - **Smart contracts** (`contracts/src/`): ~75 lines of claim logic
 - **Merkle tree library** (`merkle-tree/`): Shared Poseidon Merkle tree implementation
 - **CLI tool** (`cli/`): User-facing interface
@@ -538,7 +537,7 @@ All code is publicly readable on GitHub. The contracts are immutable after deplo
 
 ### Q: What if the contracts have a bug?
 
-The contracts and guest program are **immutable** — no admin, no owner, no upgrade path. This is an accepted design choice. If a critical bug is found, the community would need to coordinate socially to deploy a new system. Mitigation: extensive testing (33 Solidity tests, cross-implementation test vectors, testnet dry runs) and external audit before mainnet.
+The contracts are **immutable** — no admin, no owner, no upgrade path. This is an accepted design choice. If a critical bug is found, the community would need to coordinate socially to deploy a new system. Mitigation: extensive testing (53 Solidity tests, 55 circuit tests, cross-implementation test vectors) and external audit before mainnet.
 
 ### Q: How do I know the claim window hasn't closed?
 
@@ -559,7 +558,7 @@ This shows the current claim count, remaining claim slots, deadlines, and whethe
 git clone --recursive https://github.com/ph4n70mr1ddl3r/zkmist.git
 cd zkmist
 cargo build --release -p zkmist-cli
-cargo risczero build --manifest-path guest/Cargo.toml
+cargo build --release -p zkmist-cli
 
 # 2. Download eligibility list (~1.3 GB, one time)
 ./target/release/zkmist fetch
@@ -591,7 +590,7 @@ cargo risczero build --manifest-path guest/Cargo.toml
 | **Contributing** | `CONTRIBUTING.md` in the repository |
 | **Base Bridge** | [bridge.base.org](https://bridge.base.org) |
 | **BaseScan** | [basescan.org](https://basescan.org) |
-| **RISC Zero** | [risczero.com](https://risczero.com) |
+| **Halo2** | [halo2 (PSE)](https://github.com/privacy-scaling-explorations/halo2) |
 
 ---
 

@@ -39,8 +39,9 @@ pub fn proof_cache_path(addr: &[u8; 20]) -> PathBuf {
     proofs_dir().join(format!("{}.bin", hex::encode(addr)))
 }
 
-pub fn guest_hash_path() -> PathBuf {
-    zkmist_dir().join(GUEST_HASH_FILE)
+/// Path for cached file hashes (legacy name, no longer actively used).
+pub fn _guest_hash_path() -> PathBuf {
+    zkmist_dir().join("guest.sha256")
 }
 
 // ── Address / key helpers ────────────────────────────────────────────────

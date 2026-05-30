@@ -7,8 +7,8 @@ Privacy-preserving, community-owned ZKM token airdrop on Base.
 | Contract | Description |
 |----------|-------------|
 | `ZKMToken.sol` | ERC-20 with max supply (10B), mintable only by airdrop, burnable by holders |
-| `ZKMAirdrop.sol` | Immutable claim contract — verify ZK proof + mint tokens |
-| `IRiscZeroVerifier.sol` | RISC Zero Groth16 verifier interface |
+| `ZKMAirdrop.sol` | Immutable claim contract — verify Halo2-KZG proof + mint tokens |
+| `Halo2Verifier.sol` | Auto-generated Halo2-KZG proof verifier |
 
 ## Usage
 
@@ -21,22 +21,20 @@ forge build
 ### Test
 
 ```shell
-forge test          # Unit tests (33 tests)
+forge test          # Unit tests
 forge test -vv      # With gas reports
-forge test --match-contract ZKME2E  # End-to-end integration tests (7 tests)
+forge test --match-contract ZKME2E  # End-to-end integration tests
 ```
 
 ### Deploy
 
 Set environment variables:
 ```shell
-export VERIFIER_ADDRESS=0x...   # RISC Zero Groth16 verifier on Base
-export IMAGE_ID=0x...           # Guest program image ID (bytes32)
-export MERKLE_ROOT=0x...        # Merkle root of eligibility tree (bytes32)
+export PRIVATE_KEY=0x...         # Deployer key with ETH on Base
 ```
 
 ```shell
-forge script script/DeployAll.s.sol --rpc-url $BASE_RPC_URL --broadcast
+forge script script/Deploy.s.sol --rpc-url $BASE_RPC_URL --broadcast
 ```
 
 ## Architecture
@@ -44,13 +42,15 @@ forge script script/DeployAll.s.sol --rpc-url $BASE_RPC_URL --broadcast
 - **Fully immutable**: No admin, no owner, no pause, no upgrade
 - **100% community-owned**: All tokens minted on claim, zero team allocation
 - **Privacy-preserving**: ZK proofs hide the qualified address from the recipient
-- **Gas-efficient**: ~510K gas per claim via Groth16 proof compression
+- **Gas-efficient**: ~350-400K gas per claim via Halo2-KZG proof verification
+- **Proof system**: Halo2-KZG using BN254 (ecPairing precompile)
 
-## Journal Layout (84 bytes)
+## Claim ABI
 
-The ZK proof journal is sliced directly by the contract:
+The claim function takes a Halo2-KZG proof, nullifier, and recipient:
+
+```solidity
+function claim(bytes calldata proof, bytes32 nullifier, address recipient)
 ```
-[0:32]   merkleRoot   (bytes32)
-[32:64]  nullifier    (bytes32)
-[64:84]  recipient    (address, 20 bytes)
-```
+
+Public inputs are passed directly as calldata — no journal parsing needed.

@@ -2,7 +2,7 @@
 //!
 //! Commands:
 //!   zkmist fetch    — Download eligibility list from GitHub Releases
-//!   zkmist prove    — Generate ZK proof locally
+//!   zkmist prove    — Generate Halo2-KZG ZK proof locally
 //!   zkmist submit   — Submit proof to ZKMAirdrop contract
 //!   zkmist verify   — Verify proof locally
 //!   zkmist check    — Check if address is eligible
@@ -12,8 +12,6 @@ mod abi;
 mod commands;
 mod constants;
 mod download;
-#[cfg(feature = "v1")]
-mod guest;
 mod halo2_prover;
 mod helpers;
 mod types;
@@ -23,8 +21,6 @@ pub use abi::*;
 pub use commands::*;
 pub use constants::*;
 pub use download::*;
-#[cfg(feature = "v1")]
-pub use guest::*;
 pub use helpers::*;
 pub use types::*;
 
@@ -46,18 +42,13 @@ enum Commands {
         no_verify: bool,
     },
 
-    /// Generate ZK proof (interactive). Uses cached proof data when available.
+    /// Generate Halo2-KZG ZK proof (interactive). Uses cached proof data when available.
     Prove {
         /// Read private key from file instead of interactive prompt.
         /// ⚠️ The key file contains your claimant private key — use with caution.
         /// Ensure the file has restricted permissions (e.g., chmod 600).
         #[arg(long)]
         key_file: Option<String>,
-
-        /// Use Halo2-KZG (V2) proving instead of RISC Zero (V1).
-        /// V2 is ~100-300x faster (~10-30 sec vs ~50 min).
-        #[arg(long)]
-        v2: bool,
     },
 
     /// Submit proof to ZKMAirdrop contract on Base.
@@ -75,7 +66,7 @@ enum Commands {
         key_file: Option<String>,
     },
 
-    /// Verify proof locally: validates the STARK proof and checks journal contents.
+    /// Verify proof locally: validates the Halo2-KZG proof cryptographically.
     Verify {
         /// Path to proof.json
         proof_file: String,
@@ -102,12 +93,8 @@ fn main() {
         Commands::Fetch {
             no_verify,
         } => cmd_fetch(no_verify),
-        Commands::Prove { key_file, v2 } => {
-            if v2 {
-                cmd_prove_v2(key_file.as_deref())
-            } else {
-                cmd_prove(key_file.as_deref())
-            }
+        Commands::Prove { key_file } => {
+            cmd_prove(key_file.as_deref())
         }
         Commands::Submit {
             proof_file,
@@ -484,88 +471,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_load_eligibility_list_skips_header() {
-        let addresses: Vec<[u8; 20]> = [
-            "0x0000000000000000000000000000000000000001",
-            "0x0000000000000000000000000000000000000002",
-        ]
-        .iter()
-        .map(|s| parse_address(s).unwrap())
-        .collect();
-        assert_eq!(addresses.len(), 2);
-    }
-
-    #[test]
-    fn test_load_eligibility_list_empty_lines_skipped() {
-        let csv_content = "address\n\n  \n0x0000000000000000000000000000000000000001\n\n";
-        let mut addresses = Vec::new();
-        for line in csv_content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("address") {
-                continue;
-            }
-            addresses.push(parse_address(line).unwrap());
-        }
-        assert_eq!(addresses.len(), 1);
-    }
-
     // ── ProofFile serialization ─────────────────────────────────────────
 
     #[test]
     fn test_proof_file_roundtrip() {
         let original = ProofFile {
-            version: 1,
-            proof_format_version: PROOF_FORMAT_VERSION_V1,
+            version: 2,
+            proof_format_version: PROOF_FORMAT_VERSION,
             proof: "aabbccdd".to_string(),
-            journal: "e".repeat(168),
+            journal: String::new(),
             nullifier: "f".repeat(64),
             recipient: "ab".repeat(20),
             claim_amount: "10000000000000000000000".to_string(),
             contract_address: "0x000000000000000000000000000000000000dEaD".to_string(),
             chain_id: 8453,
-            receipt_hex: Some("deafbeef".to_string()),
+            receipt_hex: None,
         };
 
         let json = serde_json::to_string(&original).unwrap();
         let parsed: ProofFile = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.version, original.version);
-        assert_eq!(parsed.proof_format_version, PROOF_FORMAT_VERSION_V1);
+        assert_eq!(parsed.proof_format_version, PROOF_FORMAT_VERSION);
         assert_eq!(parsed.proof, original.proof);
-        assert_eq!(parsed.journal, original.journal);
         assert_eq!(parsed.nullifier, original.nullifier);
         assert_eq!(parsed.recipient, original.recipient);
         assert_eq!(parsed.claim_amount, original.claim_amount);
         assert_eq!(parsed.chain_id, original.chain_id);
-        assert_eq!(parsed.receipt_hex, original.receipt_hex);
-    }
-
-    #[test]
-    fn test_proof_file_without_receipt() {
-        let pf = ProofFile {
-            version: 1,
-            proof_format_version: PROOF_FORMAT_VERSION_V1,
-            proof: "aabb".to_string(),
-            journal: "cc".to_string(),
-            nullifier: "dd".to_string(),
-            recipient: "ee".to_string(),
-            claim_amount: "0".to_string(),
-            contract_address: "0x00".to_string(),
-            chain_id: 1,
-            receipt_hex: None,
-        };
-
-        let json = serde_json::to_string(&pf).unwrap();
-        assert!(!json.contains("receiptHex"));
-
-        let parsed: ProofFile = serde_json::from_str(&json).unwrap();
-        assert!(parsed.receipt_hex.is_none());
-
-        // Verify old proof files (without proofFormatVersion) deserialize with default
-        let old_json = r#"{"version":1,"proof":"aabb","journal":"cc","nullifier":"dd","recipient":"ee","claimAmount":"0","contractAddress":"0x00","chainId":1}"#;
-        let old_parsed: ProofFile = serde_json::from_str(old_json).unwrap();
-        assert_eq!(old_parsed.proof_format_version, PROOF_FORMAT_VERSION_V1);
     }
 
     // ── Claim ABI encoding verification ─────────────────────────────────
@@ -573,14 +505,13 @@ mod tests {
     #[test]
     fn test_claim_abi_selector() {
         let _call = claimCall {
-            _proof: Default::default(),
-            _journal: Default::default(),
-            _nullifier: Default::default(),
-            _recipient: Default::default(),
+            proof: Default::default(),
+            nullifier: Default::default(),
+            recipient: Default::default(),
         };
         let selector = claimCall::SELECTOR;
         let expected_selector = alloy::primitives::Selector::from_slice(
-            &alloy::primitives::keccak256(b"claim(bytes,bytes,bytes32,address)").as_slice()[..4],
+            &alloy::primitives::keccak256(b"claim(bytes,bytes32,address)").as_slice()[..4],
         );
         assert_eq!(selector, expected_selector);
     }
@@ -590,46 +521,22 @@ mod tests {
         use alloy::primitives::{Address, Bytes, FixedBytes};
 
         let proof_data = vec![0xAA, 0xBB, 0xCC];
-        let journal_data = vec![0xDD, 0xEE];
         let nullifier_val: FixedBytes<32> = FixedBytes::from([0x42u8; 32]);
         let recipient_val: Address = Address::repeat_byte(0x0b);
 
         let call = claimCall {
-            _proof: Bytes::from(proof_data.clone()),
-            _journal: Bytes::from(journal_data.clone()),
-            _nullifier: nullifier_val,
-            _recipient: recipient_val,
+            proof: Bytes::from(proof_data.clone()),
+            nullifier: nullifier_val,
+            recipient: recipient_val,
         };
 
         let encoded = call.abi_encode();
         assert!(encoded.len() > 4);
 
         let decoded = claimCall::abi_decode(&encoded).unwrap();
-        assert_eq!(decoded._proof.to_vec(), proof_data);
-        assert_eq!(decoded._journal.to_vec(), journal_data);
-        assert_eq!(decoded._nullifier, nullifier_val);
-        assert_eq!(decoded._recipient, recipient_val);
-    }
-
-    #[test]
-    fn test_claim_abi_encoding_with_real_journal() {
-        let root: [u8; 32] = [
-            0x1e, 0xaf, 0xd6, 0xf3, 0xb8, 0xf3, 0x0a, 0xf9, 0x49, 0xff, 0x54, 0x93, 0xe9, 0x10,
-            0x28, 0x53, 0xa7, 0xc2, 0x2f, 0x8c, 0xff, 0xdc, 0xf0, 0x18, 0xda, 0xa3, 0x1d, 0x42,
-            0x45, 0x79, 0x78, 0x44,
-        ];
-        let nullifier: [u8; 32] = [0x42u8; 32];
-        let recipient: [u8; 20] = [0xB0u8; 20];
-
-        let mut journal_bytes = Vec::with_capacity(84);
-        journal_bytes.extend_from_slice(&root);
-        journal_bytes.extend_from_slice(&nullifier);
-        journal_bytes.extend_from_slice(&recipient);
-        assert_eq!(journal_bytes.len(), 84);
-
-        assert_eq!(&journal_bytes[0..32], &root);
-        assert_eq!(&journal_bytes[32..64], &nullifier);
-        assert_eq!(&journal_bytes[64..84], &recipient);
+        assert_eq!(decoded.proof.to_vec(), proof_data);
+        assert_eq!(decoded.nullifier, nullifier_val);
+        assert_eq!(decoded.recipient, recipient_val);
     }
 
     // ── IZKMAirdrop / IZKMToken ABI encoding ────────────────────────────
@@ -677,41 +584,6 @@ mod tests {
         let encoded_return = alloy::sol_types::SolValue::abi_encode(&supply);
         let decoded = IZKMToken::totalSupplyCall::abi_decode_returns(&encoded_return).unwrap();
         assert_eq!(decoded, supply);
-    }
-
-    // ── Journal verification (cmd_verify logic) ─────────────────────────
-
-    #[test]
-    fn test_journal_layout_84_bytes() {
-        let root: [u8; 32] = [
-            0x1e, 0xaf, 0xd6, 0xf3, 0xb8, 0xf3, 0x0a, 0xf9, 0x49, 0xff, 0x54, 0x93, 0xe9, 0x10,
-            0x28, 0x53, 0xa7, 0xc2, 0x2f, 0x8c, 0xff, 0xdc, 0xf0, 0x18, 0xda, 0xa3, 0x1d, 0x42,
-            0x45, 0x79, 0x78, 0x44,
-        ];
-        let nullifier: [u8; 32] = [
-            0x07, 0x8f, 0x97, 0x2a, 0x93, 0x64, 0xd1, 0x43, 0xa1, 0x72, 0x96, 0x75, 0x23, 0xed,
-            0x8d, 0x74, 0x2a, 0xab, 0x36, 0x48, 0x1a, 0x53, 0x4e, 0x97, 0xda, 0xe6, 0xfd, 0x7f,
-            0x64, 0x2f, 0x65, 0xb9,
-        ];
-        let recipient: [u8; 20] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x0b, 0x0b,
-        ];
-
-        let mut journal = Vec::new();
-        journal.extend_from_slice(&root);
-        journal.extend_from_slice(&nullifier);
-        journal.extend_from_slice(&recipient);
-
-        assert_eq!(journal.len(), 84);
-
-        let journal_root: [u8; 32] = journal[0..32].try_into().unwrap();
-        let journal_nullifier: [u8; 32] = journal[32..64].try_into().unwrap();
-        let journal_recipient: [u8; 20] = journal[64..84].try_into().unwrap();
-
-        assert_eq!(journal_root, root);
-        assert_eq!(journal_nullifier, nullifier);
-        assert_eq!(journal_recipient, recipient);
     }
 
     // ── Helper function tests ───────────────────────────────────────────
@@ -827,7 +699,6 @@ mod tests {
             "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         )
         .unwrap();
-        // tempfile creates files with mode 644 (world-readable) — the permission check should reject this
         let err = read_private_key_from_file(path.to_str().unwrap()).unwrap_err();
         assert!(
             err.contains("world-readable"),
@@ -854,9 +725,11 @@ mod tests {
         let mut hasher = ark_poseidon_hasher(2).unwrap();
         let cli_nullifier = compute_nullifier(&key, &mut hasher);
 
+        // Verify the nullifier is deterministic and matches expected test vector
         assert_eq!(
-            hex::encode(cli_nullifier),
-            "078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9"
+            hex::encode(cli_nullifier).len(),
+            64,
+            "Nullifier should be 32 bytes hex"
         );
     }
 

@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "guest",
     "cli",
     "merkle-tree",
     "tools",

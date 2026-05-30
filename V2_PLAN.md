@@ -1,9 +1,14 @@
-# ZKMist V2 — Architecture Redesign Plan
+# ZKMist — Architecture Document
 
-**Version:** 1.5  
-**Date:** 2026-05-29  
+**Version:** 2.0  
+**Date:** 2026-05-30  
 **Status:** Implementation (beta — circuit soundness hardened, production verifier generation remaining)  
 **Author:** ZKMist Community  
+
+> **NOTE:** This document describes the current ZKMist architecture using Halo2-KZG custom circuits.  
+> The prior RISC Zero ("V1") approach has been fully removed. All references to "V1", "V2", and  
+> "prior approach" below are preserved for historical context but the codebase now contains only  
+> the Halo2-KZG implementation. Contract names no longer carry "V2" suffixes.
 
 ---
 

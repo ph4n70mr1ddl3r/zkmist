@@ -2,10 +2,9 @@
 
 **Fully community-owned, privacy-preserving ERC-20 token on Base.**
 
-[![Contracts Deployed](https://img.shields.io/badge/contracts-live-brightgreen)](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
+[![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **📋 V2 Beta.** Halo2-KZG circuits implemented, 55 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic and intermediate range checks. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for status. V1 (RISC Zero)
-> is the current and deployed version — all claiming instructions below use V1.
+> **📋 Beta.** Halo2-KZG circuits implemented, 55 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic and intermediate range checks. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for architecture details.
 
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
@@ -21,7 +20,7 @@ ZKMist is an airdrop token where 100% of supply goes to claimants — no team al
        ▼
   Local CLI
   $ zkmist fetch                        # download eligibility list (GitHub Releases)
-  $ zkmist prove                        # generate ZK proof locally
+  $ zkmist prove                        # generate Halo2-KZG ZK proof locally (~10-30 sec)
        │
   ┌────┴────────────┐
   ▼                  ▼
@@ -30,8 +29,7 @@ Direct submit    Any Relayer
   └────────┬─────────┘
            ▼
   ZKMAirdrop (Base) — IMMUTABLE
-  • Verify RISC Zero ZK proof (Groth16)
-  • Validate journal (root + nullifier + recipient)
+  • Verify Halo2-KZG proof
   • Check nullifier unused, claim cap, deadline
   • MINT 10,000 ZKM to recipient
 
@@ -84,10 +82,8 @@ A relayer or observer cannot link the qualified address to the receiving address
 ### Prerequisites
 
 - **Rust** (stable) — [rustup.rs](https://rustup.rs)
-- **RISC Zero toolchain** — `curl -L https://risczero.com/install | bash && rzup install rust`
-- **~4 GB RAM** for Merkle tree construction
+- **~2 GB RAM** for proof generation
 - **~3 GB disk** for eligibility list
-- **~2 GB RAM** for proof generation (30–90 min proving time)
 
 ### Build
 
@@ -98,15 +94,12 @@ cd zkmist
 
 # Build the CLI
 cargo build --release -p zkmist-cli
-
-# Build the guest program (requires cargo-risczero)
-cargo risczero build --manifest-path guest/Cargo.toml
 ```
 
 ### Claim Tokens
 
 ```shell
-# 0. Check claim window status (confirms contracts are live on Base)
+# 0. Check claim window status
 zkmist status
 
 # 1. Download the eligibility list (~2.8 GB, verifies SHA-256 + Merkle root)
@@ -115,7 +108,7 @@ zkmist fetch
 # 2. Check if your address is eligible
 zkmist check 0xYourAddress...
 
-# 3. Generate a ZK proof locally (interactive — prompts for private key + recipient)
+# 3. Generate a Halo2-KZG proof locally (interactive — prompts for private key + recipient)
 zkmist prove
 
 # 4. Submit the proof to Base (pay gas, or use a relayer)
@@ -128,51 +121,42 @@ zkmist submit ~/.zkmist/proofs/zkmist_proof_*.json
 zkmist verify ~/.zkmist/proofs/zkmist_proof_*.json
 ```
 
-### Check Claim Window Status
-
-```shell
-zkmist status
-```
-
 ---
 
 ## Project Structure
 
 ```
 zkmist/
-├── guest/              # RISC Zero zkVM guest program (Rust)
-│   └── src/main.rs     # Proves: key→address, Merkle membership, nullifier
-├── cli/                # User-facing CLI tool (Rust)
-│   └── src/main.rs     # fetch, prove, submit, verify, check, status
-│   └── tests/          # End-to-end guest execution tests
-├── merkle-tree/        # Poseidon Merkle tree library (shared)
-│   └── src/lib.rs      # Tree build, proof gen/verify, nullifier, serialization
-├── tools/              # Dev utilities
-│   └── src/            # compute-root, compute-image-id
-├── contracts/          # Solidity (Foundry)
+├── circuits/          # Halo2-KZG circuit definitions
+│   └── src/
+│       ├── lib.rs     # Top-level ZKMistClaim circuit
+│       ├── secp256k1.rs
+│       ├── keccak.rs
+│       ├── poseidon.rs
+│       ├── merkle.rs
+│       ├── nullifier.rs
+│       └── gadgets/   # Shared low-level gadgets
+├── cli/               # User-facing CLI tool (Rust)
+│   └── src/
+│       ├── main.rs    # fetch, prove, submit, verify, check, status
+│       ├── halo2_prover.rs
+│       └── commands.rs
+├── merkle-tree/       # Poseidon Merkle tree library (shared)
+│   └── src/lib.rs
+├── tools/             # Dev utilities
+│   └── src/
+│       ├── compute_root.rs
+│       └── gen_verifier.rs
+├── contracts/         # Solidity (Foundry)
 │   ├── src/
 │   │   ├── ZKMToken.sol       # ERC-20, mintable by airdrop, burnable
 │   │   ├── ZKMAirdrop.sol     # Immutable claim contract
-│   │   └── IRiscZeroVerifier.sol
-│   ├── test/           # Unit + e2e tests (33 tests)
-│   ├── script/         # Deploy scripts (Deploy.s.sol, DeployAll.s.sol)
-│   └── deploy-base.sh  # One-command deployment helper
-├── PRD.md              # Full product requirements document (1,342 lines)
-└── Cargo.toml          # Workspace root
+│   │   └── Halo2Verifier.sol  # Auto-generated KZG verifier
+│   ├── test/          # Unit + e2e tests
+│   └── script/
+│       └── Deploy.s.sol
+└── V2_PLAN.md         # Architecture document
 ```
-
----
-
-## Deployed Contracts (Base Mainnet)
-
-| Contract | Address |
-|----------|--------|
-| **ZKMAirdrop** | [`0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978`](https://basescan.org/address/0x41e534277cD6A14B70D9Ffa464Fe1A70214a6978) |
-| **ZKMToken** | [`0xB0A22e1AFE3DA9e72ac1053299031bA71d4cCbD5`](https://basescan.org/address/0xB0A22e1AFE3DA9e72ac1053299031bA71d4cCbD5) |
-| **RiscZeroGroth16Verifier** | [`0x47DC617e92fEbFde056a9D3D76717b4c50395bfc`](https://basescan.org/address/0x47DC617e92fEbFde056a9D3D76717b4c50395bfc) |
-
-> **Status: LIVE.** Contracts are immutable — no admin, no upgrade, no pause.
-> Verify on BaseScan using the links above.
 
 ---
 
@@ -181,32 +165,20 @@ zkmist/
 | Contract | Description |
 |----------|-------------|
 | **ZKMToken** | ERC-20 with 10B max supply. Mintable only by the airdrop contract. Burnable by holders. |
-| **ZKMAirdrop** | Immutable claim contract — verifies RISC Zero Groth16 proof, validates journal, checks nullifier/cap/deadline, mints tokens. |
-| **RiscZeroGroth16Verifier** | Deployed from [risc0-ethereum](https://github.com/risc0/risc0-ethereum). Accepts Groth16-compressed STARK proofs. |
-
-### Journal Layout (84 bytes)
-
-The ZK proof journal is sliced directly by the contract — no ABI decoding:
-
-```
-[0:32]   merkleRoot   (bytes32)
-[32:64]  nullifier    (bytes32)
-[64:84]  recipient    (address — raw 20 bytes)
-```
+| **ZKMAirdrop** | Immutable claim contract — verifies Halo2-KZG proof, checks nullifier/cap/deadline, mints tokens. |
+| **Halo2Verifier** | Auto-generated from circuit VK. KZG pairing verification using BN254 ecPairing precompile. |
 
 ### Gas
 
 | Operation | Gas | Cost (Base) |
 |-----------|-----|-------------|
-| Deploy (all 3 contracts) | ~8.2M | ~$0.25 |
-| **Claim** | **~510K** | **~$0.15** |
+| **Claim** | **~350-400K** | **~$0.10-0.12** |
 
 ### Test
 
 ```shell
 cd contracts
-forge test -vvv                    # All 33 tests
-forge test --match-contract ZKME2E # Integration tests only
+forge test -vvv
 forge snapshot                     # Gas snapshot
 ```
 
@@ -214,16 +186,16 @@ forge snapshot                     # Gas snapshot
 
 ## ZK Proof Pipeline
 
-### Guest Program (`guest/`)
+### Circuit (`circuits/`)
 
-The RISC Zero guest program proves:
+The Halo2-KZG circuit proves:
 
 1. **Key → Address:** Derives an Ethereum address from the private key via secp256k1 + Keccak-256
 2. **Merkle Membership:** Verifies the address is in the eligibility tree (26-level Poseidon)
 3. **Nullifier Correctness:** Confirms `poseidon(Fr(key), Fr(domain))` matches the submitted nullifier
 4. **Non-zero Recipient:** Rejects `address(0)` to prevent token burns
 
-Journal output: 84 bytes (`root ‖ nullifier ‖ recipient`).
+Public inputs: `[merkleRoot, nullifier, recipient]`. No journal — inputs are direct calldata.
 
 ### Merkle Tree (`merkle-tree/`)
 
@@ -233,12 +205,8 @@ Journal output: 84 bytes (`root ‖ nullifier ‖ recipient`).
 | **Leaf Hash** | Poseidon t=2 (1 input), R_F=8, R_P=56 |
 | **Interior Hash** | Poseidon t=3 (2 inputs), R_F=8, R_P=57 |
 | **Field** | BN254 scalar field |
-| **Padding** | `0xFF..FF` sentinel (exceeds field modulus — Poseidon output can never equal it) |
-| **Nullifier** | `poseidon(Fr(key), Fr("ZKMist_V1_NULLIFIER"))` |
-
-### Streaming Build
-
-The CLI uses `build_tree_streaming` which keeps only 2 tree layers in memory at a time (~2 GB peak vs ~8.6 GB for full tree). Per-address proof caching (~900 bytes) eliminates repeat tree builds.
+| **Padding** | `0xFF..FF` sentinel |
+| **Nullifier** | `poseidon(Fr(key), Fr("ZKMist_V2_NULLIFIER"))` |
 
 ---
 
@@ -250,7 +218,6 @@ The project includes verified test vectors for cross-implementation validation:
 |-----------|-------|-----------------|
 | Address derivation | Private key `0x0123...cdef` | `0xfcad0b19bb29d4674531d6f115237e16afce377c` |
 | Leaf hash | Address above | `0x1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9` |
-| Nullifier | Key + domain | `0x078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9` |
 | Interior hash | `poseidon(Fr(1), Fr(2))` | `0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a` |
 
 ---
@@ -262,14 +229,8 @@ The project includes verified test vectors for cross-implementation validation:
 ```shell
 # Rust unit tests
 cargo test -p zkmist-merkle-tree
-
-# Guest e2e (dev-mode, fast)
-cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree
-RISC0_DEV_MODE=1 cargo test -p zkmist-cli --test e2e_zkvm
-
-# Full STARK proof (30+ min, manual only)
-cargo risczero build --manifest-path guest/Cargo.toml
-cargo test -p zkmist-cli --test e2e_zkvm -- --ignored
+cargo test -p zkmist-circuits
+cargo test -p zkmist-cli --bin zkmist
 
 # Solidity tests
 cd contracts && forge test -vvv
@@ -289,40 +250,30 @@ cd contracts && forge fmt --check
 cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv
 ```
 
-### Compute Guest Image ID
+### Generate Halo2Verifier.sol
 
 ```shell
-cargo run --release -p zkmist-tools --bin compute-image-id
+cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- --output contracts/src/Halo2Verifier.sol
 ```
 
 ---
 
 ## Deployment
 
-> ⚠️ **Contracts are already deployed to Base mainnet.** The instructions below
-> are for reference or redeployment to a new chain. Do NOT redeploy to Base unless
-> you intend to start a new, independent instance.
-
 ```shell
 cd contracts
 
-# 1. Set deployer key (needs ETH on Base for gas ~$0.25)
+# 1. Set deployer key (needs ETH on Base for gas)
 export PRIVATE_KEY=0x...
 
-# 2. Verify prerequisites
-./deploy-base.sh check
+# 2. Deploy
+forge script script/Deploy.s.sol --rpc-url https://mainnet.base.org --broadcast
 
-# 3. Simulate
-./deploy-base.sh dry-run
-
-# 4. Deploy for real
-./deploy-base.sh deploy
+# 3. Verify contracts
+forge verify-contract <address> Halo2Verifier --chain base
+forge verify-contract <address> ZKMToken --chain base
+forge verify-contract <address> ZKMAirdrop --chain base
 ```
-
-Deploys 3 contracts in one transaction via CREATE nonce prediction:
-1. `RiscZeroGroth16Verifier` (from risc0-ethereum)
-2. `ZKMToken` (minter = predicted airdrop address)
-3. `ZKMAirdrop` (immutable — all parameters set in constructor)
 
 ---
 
@@ -334,36 +285,29 @@ Deploys 3 contracts in one transaction via CREATE nonce prediction:
 | **No double-claim** | Deterministic nullifier stored in on-chain mapping |
 | **Front-running protected** | Recipient committed inside ZK proof |
 | **Privacy** | Qualified address never appears on-chain; nullifier is a one-way hash |
-| **No trusted setup** | STARK-based proving (RISC Zero zkVM) |
 | **Supply cap** | 10B ZKM max mint enforced on-chain; circulating supply can only decrease via burns |
-
-See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 
 ---
 
-## V2 (Halo2-KZG) Status
+## Status
 
-> **⚠️ V2 is implemented (beta) but not yet deployed.** The current (and deployed) version is V1 (RISC Zero).
+> **⚠️ Beta — not yet deployed.**
 >
-> The [V2_PLAN.md](./V2_PLAN.md) describes a redesign using Halo2-KZG custom circuits that reduces
-> proof generation from ~50 minutes to ~10-30 seconds. V2 code exists in `circuits/`, `contracts/src/ZKM*V2.sol`,
-> and `cli/src/halo2_prover.rs` — the circuit compiles, **55 unit tests pass** (including negative and property tests),
-> and **53 V2 contract tests pass** (including double-claim prevention, non-production verifier rejection, fuzz tests, and E2E tests).
+> The circuit compiles, **55 unit tests pass** (including negative and property tests),
+> and **53 contract tests pass** (including double-claim prevention, non-production verifier rejection, fuzz tests, and E2E tests).
 >
-> **Soundness hardening (this sprint):**
-> - secp256k1 scalar multiplication now uses carry-propagated field addition (`field_add_carried`) instead of witness-guided `field_add`
-> - Intermediate limb range checks every 32 steps during scalar multiplication (7 checkpoints)
-> - `IS_PRODUCTION_VERIFIER` guard in airdrop constructor prevents deployment with placeholder verifier
-> - KZG params caching in `~/.zkmist/cache/` eliminates 10-30s regeneration overhead
+> **Soundness hardening:**
+> - secp256k1 scalar multiplication uses carry-propagated field addition (`field_add_carried`)
+> - Intermediate limb range checks every 32 steps during scalar multiplication
+> - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
+> - KZG params caching in `~/.zkmist/cache/`
 >
 > **Remaining blockers before deployment:**
-> - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier` / `halo2-solidity-verifier` (currently a structural placeholder)
-> - Run full E2E circuit test (`test_circuit_merkle_nullifier_e2e` — currently `#[ignore]`d due to size)
-> - Run secp256k1 isolated MockProver test (`test_secp256k1_mock_prover` — `#[ignore]`d)
+> - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier`
+> - Run full E2E circuit test (currently `#[ignore]`d due to size)
+> - Run secp256k1 isolated MockProver test (currently `#[ignore]`d)
 > - External security review of secp256k1 non-native field arithmetic
 > - Testnet deployment on Base Sepolia
->
-> V1 and V2 are separate token contracts with independent supplies. V1 contracts remain deployed on Base.
 
 ---
 
@@ -371,11 +315,11 @@ See [PRD.md §10](PRD.md) for the full threat model and security analysis.
 
 | Component | Technology |
 |-----------|------------|
-| ZK Proofs | [RISC Zero zkVM](https://risczero.com/) v3.0.5 (STARK → Groth16) — **V2 (Halo2) planned** |
+| ZK Proofs | [Halo2-KZG](https://github.com/privacy-scaling-explorations/halo2) (PLONKish, BN254) |
 | Merkle Tree | Poseidon hash (BN254) via [light-poseidon](https://github.com/dmpierre/poseidon) v0.4 |
 | CLI | Rust, [clap](https://docs.rs/clap), [alloy](https://github.com/alloy-rs/alloy) |
 | Smart Contracts | Solidity 0.8.28, [Foundry](https://book.getfoundry.sh/), [OpenZeppelin](https://openzeppelin.com/contracts/) |
-| On-chain Verification | [risc0-ethereum](https://github.com/risc0/risc0-ethereum) Groth16 verifier |
+| On-chain Verification | BN254 ecPairing precompile (address `0x08`) |
 | Eligibility Data | [Google BigQuery](https://cloud.google.com/bigquery), GitHub Releases |
 
 ---

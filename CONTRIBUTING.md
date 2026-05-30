@@ -2,10 +2,6 @@
 
 Thank you for your interest in ZKMist! This project is fully community-owned — contributions are welcome and encouraged.
 
-> **Note:** ZKMist V2 (Halo2-KZG) is planned but not yet implemented. See [V2_PLAN.md](./V2_PLAN.md)
-> for the V2 architecture. The instructions below cover V1 (RISC Zero), which is the current
-> deployed version.
-
 ## Quick Start
 
 ```shell
@@ -15,11 +11,9 @@ cd zkmist
 # Build the CLI
 cargo build --release -p zkmist-cli
 
-# Build the guest program (requires cargo-risczero)
-cargo risczero build --manifest-path guest/Cargo.toml
-
 # Run tests
 cargo test -p zkmist-merkle-tree
+cargo test -p zkmist-circuits
 cargo test -p zkmist-cli --bin zkmist
 ```
 
@@ -28,7 +22,6 @@ cargo test -p zkmist-cli --bin zkmist
 ### Prerequisites
 
 - **Rust** (stable) — [rustup.rs](https://rustup.rs)
-- **RISC Zero toolchain** — `curl -L https://risczero.com/install | bash && rzup install rust`
 - **Foundry** — [getfoundry.sh](https://book.getfoundry.sh/) (for Solidity contracts)
 
 ### Running Tests
@@ -36,11 +29,8 @@ cargo test -p zkmist-cli --bin zkmist
 ```shell
 # Rust unit tests
 cargo test -p zkmist-merkle-tree
+cargo test -p zkmist-circuits
 cargo test -p zkmist-cli --bin zkmist
-
-# Guest E2E tests (dev-mode, fast)
-cargo risczero build --manifest-path guest/Cargo.toml --features test-small-tree
-RISC0_DEV_MODE=1 cargo test -p zkmist-cli --test e2e_zkvm
 
 # Solidity tests
 cd contracts && forge test -vvv
@@ -60,30 +50,27 @@ All of the above must pass before submitting a PR.
 
 | Directory | Purpose |
 |-----------|---------|
-| `guest/` | RISC Zero zkVM guest program (Rust, compiles to RISC-V) |
+| `circuits/` | Halo2-KZG circuit definitions (Rust) |
 | `cli/` | User-facing CLI tool (Rust) |
 | `merkle-tree/` | Shared Poseidon Merkle tree library (Rust) |
-| `tools/` | Dev utilities (compute-root, compute-image-id) |
+| `tools/` | Dev utilities (compute-root, gen-verifier) |
 | `contracts/` | Solidity contracts (Foundry project) |
 
 ## Key Invariants
 
 When modifying code, be aware of these cross-component invariants that **must** remain consistent:
 
-1. **Poseidon parameters** — Leaf: t=2 (1 input, R_P=56), Interior: t=3 (2 inputs, R_P=57). Must match in `guest/`, `cli/`, and `merkle-tree/`.
+1. **Poseidon parameters** — Leaf: t=2 (1 input, R_P=56), Interior: t=3 (2 inputs, R_P=57). Must match in `circuits/`, `cli/`, and `merkle-tree/`.
 
 2. **Leaf encoding** — 12 zero bytes + 20 address bytes → BN254 field element. Same convention everywhere.
 
-3. **Nullifier domain** — `b"ZKMist_V1_NULLIFIER"` (19 bytes, zero-padded to 32). Must match in guest program and CLI.
+3. **Nullifier domain** — `b"ZKMist_V2_NULLIFIER"` (19 bytes, zero-padded to 32). Must match in circuit and CLI.
 
-4. **Journal layout** — 84 bytes: `root[0:32] + nullifier[32:64] + recipient[64:84]`. Must match between guest program (`env::commit_slice`) and Solidity contract (`_journal[0:32]`, etc.).
+4. **Merkle path direction** — `path_index[i]=0` → left child, `path_index[i]=1` → right child. Must match in circuit, CLI tree builder, and `merkle-tree` library.
 
-5. **Merkle path direction** — `path_index[i]=0` → left child, `path_index[i]=1` → right child. Must match in guest program, CLI tree builder, and `merkle-tree` library.
+5. **Test vectors** — The project defines expected outputs for a known private key. All implementations must reproduce these exact values. Run the relevant tests after any change to hashing or address derivation.
 
-6. **Test vectors** — PRD Appendix D defines expected outputs for a known private key. All implementations must reproduce these exact values. Run the relevant tests after any change to hashing or address derivation.
-
-7. **⚠️ Guest program immutability** — Contracts are deployed on Base mainnet with a fixed `imageId` (SHA-256 of the guest binary). **Any change to `guest/src/main.rs` or `guest/Cargo.toml` changes the image ID, which will cause ALL proofs to be rejected by the on-chain verifier.** Do NOT modify the guest program source code unless you are intentionally preparing for a new deployment. Comments are safe to add; code changes are not.
-8. **V2 circuit invariants** — When implementing V2 (Halo2), the same Poseidon parameters, leaf encoding, nullifier domain (`"ZKMist_V2_NULLIFIER"`), and Merkle path direction conventions apply. The V2 circuit must reproduce the exact same Poseidon outputs as the `light-poseidon` crate for test vectors to match.
+6. **Circuit invariants** — The Halo2 circuit must reproduce the exact same Poseidon outputs as the `light-poseidon` crate for test vectors to match.
 
 ## Pull Request Process
 
@@ -97,7 +84,7 @@ When modifying code, be aware of these cross-component invariants that **must** 
 ### What to include in your PR description
 
 - What the change does and why
-- Which components are affected (guest, CLI, contracts, merkle-tree)
+- Which components are affected (circuits, CLI, contracts, merkle-tree)
 - Whether any of the key invariants above are impacted
 - Test results (paste output if relevant)
 

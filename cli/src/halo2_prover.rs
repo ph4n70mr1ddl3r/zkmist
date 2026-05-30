@@ -13,7 +13,7 @@ use zkmist_circuits::{
     nullifier::domain_field_element,
     poseidon::ark_to_halo2,
 };
-use zkmist_merkle_tree::compute_nullifier_v2;
+use zkmist_merkle_tree::compute_nullifier;
 
 use crate::constants::*;
 use crate::types::ProofFile;
@@ -122,11 +122,11 @@ pub fn generate_v2_proof(
         &ark_bn254::Fr::from_be_bytes_mod_order(merkle_root),
     );
 
-    // Compute nullifier using V2 domain separator ("ZKMist_V2_NULLIFIER").
+    // Compute nullifier using domain separator ("ZKMist_V2_NULLIFIER").
     // This MUST match the domain used inside the Halo2 circuit's nullifier gadget.
     let mut interior_hasher = crate::helpers::ark_poseidon_hasher(2)
         .ok_or("Failed to create Poseidon hasher")?;
-    let nullifier_bytes = compute_nullifier_v2(private_key, &mut interior_hasher);
+    let nullifier_bytes = compute_nullifier(private_key, &mut interior_hasher);
     let nullifier_fr = ark_to_halo2(
         &ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes),
     );
@@ -246,13 +246,13 @@ pub fn generate_v2_proof(
     eprintln!("      [5/5] Saving proof file...");
     let proof_file = ProofFile {
         version: 2,
-        proof_format_version: PROOF_FORMAT_VERSION_V2,
+        proof_format_version: PROOF_FORMAT_VERSION,
         proof: hex::encode(&proof_bytes),
         journal: String::new(), // V2 has no journal — public inputs are direct
         nullifier: hex::encode(nullifier_bytes),
         recipient: hex::encode(recipient),
         claim_amount: (CLAIM_AMOUNT as u128 * 1_000_000_000_000_000_000).to_string(),
-        contract_address: AIRDROP_CONTRACT_V2.to_string(),
+        contract_address: AIRDROP_CONTRACT.to_string(),
         chain_id: CHAIN_ID,
         receipt_hex: None,
     };
@@ -290,10 +290,10 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         return Err(format!("Expected version 2 proof, got {}", proof.version));
     }
 
-    if proof.proof_format_version != PROOF_FORMAT_VERSION_V2 {
+    if proof.proof_format_version != PROOF_FORMAT_VERSION {
         return Err(format!(
             "Expected proof format version {}, got {}",
-            PROOF_FORMAT_VERSION_V2, proof.proof_format_version
+            PROOF_FORMAT_VERSION, proof.proof_format_version
         ));
     }
 
