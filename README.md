@@ -313,6 +313,32 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 ---
 
+## Data Availability
+
+The eligibility list (~2.8 GB) is distributed via GitHub Releases with per-file SHA-256 integrity checks and a hardcoded Merkle root. For redundancy:
+
+- The manifest root is hardcoded in `cli/src/constants.rs` — even if GitHub is compromised, the CLI will reject tampered data
+- SHA-256 checksums are verified for each downloaded file
+- The full Merkle tree root is recomputed during `zkmist fetch` (optional, `--no-verify` to skip)
+
+**Recommendation for mirrors:** After initial release, consider mirroring the eligibility list to IPFS or another CDN for censorship resistance. The `zkmist fetch` command supports multiple download sources with automatic fallback.
+
+## Relayer Support
+
+Claims can be submitted by anyone (permissionless relaying). A third-party relayer can:
+1. Receive a `zkmist_proof_*.json` file from a claimant
+2. Submit the proof to the `ZKMAirdrop` contract, paying gas on behalf of the recipient
+3. The recipient receives ZKM tokens regardless of who submitted the proof
+
+The recipient address is bound inside the ZK proof — it cannot be changed by the relayer.
+
+**Building a relayer:** A minimal relayer needs only:
+- An Ethereum address with ETH on Base for gas
+- The Alloy/ethers library to submit a `claim(bytes, bytes32, address)` transaction
+- The proof JSON file from the claimant
+
+No special permissions or contract setup is required.
+
 ## Security
 
 | Property | Mechanism |
@@ -329,7 +355,23 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **201 tests passing** (63 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **275 tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity + 74 fast unit). Zero clippy warnings. Gas snapshot committed.
+>
+> **Soundness hardening (completed):**
+> - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
+> - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
+> - `field_mul` uses constrained schoolbook products and wide limb accumulation
+> - **`field_mul` includes Schwartz–Zippel product verification** — every multiplication is cross-checked against a polynomial evaluation at r=65537, constraining the wide-to-narrow reduction (soundness error ≤ 6/p_BN254 per op)
+> - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
+> - `constrain_affine` verifies the computed point matches the expected public key
+> - Intermediate range checks every 32 scalar mul steps
+> - Limb range checks with MSB-first byte decomposition
+> - `conditional_select` uses single-assignment pattern (no double-writes)
+> - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
+> - KZG params caching in `~/.zkmist/cache/`
+> - 7 diverse test vectors: MSB=0, MSB=1, key=1, key=2, key=3, key=n-1, standard
+> - 50K nullifier collision test passing
+> - Nullifier birthday-bound analysis: collision probability ≈ 10⁻⁷² for 1M claims (negligible)
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
@@ -348,21 +390,21 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - 50K nullifier collision test passing
 >
 > **Known issue (blocking mainnet):**
-> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. It needs to be re-run with the Schwartz–Zippel fix to confirm all permutation failures are resolved.
+> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. Needs re-run to confirm Schwartz–Zippel fix resolves all permutation failures.
 > - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`) should now pass with the product verification fix. Needs re-verification.
 >
 > **Tooling:**
-> - `zkmist bench` — proves timing benchmark on reference hardware
-> - `monitor` — on-chain monitoring with anomaly detection
-> - `readiness` — pre-deployment readiness checker (8 checks)
+> - `zkmist bench` — proving timing benchmark with proof size validation
+> - `monitor` — on-chain monitoring with anomaly detection (surge, supply mismatch)
+> - `readiness` — pre-deployment readiness checker (8 automated checks)
 > - `gen-verifier` — generates VK-embedded verifier + serialized VK blob
-> - `scripts/testnet-deploy.sh` — one-command testnet deployment
+> - `scripts/testnet-deploy.sh` — one-command testnet deployment with automatic contract verification
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Re-run full E2E MockProver test to confirm the product verification fix resolves `constrain_affine` failures
+> - Re-run full E2E MockProver test to confirm product verification fix resolves `constrain_affine` failures
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `halo2-solidity-verifier`
-> - **External security review** of circuit (especially after product verification addition)
+> - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >
 > See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist.

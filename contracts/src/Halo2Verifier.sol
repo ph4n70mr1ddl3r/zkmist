@@ -39,8 +39,10 @@ contract Halo2Verifier is IHalo2Verifier {
     bool public constant IS_PRODUCTION_VERIFIER = false;
 
     // ── Verification key hash (integrity check) ─────────────────────
-    // This is a hash of the verification key parameters. If the VK changes
-    // (e.g., due to circuit modifications), this hash must be updated.
+    // ⚠️  PLACEHOLDER — this is NOT a real VK hash. It will be replaced
+    // with the keccak256 of the serialized verification key when the verifier
+    // is regenerated using halo2-solidity-verifier:
+    //   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
     bytes32 public constant VK_HASH = bytes32(uint256(0xaa5c548e24ead166));
 
     // ── Verification parameters ─────────────────────────────────────

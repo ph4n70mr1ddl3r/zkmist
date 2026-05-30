@@ -108,6 +108,9 @@ Before mainnet deployment, ALL of the following must be completed:
 - [ ] Consider replacing hand-rolled secp256k1 with audited library
   - `scroll-tech/halo2-secp256k1`
   - `privacy-scaling-explorations/halo2wrong`
+- Consider replacing hand-rolled Keccak gadget with a verified implementation
+  - `privacy-scaling-explorations/halo2wrong` (Keccak256 chip)
+  - `scroll-tech/zkevm-circuits` (Keccak circuit)
 
 ## Soundness Hardening (Applied)
 
@@ -164,6 +167,27 @@ for defense-in-depth:
 - `privacy-scaling-explorations/halo2wrong`
 
 This remains a **recommended** step (no longer blocking) after the product verification fix.
+
+## Nullifier Collision Analysis (Birthday Bound)
+
+The nullifier is computed as `poseidon(Fr(key), Fr(domain))` where Poseidon
+outputs a 254-bit field element (BN254 scalar field).
+
+For 1,000,000 claims (worst case), the probability of at least one nullifier
+collision follows the birthday bound:
+
+```
+p(collision) ≈ 1 - e^(-n² / 2q)
+           = 1 - e^(-(10⁶)² / (2 × 2²⁵⁴))
+           ≈ 10⁶² / 2²⁵⁵
+           ≈ 10⁻⁷²  (negligible)
+```
+
+For context, winning the Powerball jackpot (~1 in 292 million) is ~10⁶⁰ times
+more likely than a nullifier collision.
+
+The empirical 50,000-key uniqueness test provides additional confidence,
+though the theoretical bound alone is overwhelmingly sufficient.
 
 ## Post-Deployment Monitoring
 

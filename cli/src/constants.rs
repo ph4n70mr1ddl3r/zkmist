@@ -36,7 +36,11 @@ pub const KNOWN_MERKLE_ROOT: &str =
     "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844";
 
 /// ZKMAirdrop contract address on Base.
-/// TODO: Update after deployment.
+/// ⚠️  PLACEHOLDER — must be updated after deploying to Base mainnet.
+/// The CLI will reject proof submission while this is the placeholder address.
+/// After deploying:
+///   1. Update this constant with the deployed airdrop address
+///   2. Rebuild: cargo build --release -p zkmist-cli
 pub const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD";
 
 /// Nullifier domain separator.

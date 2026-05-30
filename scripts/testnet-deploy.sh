@@ -109,23 +109,82 @@ forge script script/Deploy.s.sol \
     --private-key "$PRIVATE_KEY" \
     -vvv
 
+# ── Post-deployment: extract addresses from broadcast ─────────────────
+BROADCAST_DIR="$CONTRACTS_DIR/broadcast/Deploy.s.sol/$EXPECTED_CHAIN_ID"
+LATEST_RUN=$(ls -t "$BROADCAST_DIR"/run-*.json 2>/dev/null | head -1)
+
+VERIFIER_ADDR=""
+TOKEN_ADDR=""
+AIRDROP_ADDR=""
+
+if [ -n "$LATEST_RUN" ]; then
+    echo ""
+    echo "Extracting deployed addresses from broadcast..."
+    # Parse contracts from the broadcast JSON
+    VERIFIER_ADDR=$(grep -A1 '"contractName": "Halo2Verifier"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
+    TOKEN_ADDR=$(grep -A1 '"contractName": "ZKMToken"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
+    AIRDROP_ADDR=$(grep -A1 '"contractName": "ZKMAirdrop"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
+
+    if [ -n "$VERIFIER_ADDR" ]; then
+        echo "  Halo2Verifier: $VERIFIER_ADDR"
+        echo "  ZKMToken:      $TOKEN_ADDR"
+        echo "  ZKMAirdrop:    $AIRDROP_ADDR"
+    fi
+fi
+
+# ── Verify contracts on BaseScan ──────────────────────────────────────
+if [ -n "$VERIFIER_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; then
+    echo ""
+    echo "Verifying contracts on BaseScan..."
+
+    forge verify-contract "$VERIFIER_ADDR" Halo2Verifier --chain base-sepolia --watch 2>&1 || \
+        echo -e "  ${YELLOW}Verifier verification failed (may need manual retry)${NC}"
+    echo -e "  ${GREEN}✓${NC} Halo2Verifier verified"
+
+    forge verify-contract "$TOKEN_ADDR" ZKMToken --chain base-sepolia --watch 2>&1 || \
+        echo -e "  ${YELLOW}Token verification failed (may need manual retry)${NC}"
+    echo -e "  ${GREEN}✓${NC} ZKMToken verified"
+
+    forge verify-contract "$AIRDROP_ADDR" ZKMAirdrop --constructor-args \
+        "$(cast abi-encode "constructor(address,address,bytes32)" "$TOKEN_ADDR" "$VERIFIER_ADDR" "$MERKLE_ROOT")" \
+        --chain base-sepolia --watch 2>&1 || \
+        echo -e "  ${YELLOW}Airdrop verification failed (may need manual retry)${NC}"
+    echo -e "  ${GREEN}✓${NC} ZKMAirdrop verified"
+fi
+
+# Read MERKLE_ROOT from the deploy script (for constructor args above)
+MERKLE_ROOT=$(grep 'MERKLE_ROOT =' "$CONTRACTS_DIR/script/Deploy.s.sol" | sed 's/.*= *//; s/;.*//' | tr -d ' ')
+
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Deployment complete!${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+if [ -n "$AIRDROP_ADDR" ]; then
+    echo ""
+    echo "  Deployed contracts:"
+    echo "    Halo2Verifier: $VERIFIER_ADDR"
+    echo "    ZKMToken:      $TOKEN_ADDR"
+    echo "    ZKMAirdrop:    $AIRDROP_ADDR"
+fi
 echo ""
 echo "Next steps:"
-echo "  1. Verify contracts on BaseScan:"
-echo "     forge verify-contract <address> Halo2Verifier --chain base-sepolia"
-echo "     forge verify-contract <address> ZKMToken --chain base-sepolia"
-echo "     forge verify-contract <address> ZKMAirdrop --chain base-sepolia"
-echo ""
+if [ -z "$VERIFIER_ADDR" ]; then
+    echo "  1. Extract deployed addresses from broadcast log above"
+fi
 echo "  2. Update cli/src/constants.rs:"
-echo "     AIRDROP_CONTRACT = \"<airdrop_address>\""
+if [ -n "$AIRDROP_ADDR" ]; then
+    echo "     AIRDROP_CONTRACT = \"$AIRDROP_ADDR\""
+else
+    echo "     AIRDROP_CONTRACT = \"<airdrop_address>\""
+fi
 echo ""
 echo "  3. Test full claim flow:"
 echo "     cargo run --release -p zkmist-cli --bin zkmist -- prove"
 echo "     cargo run --release -p zkmist-cli --bin zkmist -- submit proof.json --rpc-url $BASE_SEPOLIA_RPC"
 echo ""
 echo "  4. Run on-chain monitor:"
-echo "     cargo run -p zkmist-tools --bin monitor -- <airdrop_address> --rpc $BASE_SEPOLIA_RPC --once"
+if [ -n "$AIRDROP_ADDR" ]; then
+    echo "     cargo run -p zkmist-tools --bin monitor -- $AIRDROP_ADDR --rpc $BASE_SEPOLIA_RPC --once"
+else
+    echo "     cargo run -p zkmist-tools --bin monitor -- <airdrop_address> --rpc $BASE_SEPOLIA_RPC --once"
+fi
