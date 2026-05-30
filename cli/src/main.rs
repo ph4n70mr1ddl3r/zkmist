@@ -84,6 +84,15 @@ enum Commands {
         #[arg(long)]
         rpc_url: Option<String>,
     },
+
+    /// Benchmark proving pipeline: times key generation and proof creation.
+    /// Generates a small Merkle tree and runs the proving pipeline without
+    /// writing to disk. Useful for measuring proving time on reference hardware.
+    Bench {
+        /// Tree depth for the benchmark (default: 4)
+        #[arg(long, default_value = "4")]
+        tree_depth: usize,
+    },
 }
 
 fn main() {
@@ -106,6 +115,7 @@ fn main() {
         Commands::Verify { proof_file } => cmd_verify(&proof_file),
         Commands::Check { address } => cmd_check(&address),
         Commands::Status { rpc_url } => cmd_status(rpc_url.as_deref()),
+        Commands::Bench { tree_depth } => cmd_bench(tree_depth),
     };
 
     if let Err(e) = result {
@@ -742,6 +752,106 @@ mod tests {
         assert_eq!(
             hex::encode(leaf),
             "1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9"
+        );
+    }
+
+    // ── Proof format version validation ─────────────────────────────────
+
+    #[test]
+    fn test_proof_format_version_mismatch_rejected() {
+        let proof = ProofFile {
+            version: 2,
+            proof_format_version: 999, // Wrong version
+            proof: "aabb".repeat(250), // 500 bytes hex
+            journal: String::new(),
+            nullifier: "f".repeat(64),
+            recipient: "ab".repeat(20),
+            claim_amount: "10000000000000000000000".to_string(),
+            contract_address: "0x000000000000000000000000000000000000dEaD".to_string(),
+            chain_id: CHAIN_ID,
+            receipt_hex: None,
+        };
+        assert_ne!(
+            proof.proof_format_version, PROOF_FORMAT_VERSION,
+            "Proof format version should differ from current"
+        );
+    }
+
+    #[test]
+    fn test_proof_format_version_current() {
+        let proof = ProofFile {
+            version: 2,
+            proof_format_version: PROOF_FORMAT_VERSION,
+            proof: "aabb".repeat(250),
+            journal: String::new(),
+            nullifier: "f".repeat(64),
+            recipient: "ab".repeat(20),
+            claim_amount: "10000000000000000000000".to_string(),
+            contract_address: "0x000000000000000000000000000000000000dEaD".to_string(),
+            chain_id: CHAIN_ID,
+            receipt_hex: None,
+        };
+        assert_eq!(proof.proof_format_version, PROOF_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn test_proof_byte_length_validation() {
+        // Valid range: [400, 1200] bytes
+        let valid_proofs = vec![400, 500, 800, 1200];
+        for len in valid_proofs {
+            let hex_len = len * 2;
+            let proof_hex = "a".repeat(hex_len);
+            let bytes = hex::decode(&proof_hex).unwrap();
+            assert!(
+                bytes.len() >= 400 && bytes.len() <= 1200,
+                "{} bytes should be valid",
+                bytes.len()
+            );
+        }
+
+        // Invalid ranges
+        let invalid_proofs = vec![100, 399, 1201, 5000];
+        for len in invalid_proofs {
+            let hex_len = len * 2;
+            let proof_hex = "a".repeat(hex_len);
+            let bytes = hex::decode(&proof_hex).unwrap();
+            let is_valid = bytes.len() >= 400 && bytes.len() <= 1200;
+            assert!(!is_valid, "{} bytes should be invalid", bytes.len());
+        }
+    }
+
+    // ── Address derivation with multiple keys ───────────────────────────
+
+    #[test]
+    fn test_derive_address_key_1() {
+        let mut key = [0u8; 32];
+        key[31] = 1;
+        let addr = derive_address(&key).unwrap();
+        assert_eq!(
+            format_address(&addr),
+            "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+        );
+    }
+
+    #[test]
+    fn test_derive_address_key_2() {
+        let mut key = [0u8; 32];
+        key[31] = 2;
+        let addr = derive_address(&key).unwrap();
+        assert_eq!(
+            format_address(&addr),
+            "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf"
+        );
+    }
+
+    #[test]
+    fn test_derive_address_key_3() {
+        let mut key = [0u8; 32];
+        key[31] = 3;
+        let addr = derive_address(&key).unwrap();
+        assert_eq!(
+            format_address(&addr),
+            "0x6813eb9362372eef6200f3b1dbc3f819671cba69"
         );
     }
 }

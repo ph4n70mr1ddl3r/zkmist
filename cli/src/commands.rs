@@ -5,6 +5,7 @@
 
 use std::io::{self, Write};
 
+use ark_ff::PrimeField;
 use sha2::{Digest as Sha2Digest, Sha256};
 use zkmist_merkle_tree::{
     build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
@@ -323,6 +324,27 @@ pub fn cmd_submit(
         ));
     }
 
+    // Validate proof format version to catch outdated proof files
+    if proof.proof_format_version != PROOF_FORMAT_VERSION {
+        return Err(format!(
+            "Proof format version {} doesn't match expected {}. \
+             Regenerate the proof with the current CLI version.",
+            proof.proof_format_version, PROOF_FORMAT_VERSION
+        ));
+    }
+
+    // Validate proof byte length is within the expected range
+    let proof_bytes_len = hex::decode(&proof.proof)
+        .map_err(|e| format!("Invalid proof hex: {}", e))?
+        .len();
+    if !(400..=1200).contains(&proof_bytes_len) {
+        return Err(format!(
+            "Proof length {} bytes is outside expected range [400, 1200]. \
+             The proof may be corrupted or generated with wrong parameters.",
+            proof_bytes_len
+        ));
+    }
+
     // Reject submission to the placeholder contract address.
     if proof.contract_address == "0x000000000000000000000000000000000000dEaD"
         || proof.contract_address.parse::<alloy::primitives::Address>()
@@ -446,6 +468,139 @@ pub fn cmd_submit(
 
         Ok::<(), String>(())
     })?;
+
+    Ok(())
+}
+
+// ── Command: bench ───────────────────────────────────────────────────────
+
+/// Benchmark the proving pipeline with a small Merkle tree.
+///
+/// Generates a proof for a synthetic tree and reports timing for each phase:
+///   1. Merkle tree construction
+///   2. KZG params loading/generation
+///   3. VK/PK generation
+///   4. Proof creation
+///   5. Local verification
+pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
+    use zkmist_circuits::{merkle::TREE_DEPTH, poseidon::ark_to_halo2, ZKMistV2Claim};
+    use zkmist_merkle_tree::{build_tree_streaming_with_depth, compute_nullifier};
+
+    let depth = tree_depth.clamp(1, 26);
+
+    eprintln!("ZKMist Proving Benchmark");
+    eprintln!("────────────────────────");
+    eprintln!("Tree depth: {}", depth);
+    eprintln!();
+
+    // Use the standard test key
+    let key: [u8; 32] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
+    ];
+
+    // Derive address
+    let address = derive_address(&key)?;
+    eprintln!("Address: {}", format_address(&address));
+
+    // Phase 1: Build Merkle tree
+    eprintln!();
+    eprintln!("[1/4] Building Merkle tree (depth={})...", depth);
+    let t1 = std::time::Instant::now();
+    let addresses = vec![address];
+    let (root_ark, proof) = build_tree_streaming_with_depth(&addresses, depth, Some(0));
+    let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+    eprintln!("      ✓ Tree built ({:.2}s)", t1.elapsed().as_secs_f64());
+
+    // Pad siblings to TREE_DEPTH
+    let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
+    let mut path_arr = [0u8; TREE_DEPTH];
+    let copy_len = siblings_ark.len().min(TREE_DEPTH);
+    sibling_arr[..copy_len].copy_from_slice(&siblings_ark[..copy_len]);
+    path_arr[..copy_len].copy_from_slice(&path_indices_u8[..copy_len]);
+
+    // Compute nullifier
+    let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create hasher")?;
+    let nullifier_bytes = compute_nullifier(&key, &mut interior_hasher);
+    let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
+    let nullifier_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes));
+    let recipient = halo2curves::bn256::Fr::from(0xB0Bu64);
+
+    let _circuit = ZKMistV2Claim {
+        private_key: key,
+        siblings: sibling_arr,
+        path_indices: path_arr,
+        merkle_root: root_field,
+        nullifier: nullifier_field,
+        recipient,
+    };
+
+    // Phase 2-4: Proving pipeline via halo2_prover
+    eprintln!("[2/4] Running proving pipeline...");
+    let bench_dir = std::path::PathBuf::from("/tmp/zkmist_bench");
+    std::fs::create_dir_all(&bench_dir).ok();
+    let proof_path = bench_dir.join("bench_proof.json");
+
+    let mut recipient = [0u8; 20];
+    recipient[19] = 0x0B;
+    recipient[18] = 0xB0;
+
+    let total_start = std::time::Instant::now();
+    crate::halo2_prover::generate_v2_proof(
+        &key,
+        &sibling_arr,
+        &path_arr,
+        &root_ark,
+        &recipient,
+        &proof_path,
+    )?;
+    let total_time = total_start.elapsed();
+
+    // Report proof file size
+    let proof_content = std::fs::read_to_string(&proof_path)
+        .map_err(|e| format!("Failed to read bench proof: {}", e))?;
+    let proof_file: crate::types::ProofFile = serde_json::from_str(&proof_content)
+        .map_err(|e| format!("Failed to parse bench proof: {}", e))?;
+    let proof_bytes = hex::decode(&proof_file.proof).unwrap();
+
+    // Cleanup
+    std::fs::remove_file(&proof_path).ok();
+
+    eprintln!();
+    eprintln!("══════════════════════════════════════════════════════");
+    eprintln!("  Benchmark Results");
+    eprintln!("══════════════════════════════════════════════════════");
+    eprintln!("  Total proving time:  {:.2}s", total_time.as_secs_f64());
+    eprintln!("  Tree build time:     {:.2}s", t1.elapsed().as_secs_f64());
+    eprintln!("  Proof size:          {} bytes", proof_bytes.len());
+    eprintln!(
+        "  Proof in range:      {}",
+        if proof_bytes.len() >= 400 && proof_bytes.len() <= 1200 {
+            "✅ YES"
+        } else {
+            "❌ NO"
+        }
+    );
+    eprintln!("  Tree depth:          {}", depth);
+    eprintln!("══════════════════════════════════════════════════════");
+    eprintln!();
+    if total_time.as_secs() < 60 {
+        eprintln!("  ✅ Proving time under 60s target");
+    } else {
+        eprintln!(
+            "  ⚠️  Proving time exceeds 60s target ({:.0}s)",
+            total_time.as_secs_f64()
+        );
+    }
+    if proof_bytes.len() >= 400 && proof_bytes.len() <= 1200 {
+        eprintln!("  ✅ Proof size in expected range [400, 1200]");
+    } else {
+        eprintln!(
+            "  ⚠️  Proof size {} outside expected range [400, 1200]",
+            proof_bytes.len()
+        );
+    }
 
     Ok(())
 }

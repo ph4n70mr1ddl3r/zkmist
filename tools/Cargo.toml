@@ -11,6 +11,15 @@ path = "src/compute_root.rs"
 name = "gen-verifier"
 path = "src/gen_verifier.rs"
 
+[[bin]]
+name = "monitor"
+path = "src/monitor.rs"
+required-features = ["monitoring"]
+
+[[bin]]
+name = "readiness"
+path = "src/readiness.rs"
+
 [dependencies]
 zkmist-merkle-tree = { path = "../merkle-tree" }
 zkmist-circuits = { path = "../circuits" }
@@ -24,6 +33,12 @@ halo2curves = "0.6.0"
 ff = "0.13"
 snark-verifier = { version = "0.2", optional = true }
 
+# Monitor dependencies
+alloy = { version = "1", features = ["providers", "contract", "transport-http"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
 [features]
 default = []
 v2 = ["snark-verifier"]
+monitoring = ["alloy", "tokio", "reqwest"]

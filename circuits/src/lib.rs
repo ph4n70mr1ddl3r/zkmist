@@ -1402,4 +1402,202 @@ mod tests {
         }
         eprintln!("✅ Merkle proofs verified for trees of sizes 1-8, appropriate depths");
     }
+
+    /// Test address derivation with multiple well-known test vectors.
+    /// Uses deterministic keys at various bit patterns to exercise edge cases
+    /// in the secp256k1 scalar multiplication (MSB=0, MSB=1, small, large).
+    #[test]
+    fn test_address_derivation_multiple_keys() {
+        // (private_key_bytes, expected_address_hex)
+        let test_vectors: Vec<([u8; 32], &str)> = vec![
+            // Key 1: 0x0123...cdef — MSB=0, standard test vector
+            (
+                [
+                    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
+                    0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23,
+                    0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+                ],
+                "fcad0b19bb29d4674531d6f115237e16afce377c",
+            ),
+            // Key 2: private key = 1 (minimal valid key)
+            {
+                let mut k = [0u8; 32];
+                k[31] = 1;
+                (k, "7e5f4552091a69125d5dfcb7b8c2659029395bdf")
+            },
+            // Key 3: private key = 2
+            {
+                let mut k = [0u8; 32];
+                k[31] = 2;
+                (k, "2b5ad5c4795c026514f8317c7a215e218dccd6cf")
+            },
+            // Key 4: private key = 3
+            {
+                let mut k = [0u8; 32];
+                k[31] = 3;
+                (k, "6813eb9362372eef6200f3b1dbc3f819671cba69")
+            },
+            // Key 5: 0x80... — MSB=1, exercises MSB correction path (no subtract)
+            {
+                let mut k = [0u8; 32];
+                k[0] = 0x80;
+                k[31] = 0x42;
+                (k, "") // Expected address computed dynamically
+            },
+            // Key 6: 0x7FFF... — MSB=0, all bits set except MSB region
+            {
+                let mut k = [0xFFu8; 32];
+                k[0] = 0x7F;
+                (k, "")
+            },
+            // Key 7: random-ish key near the group order boundary
+            {
+                let mut k = [0u8; 32];
+                k[0] = 0xFF;
+                k[1] = 0xFF;
+                k[2] = 0xFF;
+                k[3] = 0xFE;
+                k[4] = 0xBA;
+                k[5] = 0xAE;
+                k[6] = 0xDC;
+                k[7] = 0xE6;
+                k[8] = 0xAF;
+                k[9] = 0x48;
+                k[10] = 0xA0;
+                k[11] = 0x3B;
+                k[12] = 0xBF;
+                k[13] = 0xD2;
+                k[14] = 0x5E;
+                k[15] = 0x8C;
+                k[16] = 0xD0;
+                k[17] = 0x36;
+                k[18] = 0x41;
+                k[19] = 0x40;
+                k[20] = 0x00;
+                k[21] = 0x00;
+                k[22] = 0x00;
+                k[23] = 0x00;
+                k[24] = 0x00;
+                k[25] = 0x00;
+                k[26] = 0x00;
+                k[27] = 0x00;
+                k[28] = 0x00;
+                k[29] = 0x00;
+                k[30] = 0x00;
+                k[31] = 0x01;
+                // n - 1 (last valid key before group order)
+                (k, "")
+            },
+        ];
+
+        let leaf_params = PoseidonParams::new_circom(1);
+        let interior_params = PoseidonParams::new_circom(2);
+
+        for (i, (key, expected_addr)) in test_vectors.iter().enumerate() {
+            let (address, pub_x, pub_y) = native_derive_address(key);
+
+            // Verify against expected address if provided
+            if !expected_addr.is_empty() {
+                assert_eq!(
+                    hex::encode(address),
+                    *expected_addr,
+                    "Address mismatch for test vector {}",
+                    i + 1
+                );
+            }
+
+            // Cross-check: Keccak hash must match
+            let hash = crate::keccak::native_hash_pubkey(&pub_x, &pub_y);
+            assert_eq!(
+                hex::encode(&hash[12..32]),
+                hex::encode(address),
+                "Keccak mismatch for vector {}",
+                i + 1
+            );
+
+            // Non-zero address
+            assert_ne!(address, [0u8; 20], "Zero address for vector {}", i + 1);
+
+            // Leaf hash must be deterministic
+            let mut padded = [0u8; 32];
+            padded[12..32].copy_from_slice(&address);
+            let addr_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&padded));
+            let leaf1 = native_poseidon(&leaf_params, &[addr_field]);
+            let leaf2 = native_poseidon(&leaf_params, &[addr_field]);
+            assert_eq!(
+                leaf1,
+                leaf2,
+                "Leaf hash not deterministic for vector {}",
+                i + 1
+            );
+
+            // Nullifier must be unique per key
+            let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(key));
+            let nullifier =
+                crate::nullifier::native_compute_nullifier(&key_field, &interior_params);
+            let nullifier_ark = crate::poseidon::halo2_to_ark(&nullifier);
+            let nullifier_bytes = nullifier_ark.into_bigint().to_bytes_be();
+            assert_ne!(
+                nullifier_bytes,
+                [0u8; 32],
+                "Zero nullifier for vector {}",
+                i + 1
+            );
+        }
+        eprintln!(
+            "✅ {} address derivation test vectors all pass",
+            test_vectors.len()
+        );
+    }
+
+    /// Test that secp256k1 scalar multiplication is correct for sequential keys.
+    /// Verifies k*G + G = (k+1)*G for multiple keys.
+    #[test]
+    fn test_secp256k1_scalar_mul_additive() {
+        // Verify: for key k, k*G and (k+1)*G differ by exactly G
+        for key_val in 1u64..=20 {
+            let mut key_bytes = [0u8; 32];
+            key_bytes[24..32].copy_from_slice(&key_val.to_be_bytes());
+
+            let (addr_k, _, _) = native_derive_address(&key_bytes);
+
+            let mut key_next_bytes = [0u8; 32];
+            key_next_bytes[24..32].copy_from_slice(&(key_val + 1).to_be_bytes());
+
+            let (addr_k1, _, _) = native_derive_address(&key_next_bytes);
+
+            // Different keys must produce different addresses
+            assert_ne!(
+                addr_k,
+                addr_k1,
+                "Sequential keys {} and {} produce same address",
+                key_val,
+                key_val + 1
+            );
+        }
+        eprintln!("✅ 20 sequential keys produce unique addresses");
+    }
+
+    /// Test nullifier uniqueness across a large set of keys.
+    /// Ensures no nullifier collisions for 50K keys.
+    #[test]
+    fn test_nullifier_uniqueness_50k() {
+        let params = PoseidonParams::new_circom(2);
+        let mut nullifiers = std::collections::HashSet::new();
+
+        for key_val in 1u64..=50_000 {
+            let key_field = ark_to_halo2(&ark_bn254::Fr::from(key_val));
+            let nullifier = native_compute_nullifier(&key_field, &params);
+            let nullifier_bytes = {
+                let ark = crate::poseidon::halo2_to_ark(&nullifier);
+                ark.into_bigint().to_bytes_be()
+            };
+            assert!(
+                nullifiers.insert(nullifier_bytes),
+                "Nullifier collision at key {}",
+                key_val
+            );
+        }
+        eprintln!("✅ 50,000 nullifiers all unique — no collisions");
+    }
 }

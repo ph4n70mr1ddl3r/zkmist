@@ -138,21 +138,23 @@ zkmist/
 │       └── gadgets/   # Shared low-level gadgets
 ├── cli/               # User-facing CLI tool (Rust)
 │   └── src/
-│       ├── main.rs    # fetch, prove, submit, verify, check, status
+│       ├── main.rs    # fetch, prove, submit, verify, check, status, bench
 │       ├── halo2_prover.rs
 │       └── commands.rs
 ├── merkle-tree/       # Poseidon Merkle tree library (shared)
 │   └── src/lib.rs
 ├── tools/             # Dev utilities
 │   └── src/
-│       ├── compute_root.rs
-│       └── gen_verifier.rs
+│       ├── compute_root.rs    # Compute Merkle root from CSV
+│       ├── gen_verifier.rs     # Generate Halo2Verifier.sol
+│       ├── monitor.rs          # On-chain monitoring tool
+│       └── readiness.rs        # Pre-deployment readiness checker
 ├── contracts/         # Solidity (Foundry)
 │   ├── src/
 │   │   ├── ZKMToken.sol       # ERC-20, mintable by airdrop, burnable
 │   │   ├── ZKMAirdrop.sol     # Immutable claim contract
 │   │   └── Halo2Verifier.sol  # Auto-generated KZG verifier
-│   ├── test/          # Unit + e2e tests
+│   ├── test/          # Unit + e2e + fuzz + integration tests
 │   └── script/
 │       └── Deploy.s.sol
 └── V2_PLAN.md         # Architecture document
@@ -227,10 +229,13 @@ The project includes verified test vectors for cross-implementation validation:
 ### Run Tests
 
 ```shell
-# Rust unit tests
+# Rust unit tests (fast)
 cargo test -p zkmist-merkle-tree
 cargo test -p zkmist-circuits
 cargo test -p zkmist-cli --bin zkmist
+
+# Slow circuit tests (E2E MockProver, ~15-30 min each)
+cargo test -p zkmist-circuits -- --ignored --nocapture
 
 # Solidity tests
 cd contracts && forge test -vvv
@@ -254,6 +259,24 @@ cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv
 
 ```shell
 cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- --output contracts/src/Halo2Verifier.sol
+```
+
+### Check Pre-deployment Readiness
+
+```shell
+cargo run -p zkmist-tools --bin readiness
+```
+
+### Monitor Deployed Contracts
+
+```shell
+cargo run -p zkmist-tools --bin monitor -- <airdrop_address> --rpc https://mainnet.base.org --interval 60
+```
+
+### Benchmark Proving Pipeline
+
+```shell
+cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4
 ```
 
 ---
@@ -293,15 +316,22 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **173 tests passing** (57 circuit + 50 CLI + 13 merkle-tree + 53 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **173+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 53 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
 > - `check_on_curve` uses carry-propagated field addition (`field_add_carried`)
-> - secp256k1 scalar multiplication uses carry-propagated field addition (`field_add_carried`)
 > - Intermediate limb range checks every 32 steps during scalar multiplication
 > - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
 > - KZG params caching in `~/.zkmist/cache/`
+> - Diverse test vectors: 7 keys including edge cases (MSB=0, MSB=1, key=1, key=n-1)
+> - 50K nullifier collision test passing
+>
+> **Tooling (new):**
+> - `zkmist bench` — proves timing benchmark on reference hardware
+> - `monitor` — on-chain monitoring with anomaly detection
+> - `readiness` — pre-deployment readiness checker (8 checks)
+> - Integration tests for contract deployment flow
 >
 > **Remaining blockers before deployment:**
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier`

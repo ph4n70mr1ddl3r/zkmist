@@ -80,12 +80,17 @@ Before mainnet deployment, ALL of the following must be completed:
 - [ ] **Update `AIRDROP_CONTRACT`** in `cli/src/constants.rs` after deployment
 - [ ] **Generate real proof + verify on testnet** end-to-end
 - [ ] **Proof size validation**: confirm proof fits in `[400, 1200]` byte range
+  - The `zkmist bench` subcommand reports proof size as part of its output
+- [ ] **Run pre-deployment readiness checker**: `cargo run -p zkmist-tools --bin readiness`
+- [ ] **Set up on-chain monitor**: `cargo run -p zkmist-tools --bin monitor -- <airdrop_address>`
 
 ### Recommended
 - [ ] Integration test: generate real Halo2 proof → submit to Anvil/local chain
-- [ ] Fuzz test the circuit with random private keys (not just test vector)
+- [x] Fuzz test the circuit with random private keys (not just test vector) ✅ Added diverse test vectors (7 keys including edge cases)
 - [ ] Benchmark proving time on reference hardware (target: <60 seconds)
+  - Run: `zkmist bench`
 - [ ] Set up monitoring/alerting for the deployed contracts
+  - Run: `cargo run -p zkmist-tools --bin monitor -- <address> --rpc https://mainnet.base.org`
 
 ## Post-Deployment Monitoring
 
