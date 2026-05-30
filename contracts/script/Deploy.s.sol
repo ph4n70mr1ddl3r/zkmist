@@ -33,8 +33,7 @@ contract Deploy is Script {
 
     /// Merkle root of the eligibility tree.
     /// 64,116,228 qualified addresses, 26-level Poseidon, BN254.
-    bytes32 constant MERKLE_ROOT =
-        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     /// Expected claim deadline: 2027-01-01 00:00:00 UTC
     uint256 constant EXPECTED_CLAIM_DEADLINE = 1_798_761_600;
@@ -60,16 +59,10 @@ contract Deploy is Script {
         console.log("");
 
         // Validate chain
-        require(
-            block.chainid == 8453 || block.chainid == 84532,
-            "Must deploy on Base (8453) or Base Sepolia (84532)"
-        );
+        require(block.chainid == 8453 || block.chainid == 84532, "Must deploy on Base (8453) or Base Sepolia (84532)");
 
         // Validate deadline is in the future
-        require(
-            block.timestamp < EXPECTED_CLAIM_DEADLINE,
-            "Claim deadline has already passed"
-        );
+        require(block.timestamp < EXPECTED_CLAIM_DEADLINE, "Claim deadline has already passed");
 
         // ── Step 1: Deploy Halo2Verifier ──────────────────────────────
         console.log("Step 1: Deploying Halo2Verifier...");
@@ -106,11 +99,7 @@ contract Deploy is Script {
         // ── Step 4: Deploy ZKMAirdrop ─────────────────────────────────
         console.log("");
         console.log("Step 4: Deploying ZKMAirdrop...");
-        ZKMAirdrop airdrop = new ZKMAirdrop(
-            address(token),
-            address(verifier),
-            MERKLE_ROOT
-        );
+        ZKMAirdrop airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
         console.log("  ZKMAirdrop:", address(airdrop));
 
         // ── Post-deployment validation ────────────────────────────────

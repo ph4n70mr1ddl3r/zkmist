@@ -1365,7 +1365,6 @@ mod tests {
     /// Property test: Merkle proof verification is sound for small trees.
     #[test]
     fn test_merkle_proof_soundness() {
-        use light_poseidon::PoseidonHasher;
         use zkmist_merkle_tree::{build_tree_streaming_with_depth, hash_leaf, verify_merkle_proof};
 
         // Build trees of different sizes and verify proofs

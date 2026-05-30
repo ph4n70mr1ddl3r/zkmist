@@ -293,10 +293,11 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> The circuit compiles, **55 unit tests pass** (including negative and property tests),
-> and **53 contract tests pass** (including double-claim prevention, non-production verifier rejection, fuzz tests, and E2E tests).
+> **173 tests passing** (57 circuit + 50 CLI + 13 merkle-tree + 53 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
-> **Soundness hardening:**
+> **Soundness hardening (completed):**
+> - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
+> - `check_on_curve` uses carry-propagated field addition (`field_add_carried`)
 > - secp256k1 scalar multiplication uses carry-propagated field addition (`field_add_carried`)
 > - Intermediate limb range checks every 32 steps during scalar multiplication
 > - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
@@ -306,8 +307,10 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier`
 > - Run full E2E circuit test (currently `#[ignore]`d due to size)
 > - Run secp256k1 isolated MockProver test (currently `#[ignore]`d)
-> - External security review of secp256k1 non-native field arithmetic
+> - **External security review** of secp256k1 non-native field arithmetic
 > - Testnet deployment on Base Sepolia
+>
+> See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist.
 
 ---
 

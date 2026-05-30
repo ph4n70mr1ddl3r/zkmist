@@ -836,6 +836,7 @@ mod tests {
         #[derive(Debug, Clone)]
         struct KeccakTestConfig {
             keccak: super::KeccakConfig,
+            #[allow(dead_code)]
             instance: Column<Instance>,
         }
 

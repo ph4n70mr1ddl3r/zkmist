@@ -16,8 +16,7 @@ contract ZKMV2Test is Test {
     address constant MINTER = address(0x1);
     MockHalo2Verifier public verifier;
     address constant VERIFIER_ADDR = address(0x2);
-    bytes32 constant MERKLE_ROOT =
-        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function setUp() public {
         verifier = new MockHalo2Verifier();

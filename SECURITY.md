@@ -53,3 +53,36 @@ We ask that you:
 > **⚠️ No external audit has been performed yet.**
 >
 > The project is in beta. An audit of the circuit (especially secp256k1 non-native field arithmetic) is a prerequisite for mainnet deployment.
+
+## Pre-Deployment Checklist
+
+Before mainnet deployment, ALL of the following must be completed:
+
+### Critical (blocks deployment)
+- [ ] **External security audit** of secp256k1 non-native field arithmetic
+- [ ] **Regenerate `Halo2Verifier.sol`** with full KZG pairing verification via `snark-verifier`:
+  ```
+  cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- --output contracts/src/Halo2Verifier.sol
+  ```
+- [ ] **Verify `IS_PRODUCTION_VERIFIER = true`** in the generated verifier
+- [ ] **Run full E2E MockProver test** (previously `#[ignore]`d):
+  ```
+  cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+  ```
+- [ ] **Run isolated secp256k1 MockProver test**:
+  ```
+  cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+  ```
+- [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow
+
+### High Priority
+- [x] **Regenerate gas snapshot**: `cd contracts && forge snapshot` ✅ (53 tests, snapshot committed)
+- [ ] **Update `AIRDROP_CONTRACT`** in `cli/src/constants.rs` after deployment
+- [ ] **Generate real proof + verify on testnet** end-to-end
+- [ ] **Proof size validation**: confirm proof fits in `[400, 1200]` byte range
+
+### Recommended
+- [ ] Integration test: generate real Halo2 proof → submit to Anvil/local chain
+- [ ] Fuzz test the circuit with random private keys (not just test vector)
+- [ ] Benchmark proving time on reference hardware (target: <60 seconds)
+- [ ] Set up monitoring/alerting for the deployed contracts

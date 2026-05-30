@@ -1346,37 +1346,159 @@ impl<'a> Secp256k1Chip<'a> {
 
     /// Scalar multiplication: k * point using double-and-add.
     ///
-    /// Iterates bits from MSB to LSB. For each bit:
-    ///   - Double the accumulator
-    ///   - If bit is 1: add the base point
-    ///   - If bit is 0: keep the doubled value
+    /// MSB-first double-and-add processing `scalar_bits[1..=255]` after
+    /// initializing the accumulator at the base point (which implicitly
+    /// assumes `scalar_bits[0]` = 1, i.e. the MSB is set).
+    ///
+    /// **MSB correction**: since valid private keys in `[1, n-1]` may have
+    /// MSB = 0 (when k < 2^255), the accumulator unconditionally includes a
+    /// `2^255 * G` term. If the actual MSB is 0, we conditionally subtract
+    /// `P255 = 2^255 * G` from the result to cancel this extra term.
+    ///
+    /// Correctness:
+    ///   - bits[0]=1: result = (2^255 + rest) * G = k * G  ✓
+    ///   - bits[0]=0: result = (2^255 + rest) * G − 2^255 * G = rest * G = k * G  ✓
+    ///
+    /// This avoids the identity-point issue: the accumulator always holds a
+    /// valid non-identity Jacobian point because it starts from the base point
+    /// and the Jacobian double/add formulas don't support the identity (Z=0).
     pub fn scalar_mul(
         &self,
         layouter: &mut impl Layouter<Fr>,
         scalar_bits: &[Value<Fr>; 256],
         base_point: &AssignedPoint,
     ) -> Result<AssignedPoint, Error> {
-        // Start with the base point (first bit is always 1 for non-zero scalar)
+        // Start with the base point (assumes bits[0]=1 for the MSB).
         let mut accumulator = base_point.clone();
 
-        for (step, bit_idx) in (0..255).rev().enumerate() {
+        // Process bits[1] through bits[255] (MSB-first, skipping the MSB itself).
+        for i in 1..=255 {
             let doubled = self.point_double(layouter, &accumulator)?;
+
             let added = self.point_add(layouter, &doubled, base_point)?;
             accumulator =
-                self.conditional_select_point(layouter, &added, &doubled, scalar_bits[bit_idx])?;
+                self.conditional_select_point(layouter, &added, &doubled, scalar_bits[i])?;
 
             // Intermediate soundness: range-check coordinate limbs every 32
             // steps to detect overflow or invalid field elements during scalar
             // multiplication, rather than only at the final check_on_curve.
-            // 7 intermediate checks × 3 coords × 4 limbs = 84 range checks.
-            if step > 0 && step % 32 == 0 {
+            if i > 0 && i % 32 == 0 {
                 self.check_limb_ranges(layouter, &accumulator.x)?;
                 self.check_limb_ranges(layouter, &accumulator.y)?;
                 self.check_limb_ranges(layouter, &accumulator.z)?;
             }
         }
 
+        // ── MSB correction ────────────────────────────────────────────
+        // The accumulator currently holds (2^255 + rest) * G where
+        // rest = Σ_{i=1}^{255} bits[i] * 2^(255-i).
+        // If bits[0] (MSB) = 0, we subtract P255 = 2^255 * G.
+        // If bits[0] = 1, the result is already correct.
+        //
+        // P255 = 2^255 * G is a constant point precomputed via native scalar mul.
+        let p255_scalar: [u64; 4] = [0, 0, 0, 1u64 << 63];
+        let p255 = NativePoint::scalar_mul(&p255_scalar);
+        debug_assert!(!p255.is_inf, "P255 should not be identity");
+
+        // Assign P255 as an in-circuit affine point (Z = 1)
+        let p255_assigned = self.assign_affine_constant(layouter, &p255, "p255")?;
+
+        // Negate P255's Y coordinate: -P255 = (P255.x, p - P255.y, P255.z)
+        let neg_p255_y_native = p255.y.neg();
+        let neg_p255_y_limbs = neg_p255_y_native.to_bn254_limbs();
+        let neg_p255_y = layouter.assign_region(
+            || "neg_p255_y",
+            |mut region| {
+                let mut cells = Vec::with_capacity(4);
+                for (i, l) in neg_p255_y_limbs.iter().enumerate() {
+                    let cell = region.assign_advice(
+                        || format!("neg_p255_y_{}", i),
+                        self.config.advice[i],
+                        0,
+                        || Value::known(*l),
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(AssignedFieldElement {
+                    limbs: [
+                        cells[0].clone(),
+                        cells[1].clone(),
+                        cells[2].clone(),
+                        cells[3].clone(),
+                    ],
+                })
+            },
+        )?;
+
+        let neg_p255 = AssignedPoint {
+            x: p255_assigned.x.clone(),
+            y: neg_p255_y,
+            z: p255_assigned.z.clone(),
+        };
+
+        // acc - P255 = acc + (-P255)
+        let subtracted = self.point_add(layouter, &accumulator, &neg_p255)?;
+
+        // Select: if bits[0]=1 keep accumulator; if bits[0]=0 use subtracted.
+        // conditional_select_point returns `a` when bit=1, `b` when bit=0.
+        accumulator = self.conditional_select_point(
+            layouter,
+            &accumulator, // a: selected when bits[0]=1 (correct as-is)
+            &subtracted,  // b: selected when bits[0]=0 (subtract P255)
+            scalar_bits[0],
+        )?;
+
         Ok(accumulator)
+    }
+
+    /// Assign a native affine point as constant cells (Z = 1).
+    fn assign_affine_constant(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        point: &NativePoint,
+        label: &str,
+    ) -> Result<AssignedPoint, Error> {
+        let x_limbs = point.x.to_bn254_limbs();
+        let y_limbs = point.y.to_bn254_limbs();
+        let z_limbs: [Fr; 4] = [Fr::ONE, Fr::ZERO, Fr::ZERO, Fr::ZERO];
+
+        let x = self.assign_field_constant(layouter, &x_limbs, &format!("{}_x", label))?;
+        let y = self.assign_field_constant(layouter, &y_limbs, &format!("{}_y", label))?;
+        let z = self.assign_field_constant(layouter, &z_limbs, &format!("{}_z", label))?;
+
+        Ok(AssignedPoint { x, y, z })
+    }
+
+    /// Assign 4 limbs as a constant field element in a new region.
+    fn assign_field_constant(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        limbs: &[Fr; 4],
+        name: &str,
+    ) -> Result<AssignedFieldElement, Error> {
+        layouter.assign_region(
+            || name.to_string(),
+            |mut region| {
+                let mut cells = Vec::with_capacity(4);
+                for (i, l) in limbs.iter().enumerate() {
+                    let cell = region.assign_advice(
+                        || format!("{}_{}", name, i),
+                        self.config.advice[i],
+                        0,
+                        || Value::known(*l),
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(AssignedFieldElement {
+                    limbs: [
+                        cells[0].clone(),
+                        cells[1].clone(),
+                        cells[2].clone(),
+                        cells[3].clone(),
+                    ],
+                })
+            },
+        )
     }
 
     /// Conditional select: if bit=1 return a, if bit=0 return b.
@@ -1764,7 +1886,7 @@ impl<'a> Secp256k1Chip<'a> {
                 ]
             },
         };
-        let x3_plus_7 = self.field_add(layouter, &x3, &seven)?;
+        let x3_plus_7 = self.field_add_carried(layouter, &x3, &seven)?;
         self.constrain_field_equal(layouter, &y2, &x3_plus_7)?;
         Ok(())
     }
@@ -1928,4 +2050,109 @@ mod tests {
         assert!(!bits[1], "Second bit should be 0");
         assert_eq!(bits.len(), 256);
     }
+}
+
+/// Validate the MSB correction logic for scalar multiplication.
+/// Tests that starting from base_point (assuming MSB=1) and then
+/// conditionally subtracting P255 produces the correct result for
+/// keys where the MSB is actually 0.
+#[test]
+fn test_scalar_mul_msb_correction() {
+    // Test key: 0x0123...cdef — MSB is 0 (first byte is 0x01)
+    let key: [u8; 32] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
+    ];
+
+    // Decompose key to bits (MSB-first)
+    let bits = decompose_key_to_bits(&key);
+    assert!(
+        !bits[0],
+        "MSB should be 0 for this test key (byte 0 = 0x01)"
+    );
+
+    // Compute k * G directly using native scalar multiplication
+    let mut limbs = [0u64; 4];
+    for i in 0..4 {
+        limbs[i] = u64::from_be_bytes(key[i * 8..(i + 1) * 8].try_into().unwrap());
+    }
+    limbs.reverse();
+    let expected = NativePoint::scalar_mul(&limbs);
+    assert!(!expected.is_inf);
+
+    // Simulate the circuit's MSB-first double-and-add with correction
+    // Start with G (assumes MSB=1)
+    let mut acc = NativePoint::GENERATOR;
+
+    // Process bits[1] through bits[255]
+    for i in 1usize..=255 {
+        let doubled = acc.double();
+        if bits[i] {
+            acc = doubled.add(&NativePoint::GENERATOR);
+        } else {
+            acc = doubled;
+        }
+    }
+
+    // acc = (2^255 + rest) * G where rest = Σ bits[i]*2^(255-i) for i=1..255
+    // Since bits[0]=0, the real scalar k = rest (without the 2^255 term)
+    // So we need to subtract P255 = 2^255 * G
+    let p255_scalar: [u64; 4] = [0, 0, 0, 1u64 << 63];
+    let p255 = NativePoint::scalar_mul(&p255_scalar);
+
+    // acc - P255 = acc + neg(P255)
+    let neg_p255 = NativePoint {
+        x: p255.x,
+        y: p255.y.neg(),
+        is_inf: false,
+    };
+    let corrected = acc.add(&neg_p255);
+
+    // Verify corrected result matches expected
+    assert_eq!(corrected.x.0, expected.x.0, "X coordinate mismatch");
+    assert_eq!(corrected.y.0, expected.y.0, "Y coordinate mismatch");
+    assert!(!corrected.is_inf, "Result should not be identity");
+
+    eprintln!("✅ MSB correction validated for key with MSB=0");
+}
+
+/// Test MSB correction for a key where MSB = 1.
+#[test]
+fn test_scalar_mul_msb_correction_high_key() {
+    // Key with MSB=1: first byte = 0x80
+    let key: [u8; 32] = [
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x42,
+    ];
+
+    let bits = decompose_key_to_bits(&key);
+    assert!(bits[0], "MSB should be 1 for this test key");
+
+    // Compute expected directly
+    let mut limbs = [0u64; 4];
+    for i in 0..4 {
+        limbs[i] = u64::from_be_bytes(key[i * 8..(i + 1) * 8].try_into().unwrap());
+    }
+    limbs.reverse();
+    let expected = NativePoint::scalar_mul(&limbs);
+
+    // Simulate circuit: start with G, process bits 1..255
+    let mut acc = NativePoint::GENERATOR;
+    for i in 1..=255 {
+        let doubled = acc.double();
+        if bits[i] {
+            acc = doubled.add(&NativePoint::GENERATOR);
+        } else {
+            acc = doubled;
+        }
+    }
+
+    // bits[0]=1: no correction needed
+    // Verify acc matches expected
+    assert_eq!(acc.x.0, expected.x.0, "X mismatch (MSB=1, no correction)");
+    assert_eq!(acc.y.0, expected.y.0, "Y mismatch (MSB=1, no correction)");
+
+    eprintln!("✅ MSB correction validated for key with MSB=1 (no correction needed)");
 }

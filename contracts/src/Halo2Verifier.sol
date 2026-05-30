@@ -8,10 +8,7 @@ interface IHalo2Verifier {
     /// @param proof The serialized Halo2 proof bytes.
     /// @param publicInputs Array of public input values [merkleRoot, nullifier, recipient].
     /// @return True if the proof is valid.
-    function verify(bytes calldata proof, uint256[3] memory publicInputs)
-        external
-        view
-        returns (bool);
+    function verify(bytes calldata proof, uint256[3] memory publicInputs) external view returns (bool);
 
     /// @notice Whether this verifier is production-ready (performs real KZG pairing).
     function IS_PRODUCTION_VERIFIER() external view returns (bool);
@@ -55,17 +52,13 @@ contract Halo2Verifier is IHalo2Verifier {
 
     // ── BN254 curve constants ───────────────────────────────────────
     // Prime field modulus for BN254
-    uint256 constant BN254_N =
-        21888242871839275222246405745257275088696311157297823662689037894645226208583;
+    uint256 constant BN254_N = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
 
     /// @notice Verify a Halo2-KZG proof against public inputs.
     /// @param proof The serialized Halo2 proof bytes.
     /// @param publicInputs Array of public input values [merkleRoot, nullifier, recipient].
     /// @return True if the proof is valid.
-    function verify(
-        bytes calldata proof,
-        uint256[3] memory publicInputs
-    ) external view returns (bool) {
+    function verify(bytes calldata proof, uint256[3] memory publicInputs) external view returns (bool) {
         // ── Step 1: Structural validation ────────────────────────────
         if (proof.length < 400 || proof.length > 1200) {
             return false;
@@ -137,11 +130,7 @@ contract Halo2Verifier is IHalo2Verifier {
         if (x == 0 && y == 0) return true;
         // y^2 == x^3 + 3 (mod BN254 field prime)
         uint256 lhs = mulmod(y, y, BN254_N);
-        uint256 rhs = addmod(
-            mulmod(mulmod(x, x, BN254_N), x, BN254_N),
-            3,
-            BN254_N
-        );
+        uint256 rhs = addmod(mulmod(mulmod(x, x, BN254_N), x, BN254_N), 3, BN254_N);
         return lhs == rhs;
     }
 }

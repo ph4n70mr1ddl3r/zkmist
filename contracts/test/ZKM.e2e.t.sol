@@ -21,8 +21,7 @@ contract ZKMV2E2ETest is Test {
     MockHalo2Verifier public verifier;
 
     address constant MINTER = address(0x1);
-    bytes32 constant MERKLE_ROOT =
-        0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     function setUp() public {
         verifier = new MockHalo2Verifier();
@@ -158,10 +157,7 @@ contract ZKMV2E2ETest is Test {
 
     function test_e2e_gas_full_deploy() public {
         MockHalo2Verifier v = new MockHalo2Verifier();
-        address predictedAirdrop = vm.computeCreateAddress(
-            address(this),
-            vm.getNonce(address(this)) + 1
-        );
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), MERKLE_ROOT);
 
