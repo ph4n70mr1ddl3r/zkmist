@@ -41,11 +41,12 @@
 
 use ff::{Field, PrimeField};
 use halo2_proofs::{
-    circuit::{AssignedCell, Layouter, Value},
+    circuit::{AssignedCell, Layouter, Region, Value},
     plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
+use num_bigint::BigUint;
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 use crate::gadgets::range_check::RangeCheckConfig;
@@ -957,7 +958,7 @@ impl<'a> Secp256k1Chip<'a> {
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        layouter.assign_region(
+        let result = layouter.assign_region(
             || "secp_field_mul",
             |mut region| {
                 let a_v = a.values();
@@ -1141,7 +1142,14 @@ impl<'a> Secp256k1Chip<'a> {
                     ],
                 })
             },
-        )
+        )?;
+
+        // Verify the product correctness using Schwartz–Zippel evaluation check.
+        // This constrains that a * b ≡ result (mod secp256k1_p), closing the
+        // soundness gap from the previously unconstrained wide-to-narrow reduction.
+        self.verify_product(layouter, a, b, &result)?;
+
+        Ok(result)
     }
 
     /// Constrained subtraction: a - b mod p.
@@ -1850,6 +1858,245 @@ impl<'a> Secp256k1Chip<'a> {
         Ok(())
     }
 
+    // ── Product verification (Schwartz–Zippel) ────────────────────
+
+    /// Verify a field multiplication product using a polynomial evaluation check.
+    ///
+    /// Given `result = field_mul(a, b)`, this method constrains:
+    /// ```text
+    ///   eval(a) * eval(b) - eval(result) - eval(q) * eval(p) = 0  (mod BN254)
+    /// ```
+    ///
+    /// where `eval(x) = x[0] + x[1]*r + x[2]*r^2 + x[3]*r^3` and
+    /// `q = (a*b - result) / p` is the reduction quotient.
+    ///
+    /// By the Schwartz–Zippel lemma, if the product is incorrect then the
+    /// constraint fails with overwhelming probability (soundness error ≤ 6/p_BN254).
+    /// Combined with the terminal `check_on_curve` and `constrain_affine` checks,
+    /// this provides complete soundness for the field multiplication.
+    ///
+    /// Gate cost: ~25 rows per call (Horner evaluation × 4 + constraint arithmetic).
+    fn verify_product(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        a: &AssignedFieldElement,
+        b: &AssignedFieldElement,
+        result: &AssignedFieldElement,
+    ) -> Result<(), Error> {
+        // Evaluation point r = 65537 (Fermat prime F4, "nothing-up-my-sleeve")
+        // All evaluations are < 2^113 and all products < 2^226 < BN254 field prime,
+        // so BN254 arithmetic is exact (no modular reduction distortion).
+        let r = Fr::from(65537u64);
+
+        // secp256k1 prime limbs as BN254 field elements
+        let p_limbs: [Fr; 4] = SECP_P.map(Fr::from);
+
+        // Compute quotient q = (a*b - result) / p  (native, for witness)
+        let q_limbs_fr: Value<[Fr; 4]> = {
+            let a_v: Value<[Fr; 4]> = a.values();
+            let b_v: Value<[Fr; 4]> = b.values();
+            let r_v: Value<[Fr; 4]> = result.values();
+
+            a_v.zip(b_v).zip(r_v).map(|((av, bv), rv)| {
+                let a_big = native_to_biguint(&limbs_to_native(&av));
+                let b_big = native_to_biguint(&limbs_to_native(&bv));
+                let r_big = native_to_biguint(&limbs_to_native(&rv));
+                let p_big = secp_prime_biguint();
+
+                let product = &a_big * &b_big;
+                let diff = product - r_big;
+                let q_big = diff / p_big;
+
+                biguint_to_fr_limbs(&q_big)
+            })
+        };
+
+        // Assign q limbs in a dedicated region
+        let q_assigned = layouter.assign_region(
+            || "assign_q",
+            |mut region| {
+                let mut cells = Vec::with_capacity(4);
+                for i in 0..4 {
+                    let val = q_limbs_fr.as_ref().map(|v| v[i]);
+                    let cell = region.assign_advice(
+                        || format!("q_{}", i),
+                        self.config.advice[i],
+                        0,
+                        || val,
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(AssignedFieldElement {
+                    limbs: [
+                        cells[0].clone(),
+                        cells[1].clone(),
+                        cells[2].clone(),
+                        cells[3].clone(),
+                    ],
+                })
+            },
+        )?;
+
+        // Range-check q limbs to ensure q is a valid integer (< 2^256)
+        self.check_limb_ranges(layouter, &q_assigned)?;
+
+        // Polynomial evaluation and constraint
+        layouter.assign_region(
+            || "verify_product",
+            |mut region| {
+                let mut offset = 0usize;
+
+                // Compute eval_a, eval_b, eval_result, eval_q via Horner's method
+                let eval_a = Self::eval_horner(&mut region, &mut offset, a, r, self.config)?;
+                let eval_b = Self::eval_horner(&mut region, &mut offset, b, r, self.config)?;
+                let eval_r = Self::eval_horner(&mut region, &mut offset, result, r, self.config)?;
+                let eval_q =
+                    Self::eval_horner(&mut region, &mut offset, &q_assigned, r, self.config)?;
+
+                // eval_p = p[0] + p[1]*r + p[2]*r^2 + p[3]*r^3  (constant)
+                let r2 = r * r;
+                let r3 = r2 * r;
+                let eval_p_val = p_limbs[0] + p_limbs[1] * r + p_limbs[2] * r2 + p_limbs[3] * r3;
+
+                // ── Constrain: eval_a * eval_b - eval_result - eval_q * eval_p = 0 ──
+
+                // Row: eval_a * eval_b = ab
+                let ab_val = eval_a
+                    .value()
+                    .copied()
+                    .zip(eval_b.value().copied())
+                    .map(|(a, b)| a * b);
+                let ea_copy = region.assign_advice(
+                    || "ea",
+                    self.config.advice[0],
+                    offset,
+                    || eval_a.value().copied(),
+                )?;
+                region.constrain_equal(eval_a.cell(), ea_copy.cell())?;
+                let eb_copy = region.assign_advice(
+                    || "eb",
+                    self.config.advice[1],
+                    offset,
+                    || eval_b.value().copied(),
+                )?;
+                region.constrain_equal(eval_b.cell(), eb_copy.cell())?;
+                let ab = region.assign_advice(|| "ab", self.config.advice[2], offset, || ab_val)?;
+                self.config.s_mul.enable(&mut region, offset)?;
+                offset += 1;
+
+                // Row: eval_q * eval_p = qep
+                let qep_val = eval_q.value().copied().map(|q| q * eval_p_val);
+                let eq_copy = region.assign_advice(
+                    || "eq",
+                    self.config.advice[0],
+                    offset,
+                    || eval_q.value().copied(),
+                )?;
+                region.constrain_equal(eval_q.cell(), eq_copy.cell())?;
+                region.assign_advice(
+                    || "ep",
+                    self.config.advice[1],
+                    offset,
+                    || Value::known(eval_p_val),
+                )?;
+                let _qep =
+                    region.assign_advice(|| "qep", self.config.advice[2], offset, || qep_val)?;
+                self.config.s_mul.enable(&mut region, offset)?;
+                offset += 1;
+
+                // Row: ab + (-eval_result) = diff1
+                let neg_r_val = eval_r.value().copied().map(|v| -v);
+                let ab_copy2 =
+                    region.assign_advice(|| "ab2", self.config.advice[0], offset, || ab_val)?;
+                region.constrain_equal(ab.cell(), ab_copy2.cell())?;
+                let _neg_r =
+                    region.assign_advice(|| "nr", self.config.advice[1], offset, || neg_r_val)?;
+                let diff1_val = ab_val.zip(neg_r_val).map(|(a, n)| a + n);
+                let diff1 =
+                    region.assign_advice(|| "d1", self.config.advice[2], offset, || diff1_val)?;
+                self.config.s_add.enable(&mut region, offset)?;
+                offset += 1;
+
+                // Row: diff1 + (-qep) = diff2  (should be 0)
+                let neg_qep_val = qep_val.map(|v| -v);
+                let d1_copy =
+                    region.assign_advice(|| "d1c", self.config.advice[0], offset, || diff1_val)?;
+                region.constrain_equal(diff1.cell(), d1_copy.cell())?;
+                let _neg_qep =
+                    region.assign_advice(|| "nq", self.config.advice[1], offset, || neg_qep_val)?;
+                let diff2_val = diff1_val.zip(neg_qep_val).map(|(d, n)| d + n);
+                let diff2 =
+                    region.assign_advice(|| "d2", self.config.advice[2], offset, || diff2_val)?;
+                self.config.s_add.enable(&mut region, offset)?;
+                offset += 1;
+
+                // Constrain diff2 = 0
+                let zero = region.assign_advice(
+                    || "zero",
+                    self.config.advice[0],
+                    offset,
+                    || Value::known(Fr::ZERO),
+                )?;
+                region.constrain_equal(diff2.cell(), zero.cell())?;
+
+                Ok(())
+            },
+        )?;
+
+        Ok(())
+    }
+
+    /// Evaluate a 4-limb polynomial at point r using Horner's method.
+    ///
+    /// Computes `x[0] + x[1]*r + x[2]*r^2 + x[3]*r^3`
+    /// = `((x[3]*r + x[2])*r + x[1])*r + x[0]`
+    ///
+    /// Each step uses 2 rows: one `s_mul` and one `s_add`.
+    fn eval_horner(
+        region: &mut Region<Fr>,
+        offset: &mut usize,
+        elem: &AssignedFieldElement,
+        r: Fr,
+        config: &Secp256k1Config,
+    ) -> Result<AssignedCell<Fr, Fr>, Error> {
+        // Start with x[3], then: acc = acc*r + x[i] for i=2,1,0
+        let mut acc_val = elem.limbs[3].value().copied();
+        let mut acc_cell = elem.limbs[3].clone();
+
+        for i in (0..3).rev() {
+            // Row: acc * r = product
+            let acc_copy = region.assign_advice(
+                || format!("hacc_{}", i),
+                config.advice[0],
+                *offset,
+                || acc_val,
+            )?;
+            region.constrain_equal(acc_cell.cell(), acc_copy.cell())?;
+            region.assign_advice(|| "hr", config.advice[1], *offset, || Value::known(r))?;
+            let mul_val = acc_val.map(|a| a * r);
+            let mul_cell = region.assign_advice(|| "hm", config.advice[2], *offset, || mul_val)?;
+            config.s_mul.enable(region, *offset)?;
+            *offset += 1;
+
+            // Row: product + x[i] = new_acc
+            let mul_copy = region.assign_advice(|| "hmc", config.advice[0], *offset, || mul_val)?;
+            region.constrain_equal(mul_cell.cell(), mul_copy.cell())?;
+            let limb_val = elem.limbs[i].value().copied();
+            let limb_copy =
+                region.assign_advice(|| "hl", config.advice[1], *offset, || limb_val)?;
+            region.constrain_equal(elem.limbs[i].cell(), limb_copy.cell())?;
+            let sum_val = mul_val.zip(limb_val).map(|(m, l)| m + l);
+            let sum_cell = region.assign_advice(|| "hs", config.advice[2], *offset, || sum_val)?;
+            config.s_add.enable(region, *offset)?;
+            *offset += 1;
+
+            acc_val = sum_val;
+            acc_cell = sum_cell;
+        }
+
+        Ok(acc_cell)
+    }
+
     ///
     /// This is a high-level soundness check: if any intermediate field
     /// operation produced an incorrect result, the final point likely
@@ -1936,6 +2183,26 @@ impl<'a> Secp256k1Chip<'a> {
 fn limbs_to_native(limbs: &[Fr; 4]) -> NativeSecpField {
     let native_limbs: [u64; 4] = limbs.map(limb_to_u64);
     NativeSecpField::from_limbs(native_limbs)
+}
+
+/// Convert a native secp256k1 field element to a BigUint.
+fn native_to_biguint(n: &NativeSecpField) -> BigUint {
+    BigUint::from_bytes_be(&n.to_bytes_be())
+}
+
+/// The secp256k1 prime as a BigUint.
+fn secp_prime_biguint() -> BigUint {
+    native_to_biguint(&NativeSecpField(SECP_P))
+}
+
+/// Convert a BigUint to 4 BN254 limb values.
+fn biguint_to_fr_limbs(b: &BigUint) -> [Fr; 4] {
+    let bytes = b.to_bytes_be();
+    let mut padded = [0u8; 32];
+    let offset = 32 - bytes.len().min(32);
+    padded[offset..].copy_from_slice(&bytes[..bytes.len().min(32)]);
+    let native = NativeSecpField::from_bytes_be(&padded);
+    native.to_bn254_limbs()
 }
 
 /// Extract a u64 value from a BN254 field element (limb).

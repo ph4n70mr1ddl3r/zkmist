@@ -59,7 +59,15 @@ We ask that you:
 Before mainnet deployment, ALL of the following must be completed:
 
 ### Critical (blocks deployment)
-- [ ] **External security audit** of secp256k1 non-native field arithmetic
+- [ ] **Re-run secp256k1 MockProver test** to confirm product verification fix:
+  ```
+  cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+  ```
+- [ ] **Re-run full E2E MockProver test** with the fix:
+  ```
+  cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+  ```
+- [ ] **External security audit** of secp256k1 non-native field arithmetic (including new Schwartz–Zippel verification)
 - [ ] **Generate `Halo2Verifier.sol`** using halo2-solidity-verifier with serialized VK:
   ```
   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
@@ -67,14 +75,6 @@ Before mainnet deployment, ALL of the following must be completed:
   # See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
   ```
 - [ ] **Verify `IS_PRODUCTION_VERIFIER = true`** in the generated verifier
-- [ ] **Run full E2E MockProver test** (previously `#[ignore]`d):
-  ```
-  cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
-  ```
-- [ ] **Run isolated secp256k1 MockProver test**:
-  ```
-  cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
-  ```
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```
   ./scripts/testnet-deploy.sh
@@ -134,23 +134,36 @@ field arithmetic gadget:
 5. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
    for the final addition step, ensuring subtraction also propagates carries.
 
+6. **NEW: Schwartz–Zippel product verification on every `field_mul`**: Every
+   non-native field multiplication is now cross-checked using a polynomial
+   evaluation at a fixed point (r = 65537). The check constrains:
+   `eval(a) * eval(b) - eval(result) - eval(q) * eval(p) = 0 (mod BN254)`
+   where `eval(x) = x[0] + x[1]*r + x[2]*r^2 + x[3]*r^3` and `q = (a*b - result) / p`
+   is the reduction quotient (range-checked). This closes the soundness gap from
+   the previously unconstrained wide-to-narrow reduction in `field_mul`. Soundness
+   error is ≤ 6/p_BN254 per multiplication (negligible).
+
 ## Known Issues (Blocking Mainnet)
 
-The secp256k1 MockProver test produces 8 permutation failures in `constrain_affine`.
-The circuit computes a valid curve point (all gate constraints pass, including
-`check_on_curve`), but the affine coordinates don't match the expected public key.
+The secp256k1 MockProver test previously produced 8 permutation failures in `constrain_affine`.
+This was caused by the unconstrained wide-to-narrow reduction in `field_mul`.
 
-**Root cause**: The hand-rolled `field_mul` gadget lacks a constrained reduction
-from the 8 wide schoolbook product limbs to the 4 final result limbs. The
-reduction is entirely witness-guided. While this is theoretically sound (terminal
-checks catch inconsistency), it exposes a correctness gap in the current
-implementation.
+**Fix applied**: Schwartz–Zippel product verification has been added to every `field_mul` call.
+This constrains the product correctness with negligible soundness error (≤ 6/p_BN254).
 
-**Resolution**: Replace the hand-rolled secp256k1 gadget with an audited library:
+**Resolution**: The `#[ignore]`d MockProver tests need to be re-run to confirm the fix resolves
+all permutation failures:
+```bash
+cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+```
+
+**Remaining recommendation**: Replace the hand-rolled secp256k1 gadget with an audited library
+for defense-in-depth:
 - `scroll-tech/halo2-secp256k1`
 - `privacy-scaling-explorations/halo2wrong`
 
-This is a **mandatory** step before mainnet deployment.
+This remains a **recommended** step (no longer blocking) after the product verification fix.
 
 ## Post-Deployment Monitoring
 

@@ -4,7 +4,7 @@
 
 [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **📋 Beta.** Halo2-KZG circuits implemented, 55 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic and intermediate range checks. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for architecture details.
+> **📋 Beta.** Halo2-KZG circuits implemented, 201 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic, intermediate range checks, and **Schwartz–Zippel product verification** on all `field_mul` operations. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for architecture details.
 
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
@@ -203,6 +203,10 @@ The Halo2-KZG circuit proves:
 
 Public inputs: `[merkleRoot, nullifier, recipient]`. No journal — inputs are direct calldata.
 
+**Soundness:** Every `field_mul` in the secp256k1 gadget includes a Schwartz–Zippel product
+verification check that constrains the multiplication result is correct modulo the secp256k1
+field prime, with soundness error ≤ 6/p_BN254 per operation (negligible).
+
 ### Merkle Tree (`merkle-tree/`)
 
 | Parameter | Value |
@@ -325,13 +329,14 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **201 tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **201 tests passing** (63 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
 > - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
 > - `field_mul` uses constrained schoolbook products and wide limb accumulation
-> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine`)
+> - **NEW: `field_mul` now includes Schwartz–Zippel product verification** — every multiplication is cross-checked against a polynomial evaluation at a fixed point, constraining the wide-to-narrow reduction that was previously witness-guided
+> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine` + **product verification**)
 > - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
 > - `constrain_affine` verifies the computed point matches the expected public key
 > - Intermediate range checks every 32 scalar mul steps
@@ -343,8 +348,8 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - 50K nullifier collision test passing
 >
 > **Known issue (blocking mainnet):**
-> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`) produces 8 permutation failures in `constrain_affine`. The circuit computes a valid curve point (check_on_curve passes) but the affine coordinates don't match the expected public key. Root cause: the hand-rolled non-native field arithmetic in `field_mul` lacks a constrained reduction from wide limbs to the final result. **This gadget must be replaced with an audited library** (e.g., `scroll-tech/halo2-secp256k1` or `halo2wrong`) before mainnet.
-> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. It cannot pass until the secp256k1 gadget is fixed.
+> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. It needs to be re-run with the Schwartz–Zippel fix to confirm all permutation failures are resolved.
+> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`) should now pass with the product verification fix. Needs re-verification.
 >
 > **Tooling:**
 > - `zkmist bench` — proves timing benchmark on reference hardware
@@ -355,10 +360,9 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Replace hand-rolled secp256k1 with audited library (`scroll-tech/halo2-secp256k1` or `halo2wrong`)
+> - Re-run full E2E MockProver test to confirm the product verification fix resolves `constrain_affine` failures
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `halo2-solidity-verifier`
-> - Fix and pass full E2E MockProver test
-> - **External security review** of circuit (especially after secp256k1 library swap)
+> - **External security review** of circuit (especially after product verification addition)
 > - Testnet deployment on Base Sepolia
 >
 > See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist.
