@@ -80,6 +80,15 @@ contract ZKMV2FuzzTest is Test {
         token.mint(to, amount);
     }
 
+    /// @dev Minting to zero address always reverts
+    function testFuzz_mint_to_zero_rejected(uint256 amount) public {
+        vm.assume(amount > 0 && amount <= 10_000_000_000e18);
+
+        vm.prank(MINTER);
+        vm.expectRevert("Mint to zero address");
+        token.mint(address(0), amount);
+    }
+
     // ── Airdrop fuzz tests ───────────────────────────────────────────────
 
     /// @dev Claim window status is consistent

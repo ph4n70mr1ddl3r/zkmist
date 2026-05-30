@@ -51,6 +51,18 @@ contract ZKMV2Test is Test {
         token.mint(address(0xB0B), 10_000e18);
     }
 
+    function test_token_mint_rejects_zero_recipient() public {
+        vm.prank(MINTER);
+        vm.expectRevert("Mint to zero address");
+        token.mint(address(0), 10_000e18);
+    }
+
+    function test_token_mint_rejects_zero_amount() public {
+        vm.prank(MINTER);
+        vm.expectRevert("Amount must be positive");
+        token.mint(address(0xB0B), 0);
+    }
+
     function test_token_mint_rejects_exceeds_max_supply() public {
         vm.prank(MINTER);
         vm.expectRevert("Exceeds max supply");

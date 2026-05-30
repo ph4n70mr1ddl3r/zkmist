@@ -119,4 +119,30 @@ contract ZKMV2Integration is Test {
         ZKMToken t = new ZKMToken(address(this));
         assertGt(address(t).code.length, 0);
     }
+
+    // ── Deployment safety: real verifier guard ──────────────────────
+
+    function test_integration_real_verifier_rejected_for_airdrop() public {
+        // The real (placeholder) Halo2Verifier has IS_PRODUCTION_VERIFIER = false.
+        // ZKMAirdrop MUST reject it to prevent mainnet deployment with
+        // a non-cryptographic verifier.
+        vm.prank(DEPLOYER);
+        ZKMToken t = new ZKMToken(address(0x999)); // dummy minter
+        vm.expectRevert("Verifier not production-ready");
+        new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+    }
+
+    // ── Token edge cases ────────────────────────────────────────────
+
+    function test_integration_token_rejects_mint_to_zero() public {
+        ZKMToken t = new ZKMToken(address(this));
+        vm.expectRevert("Mint to zero address");
+        t.mint(address(0), 10_000e18);
+    }
+
+    function test_integration_token_rejects_zero_amount_mint() public {
+        ZKMToken t = new ZKMToken(address(this));
+        vm.expectRevert("Amount must be positive");
+        t.mint(address(0xB0B), 0);
+    }
 }

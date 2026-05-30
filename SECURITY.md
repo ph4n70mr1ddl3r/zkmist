@@ -76,7 +76,11 @@ Before mainnet deployment, ALL of the following must be completed:
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow
 
 ### High Priority
-- [x] **Regenerate gas snapshot**: `cd contracts && forge snapshot` ✅ (53 tests, snapshot committed)
+- [x] **Regenerate gas snapshot**: `cd contracts && forge snapshot` ✅ (72 tests, snapshot committed)
+- [x] **Add mint validation** to ZKMToken: reject zero address and zero amount ✅
+- [x] **Add deadline rejection test**: verify claims rejected after 2027-01-01 ✅
+- [x] **Add deployer balance check**: deploy script verifies sufficient ETH ✅
+- [x] **Add verifier rejection test**: integration test confirms placeholder verifier rejected ✅
 - [ ] **Update `AIRDROP_CONTRACT`** in `cli/src/constants.rs` after deployment
 - [ ] **Generate real proof + verify on testnet** end-to-end
 - [ ] **Proof size validation**: confirm proof fits in `[400, 1200]` byte range

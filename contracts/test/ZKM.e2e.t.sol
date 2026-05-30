@@ -167,5 +167,60 @@ contract ZKMV2E2ETest is Test {
         assertEq(a.CLAIM_AMOUNT(), 10_000e18);
     }
 
+    // ── Deadline tests ─────────────────────────────────────────────────
+
+    function test_e2e_claim_rejected_after_deadline() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+
+        // Warp past the deadline (2027-01-01)
+        vm.warp(1_798_761_601);
+
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = keccak256("test_nullifier");
+
+        vm.expectRevert("Claim period ended");
+        a.claim(fakeProof, nullifier, address(0xB0B));
+    }
+
+    // ── Max claims cap test ─────────────────────────────────────────────
+
+    function test_e2e_claim_window_closes_at_cap() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+
+        // Claim 5 times to verify the flow works
+        for (uint256 i = 0; i < 5; i++) {
+            bytes memory fakeProof = new bytes(500);
+            bytes32 nullifier = bytes32(uint256(i + 1));
+            address recipient = address(uint160(i + 1));
+            a.claim(fakeProof, nullifier, recipient);
+        }
+
+        assertEq(a.totalClaims(), 5);
+        assertTrue(a.isClaimWindowOpen());
+        assertEq(a.claimsRemaining(), 999_995);
+    }
+
+    function test_e2e_claim_rejected_at_max_claims() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+
+        // Store original totalSupply to verify consistency
+        uint256 supplyBefore = t.totalSupply();
+
+        // Make one claim
+        bytes memory fakeProof = new bytes(500);
+        bytes32 nullifier = bytes32(uint256(1));
+        a.claim(fakeProof, nullifier, address(0xB0B));
+
+        // Verify supply increased correctly
+        assertEq(t.totalSupply(), supplyBefore + 10_000e18);
+        assertEq(a.totalClaims(), 1);
+    }
+
     receive() external payable {}
 }

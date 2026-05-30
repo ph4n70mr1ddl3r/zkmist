@@ -4,17 +4,34 @@
 //! Checks:
 //!   1. Halo2Verifier.sol has IS_PRODUCTION_VERIFIER = true
 //!   2. Merkle root matches the known eligibility tree root
-//!   3. Circuit MockProver tests pass (optional, slow)
-//!   4. Forge tests pass
-//!   5. Cargo clippy/fmt pass
-//!   6. Constants are consistent between CLI and contracts
-//!   7. No placeholder values remain
+//!   3. Constants are consistent between CLI and contracts
+//!   4. No placeholder values remain
+//!   5. Cargo clippy passes
+//!   6. Cargo fmt passes
+//!   7. Forge tests pass
+//!   8. Cargo tests pass
 //!
 //! Usage:
 //!   cargo run -p zkmist-tools --bin readiness
 //!   cargo run -p zkmist-tools --bin readiness -- --skip-slow
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Find the project root directory by searching upward for the workspace Cargo.toml.
+fn find_project_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                if content.contains("[workspace]") {
+                    return Some(dir);
+                }
+            }
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -36,14 +53,18 @@ fn main() {
     eprintln!("╚════════════════════════════════════════════════════════════╝");
     eprintln!();
 
+    let root = find_project_root().expect("Cannot find project root (workspace Cargo.toml)");
+    eprintln!("  Project root: {}", root.display());
+    eprintln!();
+
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
 
     // ── Check 1: IS_PRODUCTION_VERIFIER ──────────────────────────────
     eprintln!("[1/8] Checking Halo2Verifier.sol production status...");
-    let verifier_path = Path::new("../contracts/src/Halo2Verifier.sol");
-    if let Ok(content) = std::fs::read_to_string(verifier_path) {
+    let verifier_path = root.join("contracts/src/Halo2Verifier.sol");
+    if let Ok(content) = std::fs::read_to_string(&verifier_path) {
         if content.contains("IS_PRODUCTION_VERIFIER = true") {
             eprintln!("      ✅ IS_PRODUCTION_VERIFIER = true");
             passed += 1;
@@ -66,12 +87,13 @@ fn main() {
 
     // ── Check 2: Merkle root consistency ─────────────────────────────
     eprintln!("[2/8] Checking merkle root consistency...");
-    let cli_root = extract_constant("../cli/src/constants.rs", "KNOWN_MERKLE_ROOT");
-    let deploy_root = extract_solidity_constant("../contracts/script/Deploy.s.sol", "MERKLE_ROOT");
-    let airdrop_test_root = find_test_merkle_root();
+    let cli_root = extract_constant(&root.join("cli/src/constants.rs"), "KNOWN_MERKLE_ROOT");
+    let deploy_root =
+        extract_solidity_constant(&root.join("contracts/script/Deploy.s.sol"), "MERKLE_ROOT");
+    let airdrop_test_root = find_test_merkle_root(&root.join("contracts/test"));
 
     match (cli_root.as_deref(), deploy_root.as_deref()) {
-        (Some(cli), Some(deploy)) if cli == deploy => {
+        (Some(cli), Some(deploy)) if !cli.is_empty() && cli == deploy => {
             eprintln!(
                 "      ✅ Merkle root consistent: {}...{}",
                 &cli[..18],
@@ -79,7 +101,7 @@ fn main() {
             );
             passed += 1;
         }
-        (Some(cli), Some(deploy)) => {
+        (Some(cli), Some(deploy)) if !cli.is_empty() && !deploy.is_empty() => {
             eprintln!(
                 "      ❌ Merkle root MISMATCH: CLI={} vs Deploy={}",
                 cli, deploy
@@ -102,25 +124,31 @@ fn main() {
 
     // ── Check 3: Constants consistency ───────────────────────────────
     eprintln!("[3/8] Checking constants consistency...");
-    let cli_deadline = extract_constant_value("../cli/src/constants.rs", "CLAIM_DEADLINE: u64");
-    let cli_claim_amount = extract_constant_value("../cli/src/constants.rs", "CLAIM_AMOUNT: u64");
-    let cli_max_claims = extract_constant_value("../cli/src/constants.rs", "MAX_CLAIMS: u64");
+    let cli_deadline =
+        extract_constant_value(&root.join("cli/src/constants.rs"), "CLAIM_DEADLINE: u64");
+    let cli_claim_amount =
+        extract_constant_value(&root.join("cli/src/constants.rs"), "CLAIM_AMOUNT: u64");
+    let cli_max_claims =
+        extract_constant_value(&root.join("cli/src/constants.rs"), "MAX_CLAIMS: u64");
 
     let mut constants_ok = true;
     if let Some(ref d) = cli_deadline {
-        if d != "1_798_761_600" && d != "1798761600" {
+        let clean = d.replace('_', "");
+        if clean != "1798761600" {
             eprintln!("      ⚠️  CLAIM_DEADLINE = {} (expected 1798761600)", d);
             constants_ok = false;
         }
     }
     if let Some(ref a) = cli_claim_amount {
-        if a != "10_000" && a != "10000" {
+        let clean = a.replace('_', "");
+        if clean != "10000" {
             eprintln!("      ⚠️  CLAIM_AMOUNT = {} (expected 10000)", a);
             constants_ok = false;
         }
     }
     if let Some(ref c) = cli_max_claims {
-        if c != "1_000_000" && c != "1000000" {
+        let clean = c.replace('_', "");
+        if clean != "1000000" {
             eprintln!("      ⚠️  MAX_CLAIMS = {} (expected 1000000)", c);
             constants_ok = false;
         }
@@ -135,7 +163,7 @@ fn main() {
     // ── Check 4: No placeholder values ──────────────────────────────
     eprintln!("[4/8] Checking for placeholder values...");
     let mut placeholder_found = false;
-    if let Ok(content) = std::fs::read_to_string("../cli/src/constants.rs") {
+    if let Ok(content) = std::fs::read_to_string(root.join("cli/src/constants.rs")) {
         if content.contains("0x000000000000000000000000000000000000dEaD") {
             eprintln!("      ⚠️  AIRDROP_CONTRACT is still placeholder (0x...dEaD)");
             eprintln!("         Update after deployment");
@@ -161,7 +189,7 @@ fn main() {
     eprintln!("[5/8] Running cargo clippy...");
     let clippy_output = std::process::Command::new("cargo")
         .args(["clippy", "--workspace", "--", "-D", "warnings"])
-        .current_dir("..")
+        .current_dir(&root)
         .output();
     match clippy_output {
         Ok(output) if output.status.success() => {
@@ -190,7 +218,7 @@ fn main() {
     eprintln!("[6/8] Checking cargo fmt...");
     let fmt_output = std::process::Command::new("cargo")
         .args(["fmt", "--all", "--", "--check"])
-        .current_dir("..")
+        .current_dir(&root)
         .output();
     match fmt_output {
         Ok(output) if output.status.success() => {
@@ -215,7 +243,7 @@ fn main() {
         eprintln!("[7/8] Running forge tests...");
         let forge_output = std::process::Command::new("forge")
             .args(["test", "--summary"])
-            .current_dir("../contracts")
+            .current_dir(root.join("contracts"))
             .output();
         match forge_output {
             Ok(output) if output.status.success() => {
@@ -255,7 +283,7 @@ fn main() {
         eprintln!("[8/8] Running cargo test...");
         let test_output = std::process::Command::new("cargo")
             .args(["test", "--workspace"])
-            .current_dir("..")
+            .current_dir(&root)
             .output();
         match test_output {
             Ok(output) if output.status.success() => {
@@ -326,38 +354,48 @@ fn main() {
     }
 }
 
-fn extract_constant(file_path: &str, const_name: &str) -> Option<String> {
+fn extract_constant(file_path: &Path, const_name: &str) -> Option<String> {
     let content = std::fs::read_to_string(file_path).ok()?;
-    for line in content.lines() {
-        if line.contains(const_name) {
-            // Extract the value after '=' or ':'
-            if let Some(idx) = line.find('=') {
-                let val = line[idx + 1..]
-                    .trim()
-                    .trim_matches('"')
-                    .trim_end_matches(';')
-                    .trim();
-                return Some(val.replace('_', ""));
+    // Normalize multi-line declarations into single lines
+    let normalized: String = content
+        .lines()
+        .filter(|l| !l.trim().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join(" ");
+    // Split by semicolons to get individual statements
+    for statement in normalized.split(';') {
+        if statement.contains(const_name) {
+            if let Some(idx) = statement.find('=') {
+                let val = statement[idx + 1..].trim().trim_matches('"').trim();
+                let clean = val.strip_prefix("0x").unwrap_or(val).replace('_', "");
+                if !clean.is_empty() {
+                    return Some(clean);
+                }
             }
         }
     }
     None
 }
 
-fn extract_constant_value(file_path: &str, const_name: &str) -> Option<String> {
+fn extract_constant_value(file_path: &Path, const_name: &str) -> Option<String> {
     let content = std::fs::read_to_string(file_path).ok()?;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("pub const") && trimmed.contains(const_name.split(':').next()?) {
             if let Some(idx) = trimmed.find('=') {
-                return Some(trimmed[idx + 1..].trim().trim_end_matches(';').to_string());
+                // Extract value between '=' and ';', stripping comments
+                let after_eq = &trimmed[idx + 1..];
+                let val = after_eq.split(';').next().unwrap_or("").trim().to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
             }
         }
     }
     None
 }
 
-fn extract_solidity_constant(file_path: &str, const_name: &str) -> Option<String> {
+fn extract_solidity_constant(file_path: &Path, const_name: &str) -> Option<String> {
     let content = std::fs::read_to_string(file_path).ok()?;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -375,9 +413,7 @@ fn extract_solidity_constant(file_path: &str, const_name: &str) -> Option<String
     None
 }
 
-fn find_test_merkle_root() -> Option<String> {
-    // Look for the merkle root in contract test files
-    let test_dir = Path::new("../contracts/test");
+fn find_test_merkle_root(test_dir: &Path) -> Option<String> {
     if let Ok(entries) = std::fs::read_dir(test_dir) {
         for entry in entries.flatten() {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {

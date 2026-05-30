@@ -175,6 +175,7 @@ zkmist/
 | Operation | Gas | Cost (Base) |
 |-----------|-----|-------------|
 | **Claim** | **~350-400K** | **~$0.10-0.12** |
+| **Full Deploy (3 contracts)** | **~2.1M** | **~$0.50** |
 
 ### Test
 
@@ -316,7 +317,7 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **173+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 63 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **182+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction

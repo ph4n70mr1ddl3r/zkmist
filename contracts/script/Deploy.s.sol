@@ -44,6 +44,9 @@ contract Deploy is Script {
     /// Expected max claims: 1,000,000
     uint256 constant EXPECTED_MAX_CLAIMS = 1_000_000;
 
+    /// Minimum ETH balance for deployer (gas for 3 contract deploys)
+    uint256 constant MIN_DEPLOYER_BALANCE = 0.01 ether;
+
     // ── Deployment ───────────────────────────────────────────────────────
 
     function run() external {
@@ -56,6 +59,7 @@ contract Deploy is Script {
         console.log("=== ZKMist Deployment ===");
         console.log("Deployer:", deployer);
         console.log("Chain ID:", block.chainid);
+        console.log("Deployer balance:", deployer.balance);
         console.log("");
 
         // Validate chain
@@ -63,6 +67,9 @@ contract Deploy is Script {
 
         // Validate deadline is in the future
         require(block.timestamp < EXPECTED_CLAIM_DEADLINE, "Claim deadline has already passed");
+
+        // Validate deployer has enough ETH for gas
+        require(deployer.balance >= MIN_DEPLOYER_BALANCE, "Insufficient ETH for deployment");
 
         // ── Step 1: Deploy Halo2Verifier ──────────────────────────────
         console.log("Step 1: Deploying Halo2Verifier...");

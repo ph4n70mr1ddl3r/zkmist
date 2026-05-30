@@ -16,6 +16,8 @@ contract ZKMToken is ERC20 {
 
     function mint(address to, uint256 amount) external {
         require(msg.sender == minter, "Only airdrop contract");
+        require(to != address(0), "Mint to zero address");
+        require(amount > 0, "Amount must be positive");
         require(totalSupply() + amount <= MAX_SUPPLY, "Exceeds max supply");
         _mint(to, amount);
     }
