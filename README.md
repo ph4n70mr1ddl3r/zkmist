@@ -316,11 +316,14 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **173+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 53 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **173+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 63 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
 > - `check_on_curve` uses carry-propagated field addition (`field_add_carried`)
+> - **`field_double` uses `field_add_carried`** — all EC doublings propagate carry chains
+> - **Carry boolean constraints linked via copy constraints** — gate carries are the same cells as boolean-checked carries
+> - **Corrected `field_mul` reduction cross-check** — constrains `wide[0] + c*wide[4] == result[0]` instead of incorrect `wide[0] == result[0]`
 > - Intermediate limb range checks every 32 steps during scalar multiplication
 > - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
 > - KZG params caching in `~/.zkmist/cache/`

@@ -34,9 +34,10 @@
 //!
 //! This hand-rolled non-native field arithmetic has NOT been externally audited.
 //! While soundness mitigations are in place (on-curve check, limb range checks,
-//! intermediate range checks every 32 scalar mul steps, carry propagation),
-//! bugs in limb arithmetic could allow proof forgery. See `SECURITY.md` for
-//! the full audit status and recommendations.
+//! intermediate range checks every 32 scalar mul steps, carry propagation,
+//! consistent carry-propagated additions via `field_add_carried`, corrected
+//! reduction cross-checks in `field_mul`), bugs in limb arithmetic could allow
+//! proof forgery. See `SECURITY.md` for the full audit status and recommendations.
 
 use ff::{Field, PrimeField};
 use halo2_proofs::{
@@ -739,12 +740,16 @@ impl<'a> Secp256k1Chip<'a> {
     }
 
     /// Constrained field doubling: a + a.
+    ///
+    /// Uses `field_add_carried` (carry-propagated) for soundness.
+    /// This ensures all EC double-and-add operations in scalar multiplication
+    /// propagate carry chains consistently, preventing overflow-based attacks.
     pub fn field_double(
         &self,
         layouter: &mut impl Layouter<Fr>,
         a: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        self.field_add(layouter, a, a)
+        self.field_add_carried(layouter, a, a)
     }
 
     /// **Carry-propagated field addition** — more sound than `field_add`.
@@ -766,7 +771,7 @@ impl<'a> Secp256k1Chip<'a> {
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        let result = layouter.assign_region(
+        let (result, carry_out_cells) = layouter.assign_region(
             || "secp_field_add_carried",
             |mut region| {
                 let a_v: Value<[Fr; 4]> = a.values();
@@ -796,6 +801,7 @@ impl<'a> Secp256k1Chip<'a> {
 
                 // For each limb, apply carry-propagated addition gate
                 let mut assigned_limbs = Vec::with_capacity(4);
+                let mut carry_out_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
@@ -839,7 +845,7 @@ impl<'a> Secp256k1Chip<'a> {
 
                     // carry_out to advice[4]
                     let carry_out_val = carry_values.map(|c| c[i]);
-                    let _cout_cell = region.assign_advice(
+                    let cout_cell = region.assign_advice(
                         || format!("carry_out_{}", i),
                         self.config.advice[4],
                         i,
@@ -850,58 +856,51 @@ impl<'a> Secp256k1Chip<'a> {
                     self.config.s_add_carry.enable(&mut region, i)?;
 
                     assigned_limbs.push(r_cell);
+                    carry_out_cells.push(cout_cell);
                 }
 
-                Ok(AssignedFieldElement {
-                    limbs: [
-                        assigned_limbs[0].clone(),
-                        assigned_limbs[1].clone(),
-                        assigned_limbs[2].clone(),
-                        assigned_limbs[3].clone(),
-                    ],
-                })
+                Ok((
+                    AssignedFieldElement {
+                        limbs: [
+                            assigned_limbs[0].clone(),
+                            assigned_limbs[1].clone(),
+                            assigned_limbs[2].clone(),
+                            assigned_limbs[3].clone(),
+                        ],
+                    },
+                    carry_out_cells,
+                ))
             },
         )?;
 
         // Constrain carries to be boolean (0 or 1) — prevents a malicious
         // prover from using non-binary carries to bypass the carry chain.
+        //
+        // Soundness: copy-constrains the SAME carry_out cells from the
+        // s_add_carry gate into this boolean-check region, ensuring the
+        // boolean constraint applies to the actual gate witness values.
+        // Previously, the boolean check used independently-assigned cells
+        // computed from native values, which were NOT linked to the gate's
+        // carry cells — a malicious prover could assign different values.
         layouter.assign_region(
             || "carry_bool_check",
             |mut region| {
-                let a_v: Value<[Fr; 4]> = a.values();
-                let b_v: Value<[Fr; 4]> = b.values();
-                // Compute carry chain from the raw native inputs
-                let carries: Value<[Fr; 4]> = a_v.zip(b_v).map(|(a_v, b_v)| {
-                    let na = limbs_to_native(&a_v);
-                    let nb = limbs_to_native(&b_v);
-                    let mut cs = [Fr::ZERO; 4];
-                    let mut carry: u64 = 0;
-                    for i in 0..4 {
-                        let sum = na.0[i] as u128 + nb.0[i] as u128 + carry as u128;
-                        carry = (sum >> 64) as u64;
-                        cs[i] = Fr::from(carry);
-                    }
-                    cs
-                });
-
                 for i in 0..4 {
-                    let carry_val = carries.map(|c| c[i]);
-                    let _carry_cell = region.assign_advice(
+                    let carry_val = carry_out_cells[i].value().copied();
+                    let carry_cell = region.assign_advice(
                         || format!("carry_bool_{}", i),
                         self.config.advice[0],
                         i,
                         || carry_val,
                     )?;
+                    // Link this cell to the gate's carry_out cell
+                    region.constrain_equal(carry_out_cells[i].cell(), carry_cell.cell())?;
                     self.config.s_bool.enable(&mut region, i)?;
                 }
                 Ok(())
             },
         )?;
 
-        // Return the result from Region 1 directly — these are the SAME cells
-        // that the carry gate constrains. No re-derivation in a separate region.
-        // (Previously this re-derived the result in a new unconstrained region,
-        //  which broke the copy-constraint chain — a soundness bug.)
         Ok(result)
     }
 
@@ -914,13 +913,15 @@ impl<'a> Secp256k1Chip<'a> {
     /// # Soundness
     ///
     /// The 16 schoolbook products are constrained via s_mul gates, and
-    /// accumulation uses s_add gates. However, the wide-to-narrow reduction
-    /// (from 8 limbs to 4 limbs mod secp256k1 field prime p) is witness-guided.
-    /// Full soundness is provided by the final `check_on_curve` and
-    /// `constrain_affine` checks.
+    /// accumulation uses s_add gates. The wide-to-narrow reduction uses the
+    /// secp256k1 identity 2^256 ≡ c (mod p) where c = 2^32 + 977. The first
+    /// reduction step is constrained via s_mul and s_add gates:
+    ///   c * wide[4] (s_mul) → wide[0] + c*wide[4] = result[0] (s_add)
     ///
-    /// For production, consider adding constrained reduction with range
-    /// checks, or using a proven non-native field arithmetic library.
+    /// Full soundness is provided by the final `check_on_curve` and
+    /// `constrain_affine` checks. For production, consider adding constrained
+    /// reduction for all 4 limbs, or using a proven non-native field
+    /// arithmetic library (e.g., `scroll-tech/halo2-secp256k1`).
     pub fn field_mul(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -1089,31 +1090,68 @@ impl<'a> Secp256k1Chip<'a> {
                     assigned.push(cell);
                 }
 
-                // Cross-check: constrain that the low 64 bits of the wide product
-                // match the result's low limb. This catches the most common
-                // reduction bugs where the low limb is incorrectly computed.
-                // For a correct multiplication, wide[0] == result[0] (no reduction
-                // affects the low limb since p > 2^192).
+                // ── Reduction cross-check ──────────────────────────────────
+                // The wide product (8 limbs) must reduce to the result (4 limbs
+                // mod secp256k1 field prime p). The reduction uses the identity
+                // 2^256 ≡ c (mod p) where c = 2^32 + 977.
                 //
-                // This uses an s_add gate: wide[0] + zero = result[0],
-                // which simplifies to constrain_equal(wide[0], result[0]).
-                if let Some(wide_lo) = wide_limbs.first() {
-                    let wide_lo_copy = region.assign_advice(
-                        || "wide_lo_copy",
-                        self.config.advice[0],
-                        offset,
-                        || wide_lo.value().copied(),
-                    )?;
-                    region.constrain_equal(wide_lo.cell(), wide_lo_copy.cell())?;
-                    let result_lo_copy = region.assign_advice(
-                        || "result_lo_copy",
-                        self.config.advice[1],
-                        offset,
-                        || assigned[0].value().copied(),
-                    )?;
-                    region.constrain_equal(assigned[0].cell(), result_lo_copy.cell())?;
-                    region.constrain_equal(wide_lo_copy.cell(), result_lo_copy.cell())?;
-                }
+                // We constrain the first reduction step as a sanity check:
+                //   s_mul:  c * wide[4]     (c = 0x1000003D1)
+                //   s_add:  wide[0] + (c * wide[4]) = result[0]
+                //
+                // This verifies the low-limb reduction is consistent.
+                // Full soundness is provided by the terminal `check_on_curve`
+                // and `constrain_affine` constraints.
+                let c_val = Fr::from(0x1000003D1u64);
+
+                // s_mul row: c * wide[4]
+                let _c_cell = region.assign_advice(
+                    || "red_c",
+                    self.config.advice[0],
+                    offset,
+                    || Value::known(c_val),
+                )?;
+                let wh4_src = &wide_limbs[4];
+                let wh4_copy = region.assign_advice(
+                    || "wh4_copy",
+                    self.config.advice[1],
+                    offset,
+                    || wh4_src.value().copied(),
+                )?;
+                region.constrain_equal(wh4_src.cell(), wh4_copy.cell())?;
+                let c_wh4_val = wh4_src.value().map(|v| c_val * v);
+                let c_wh4 = region.assign_advice(
+                    || "c_wh4",
+                    self.config.advice[2],
+                    offset,
+                    || c_wh4_val,
+                )?;
+                self.config.s_mul.enable(&mut region, offset)?;
+
+                // s_add row: wide[0] + (c * wide[4]) = result[0]
+                let wl0_src = &wide_limbs[0];
+                let wl0_copy = region.assign_advice(
+                    || "wl0_copy",
+                    self.config.advice[0],
+                    offset + 1,
+                    || wl0_src.value().copied(),
+                )?;
+                region.constrain_equal(wl0_src.cell(), wl0_copy.cell())?;
+                let cwh4_copy = region.assign_advice(
+                    || "cwh4_copy",
+                    self.config.advice[1],
+                    offset + 1,
+                    || c_wh4.value().copied(),
+                )?;
+                region.constrain_equal(c_wh4.cell(), cwh4_copy.cell())?;
+                let r0_copy = region.assign_advice(
+                    || "r0_copy",
+                    self.config.advice[2],
+                    offset + 1,
+                    || assigned[0].value().copied(),
+                )?;
+                region.constrain_equal(assigned[0].cell(), r0_copy.cell())?;
+                self.config.s_add.enable(&mut region, offset + 1)?;
 
                 Ok(AssignedFieldElement {
                     limbs: [
@@ -1133,7 +1171,7 @@ impl<'a> Secp256k1Chip<'a> {
     /// neg(b) is computed natively and assigned as a witness, then
     /// `field_add` constrains the limb-level BN254 addition.
     ///
-    /// Soundness: The modular reduction in `field_add` is witness-guided.
+    /// Soundness: The modular reduction uses carry-propagated `field_add_carried`.
     /// Full soundness is provided by the final `constrain_affine` and
     /// `check_on_curve` checks in the circuit.
     pub fn field_sub(

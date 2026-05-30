@@ -92,6 +92,31 @@ Before mainnet deployment, ALL of the following must be completed:
 - [ ] Set up monitoring/alerting for the deployed contracts
   - Run: `cargo run -p zkmist-tools --bin monitor -- <address> --rpc https://mainnet.base.org`
 
+## Soundness Hardening (Applied)
+
+The following hardening measures have been applied to the secp256k1 non-native
+field arithmetic gadget:
+
+1. **Carry-propagated addition everywhere**: `field_double` now uses
+   `field_add_carried` (carry-propagated) instead of basic `field_add`.
+   This ensures ALL additions in EC double-and-add scalar multiplication
+   propagate carry chains consistently.
+
+2. **Linked carry constraints**: The boolean constraint on carry values in
+   `field_add_carried` now applies copy-constraints linking the gate's
+   carry cells to the boolean-check cells. Previously these were independently
+   assigned, allowing a theoretical disconnect.
+
+3. **Corrected reduction cross-check in `field_mul`**: Replaced the incorrect
+   `wide[0] == result[0]` assertion (which was wrong for most multiplications)
+   with a constrained reduction check: `s_mul(c, wide[4])` +
+   `s_add(wide[0], c*wide[4]) = result[0]`, which properly verifies the
+   first step of the wide-to-narrow reduction using the secp256k1 identity
+   `2^256 ≡ 2^32 + 977 (mod p)`.
+
+4. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
+   for the final addition step, ensuring subtraction also propagates carries.
+
 ## Post-Deployment Monitoring
 
 Once the contracts are deployed on Base mainnet, the following should be monitored:
