@@ -8,17 +8,24 @@
 //! 5. **Non-zero recipient**: Rejects address(0)
 
 pub mod gadgets;
+// Keccak bit-level operations use index-based loops for clarity
+// with lane/byte indexing. Complex types are inherent to circuit code.
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::ptr_arg)]
+#[allow(clippy::type_complexity)]
 pub mod keccak;
 pub mod merkle;
 pub mod nullifier;
 pub mod poseidon;
+// Non-native field arithmetic uses limb-indexed loops throughout.
+#[allow(clippy::needless_range_loop)]
 pub mod secp256k1;
 pub mod trivial;
 
 pub use poseidon::{PoseidonChip, PoseidonConfig, PoseidonParams};
 
-use ff::Field;
 use ark_ff::PrimeField;
+use ff::Field;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
@@ -32,8 +39,8 @@ use crate::merkle::TREE_DEPTH;
 use crate::nullifier::domain_field_element;
 use crate::poseidon::ark_to_halo2;
 use crate::secp256k1::{
-    Secp256k1Chip, Secp256k1Config, NativePoint, NativeSecpField,
-    native_derive_address, decompose_key_to_bits,
+    decompose_key_to_bits, native_derive_address, NativePoint, NativeSecpField, Secp256k1Chip,
+    Secp256k1Config,
 };
 
 /// ZKMist V2 Claim Circuit.
@@ -126,14 +133,11 @@ impl Circuit<Fr> for ZKMistV2Claim {
         config.secp256k1.load_tables(&mut layouter)?;
 
         // ── Step 1: Derive address from private key ────────────────────
-        let (address_bytes, pub_x_bytes, pub_y_bytes) =
-            native_derive_address(&self.private_key);
+        let (address_bytes, pub_x_bytes, pub_y_bytes) = native_derive_address(&self.private_key);
 
         let mut addr_padded = [0u8; 32];
         addr_padded[12..32].copy_from_slice(&address_bytes);
-        let address_field = ark_to_halo2(
-            &ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded),
-        );
+        let address_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded));
 
         // ── Step 1a: Keccak hash of public key → address bits ──────────
         // The Keccak hash constrains the address derivation. The prover
@@ -246,13 +250,28 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 }
                 Ok(crate::secp256k1::AssignedPoint {
                     x: crate::secp256k1::AssignedFieldElement {
-                        limbs: [x_a[0].clone(), x_a[1].clone(), x_a[2].clone(), x_a[3].clone()],
+                        limbs: [
+                            x_a[0].clone(),
+                            x_a[1].clone(),
+                            x_a[2].clone(),
+                            x_a[3].clone(),
+                        ],
                     },
                     y: crate::secp256k1::AssignedFieldElement {
-                        limbs: [y_a[0].clone(), y_a[1].clone(), y_a[2].clone(), y_a[3].clone()],
+                        limbs: [
+                            y_a[0].clone(),
+                            y_a[1].clone(),
+                            y_a[2].clone(),
+                            y_a[3].clone(),
+                        ],
                     },
                     z: crate::secp256k1::AssignedFieldElement {
-                        limbs: [z_a[0].clone(), z_a[1].clone(), z_a[2].clone(), z_a[3].clone()],
+                        limbs: [
+                            z_a[0].clone(),
+                            z_a[1].clone(),
+                            z_a[2].clone(),
+                            z_a[3].clone(),
+                        ],
                     },
                 })
             },
@@ -316,9 +335,8 @@ impl Circuit<Fr> for ZKMistV2Claim {
             || "merkle_inputs",
             |mut region| {
                 for i in 0..TREE_DEPTH {
-                    let sib_val = ark_to_halo2(
-                        &ark_bn254::Fr::from_be_bytes_mod_order(&self.siblings[i]),
-                    );
+                    let sib_val =
+                        ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&self.siblings[i]));
                     let sib = region.assign_advice(
                         || format!("sibling_{}", i),
                         config.advice[i % 8],
@@ -367,24 +385,14 @@ impl Circuit<Fr> for ZKMistV2Claim {
         let key_cell = layouter.assign_region(
             || "null_key",
             |mut region| {
-                region.assign_advice(
-                    || "key",
-                    config.advice[0],
-                    0,
-                    || Value::known(key_field),
-                )
+                region.assign_advice(|| "key", config.advice[0], 0, || Value::known(key_field))
             },
         )?;
         let domain = domain_field_element();
         let domain_cell = layouter.assign_region(
             || "null_domain",
             |mut region| {
-                region.assign_advice(
-                    || "dom",
-                    config.advice[1],
-                    0,
-                    || Value::known(domain),
-                )
+                region.assign_advice(|| "dom", config.advice[1], 0, || Value::known(domain))
             },
         )?;
         let nullifier_hasher = PoseidonChip::new(config.poseidon.clone(), &interior_params);
@@ -418,8 +426,7 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 // Compute inverse outside the circuit. If recipient is zero,
                 // we use Fr::ZERO as a placeholder — the constraint will fail
                 // because 0 * 0 != 1.
-                let inv_val = Option::<Fr>::from(self.recipient.invert())
-                    .unwrap_or(Fr::ZERO);
+                let inv_val = Option::<Fr>::from(self.recipient.invert()).unwrap_or(Fr::ZERO);
 
                 let recip_copy = region.assign_advice(
                     || "r",
@@ -508,8 +515,8 @@ mod tests {
         // Use a test key that's valid (non-zero, below secp256k1 order)
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         // Derive address and compute leaf
@@ -562,27 +569,28 @@ mod tests {
         // Expected runtime: 15-30 minutes (MockProver is a debug tool, not optimized
         // for speed). The Keccak gadget alone takes ~16 min at k=22.
         let k = 22;
-        eprintln!("   Running full circuit E2E MockProver test with k={}...", k);
+        eprintln!(
+            "   Running full circuit E2E MockProver test with k={}...",
+            k
+        );
         let public_inputs = vec![root_field, nullifier, recipient];
         let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
         match result {
-            Ok(prover) => {
-                match prover.verify() {
-                    Ok(()) => eprintln!("✅ Full circuit E2E MockProver test PASSED (k={})", k),
-                    Err(e) => {
-                        eprintln!("❌ Full circuit MockProver verify FAILED (k={}):", k);
-                        for err in &e {
-                            eprintln!("   {:?}", err);
-                        }
-                        panic!(
-                            "Full circuit E2E MockProver test failed at k={}. \
-                             Run with --nocapture for details.",
-                            k
-                        );
+            Ok(prover) => match prover.verify() {
+                Ok(()) => eprintln!("✅ Full circuit E2E MockProver test PASSED (k={})", k),
+                Err(e) => {
+                    eprintln!("❌ Full circuit MockProver verify FAILED (k={}):", k);
+                    for err in &e {
+                        eprintln!("   {:?}", err);
                     }
+                    panic!(
+                        "Full circuit E2E MockProver test failed at k={}. \
+                             Run with --nocapture for details.",
+                        k
+                    );
                 }
-            }
+            },
             Err(e) => {
                 panic!(
                     "MockProver::run failed at k={}: {:?}. \
@@ -616,8 +624,8 @@ mod tests {
 
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         let (address, _pub_x_bytes, _pub_y_bytes) = native_derive_address(&key);
@@ -657,12 +665,16 @@ mod tests {
                 let secp = crate::secp256k1::Secp256k1Config::configure(
                     meta,
                     [
-                        advice[0], advice[1], advice[2], advice[3],
-                        advice[4], advice[5], advice[6], advice[7],
+                        advice[0], advice[1], advice[2], advice[3], advice[4], advice[5],
+                        advice[6], advice[7],
                     ],
                     advice[13],
                 );
-                SecpTestConfig { secp, instance, advice }
+                SecpTestConfig {
+                    secp,
+                    instance,
+                    advice,
+                }
             }
 
             fn synthesize(
@@ -697,8 +709,10 @@ mod tests {
                         }
                         Ok(crate::secp256k1::AssignedFieldElement {
                             limbs: [
-                                assigned[0].clone(), assigned[1].clone(),
-                                assigned[2].clone(), assigned[3].clone(),
+                                assigned[0].clone(),
+                                assigned[1].clone(),
+                                assigned[2].clone(),
+                                assigned[3].clone(),
                             ],
                         })
                     },
@@ -719,8 +733,10 @@ mod tests {
                         }
                         Ok(crate::secp256k1::AssignedFieldElement {
                             limbs: [
-                                assigned[0].clone(), assigned[1].clone(),
-                                assigned[2].clone(), assigned[3].clone(),
+                                assigned[0].clone(),
+                                assigned[1].clone(),
+                                assigned[2].clone(),
+                                assigned[3].clone(),
                             ],
                         })
                     },
@@ -735,26 +751,56 @@ mod tests {
                         let g_y_limbs = g.y.to_bn254_limbs();
                         let mut x_a = Vec::new();
                         for (i, l) in g_x_limbs.iter().enumerate() {
-                            x_a.push(region.assign_advice(|| "gx", config.advice[i], 0, || Value::known(*l))?);
+                            x_a.push(region.assign_advice(
+                                || "gx",
+                                config.advice[i],
+                                0,
+                                || Value::known(*l),
+                            )?);
                         }
                         let mut y_a = Vec::new();
                         for (i, l) in g_y_limbs.iter().enumerate() {
-                            y_a.push(region.assign_advice(|| "gy", config.advice[i], 1, || Value::known(*l))?);
+                            y_a.push(region.assign_advice(
+                                || "gy",
+                                config.advice[i],
+                                1,
+                                || Value::known(*l),
+                            )?);
                         }
                         let mut z_a = Vec::new();
                         for i in 0..4 {
                             let v = if i == 0 { Fr::ONE } else { Fr::ZERO };
-                            z_a.push(region.assign_advice(|| "gz", config.advice[i], 2, || Value::known(v))?);
+                            z_a.push(region.assign_advice(
+                                || "gz",
+                                config.advice[i],
+                                2,
+                                || Value::known(v),
+                            )?);
                         }
                         Ok(crate::secp256k1::AssignedPoint {
                             x: crate::secp256k1::AssignedFieldElement {
-                                limbs: [x_a[0].clone(), x_a[1].clone(), x_a[2].clone(), x_a[3].clone()],
+                                limbs: [
+                                    x_a[0].clone(),
+                                    x_a[1].clone(),
+                                    x_a[2].clone(),
+                                    x_a[3].clone(),
+                                ],
                             },
                             y: crate::secp256k1::AssignedFieldElement {
-                                limbs: [y_a[0].clone(), y_a[1].clone(), y_a[2].clone(), y_a[3].clone()],
+                                limbs: [
+                                    y_a[0].clone(),
+                                    y_a[1].clone(),
+                                    y_a[2].clone(),
+                                    y_a[3].clone(),
+                                ],
                             },
                             z: crate::secp256k1::AssignedFieldElement {
-                                limbs: [z_a[0].clone(), z_a[1].clone(), z_a[2].clone(), z_a[3].clone()],
+                                limbs: [
+                                    z_a[0].clone(),
+                                    z_a[1].clone(),
+                                    z_a[2].clone(),
+                                    z_a[3].clone(),
+                                ],
                             },
                         })
                     },
@@ -763,10 +809,15 @@ mod tests {
                 // Scalar multiplication
                 let scalar_bits_bool = crate::secp256k1::decompose_key_to_bits(&self.private_key);
                 let scalar_bits: [Value<Fr>; 256] = std::array::from_fn(|i| {
-                    Value::known(if scalar_bits_bool[i] { Fr::ONE } else { Fr::ZERO })
+                    Value::known(if scalar_bits_bool[i] {
+                        Fr::ONE
+                    } else {
+                        Fr::ZERO
+                    })
                 });
 
-                let computed_point = secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
+                let computed_point =
+                    secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
 
                 // Soundness checks
                 secp_chip.check_on_curve(&mut layouter, &computed_point)?;
@@ -775,7 +826,12 @@ mod tests {
                 secp_chip.check_limb_ranges(&mut layouter, &computed_point.z)?;
 
                 // Constrain k*G == (pub_x, pub_y)
-                secp_chip.constrain_affine(&mut layouter, &computed_point, &pub_x_assigned, &pub_y_assigned)?;
+                secp_chip.constrain_affine(
+                    &mut layouter,
+                    &computed_point,
+                    &pub_x_assigned,
+                    &pub_y_assigned,
+                )?;
 
                 // Constrain the derived address as a public output
                 let mut addr_padded = [0u8; 32];
@@ -786,7 +842,12 @@ mod tests {
                 let addr_cell = layouter.assign_region(
                     || "address",
                     |mut region| {
-                        region.assign_advice(|| "addr", config.advice[0], 0, || Value::known(address_field))
+                        region.assign_advice(
+                            || "addr",
+                            config.advice[0],
+                            0,
+                            || Value::known(address_field),
+                        )
                     },
                 )?;
                 layouter.constrain_instance(addr_cell.cell(), config.instance, 0)?;
@@ -801,27 +862,24 @@ mod tests {
 
         let mut addr_padded = [0u8; 32];
         addr_padded[12..32].copy_from_slice(&address);
-        let address_field = crate::poseidon::ark_to_halo2(
-            &ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded),
-        );
+        let address_field =
+            crate::poseidon::ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded));
 
         let result = MockProver::run(k, &circuit, vec![vec![address_field]]);
         match result {
-            Ok(prover) => {
-                match prover.verify() {
-                    Ok(()) => {
-                        eprintln!("   ✅ secp256k1 MockProver test PASSED (k={})", k);
-                        eprintln!("      Address: 0x{}", hex::encode(address));
-                    }
-                    Err(e) => {
-                        eprintln!("   ❌ secp256k1 MockProver verify FAILED:");
-                        for err in &e {
-                            eprintln!("      {:?}", err);
-                        }
-                        panic!("secp256k1 MockProver verification failed");
-                    }
+            Ok(prover) => match prover.verify() {
+                Ok(()) => {
+                    eprintln!("   ✅ secp256k1 MockProver test PASSED (k={})", k);
+                    eprintln!("      Address: 0x{}", hex::encode(address));
                 }
-            }
+                Err(e) => {
+                    eprintln!("   ❌ secp256k1 MockProver verify FAILED:");
+                    for err in &e {
+                        eprintln!("      {:?}", err);
+                    }
+                    panic!("secp256k1 MockProver verification failed");
+                }
+            },
             Err(e) => {
                 panic!("secp256k1 MockProver::run failed (k={}): {:?}", k, e);
             }
@@ -833,8 +891,8 @@ mod tests {
     fn test_native_pipeline_prd_test_vector() {
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         // Step 1: Derive address
@@ -869,7 +927,10 @@ mod tests {
         let nullifier = native_compute_nullifier(&key_field, &nullifier_params);
         let nullifier_ark = crate::poseidon::halo2_to_ark(&nullifier);
         // V2 nullifier uses "ZKMist_V2_NULLIFIER" — different from V1
-        eprintln!("V2 nullifier: 0x{}", hex::encode(nullifier_ark.into_bigint().to_bytes_be()));
+        eprintln!(
+            "V2 nullifier: 0x{}",
+            hex::encode(nullifier_ark.into_bigint().to_bytes_be())
+        );
     }
 
     /// Test that the secp256k1 scalar multiplication produces the correct point.
@@ -877,8 +938,8 @@ mod tests {
     fn test_secp256k1_scalar_mul_correctness() {
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         let mut limbs = [0u64; 4];
@@ -932,7 +993,10 @@ mod tests {
         v1_padded[..v1_bytes.len()].copy_from_slice(v1_bytes);
         let v1_domain = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&v1_padded));
         let v1_nullifier = native_poseidon(&interior_params, &[key_field, v1_domain]);
-        assert_ne!(v2_nullifier, v1_nullifier, "V2 nullifier must differ from V1");
+        assert_ne!(
+            v2_nullifier, v1_nullifier,
+            "V2 nullifier must differ from V1"
+        );
     }
 
     /// Negative test: wrong Merkle root should fail circuit verification.
@@ -943,8 +1007,8 @@ mod tests {
     fn test_wrong_merkle_root_rejected() {
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         let (address, _, _) = native_derive_address(&key);
@@ -1015,8 +1079,8 @@ mod tests {
     fn test_wrong_nullifier_rejected() {
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         let (address, _, _) = native_derive_address(&key);
@@ -1082,8 +1146,8 @@ mod tests {
     fn test_zero_recipient_rejected() {
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45,
-            0x67, 0x89, 0xab, 0xcd, 0xef,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
         ];
 
         let (address, _, _) = native_derive_address(&key);
@@ -1205,7 +1269,11 @@ mod tests {
 
             let leaf1 = native_poseidon(&leaf_params, &[address_field]);
             let leaf2 = native_poseidon(&leaf_params, &[address_field]);
-            assert_eq!(leaf1, leaf2, "Leaf hash not deterministic for address {}", addr_val);
+            assert_eq!(
+                leaf1, leaf2,
+                "Leaf hash not deterministic for address {}",
+                addr_val
+            );
         }
         eprintln!("✅ 50 leaf hashes all deterministic");
     }
@@ -1254,7 +1322,11 @@ mod tests {
             let v1_domain = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&v1_padded));
             let v1_nullifier = native_poseidon(&interior_params, &[key_field, v1_domain]);
 
-            assert_ne!(v2_nullifier, v1_nullifier, "V1/V2 nullifier match for key {}", key_val);
+            assert_ne!(
+                v2_nullifier, v1_nullifier,
+                "V1/V2 nullifier match for key {}",
+                key_val
+            );
         }
         eprintln!("✅ 50 keys: V2 nullifiers all differ from V1");
     }
@@ -1263,11 +1335,13 @@ mod tests {
     #[test]
     fn test_address_derivation_consistency() {
         // Test multiple private keys
-        let test_keys: Vec<[u8; 32]> = (1u8..=10).map(|i| {
-            let mut key = [0u8; 32];
-            key[31] = i;
-            key
-        }).collect();
+        let test_keys: Vec<[u8; 32]> = (1u8..=10)
+            .map(|i| {
+                let mut key = [0u8; 32];
+                key[31] = i;
+                key
+            })
+            .collect();
 
         for key in &test_keys {
             // Derive address twice — must match
@@ -1291,8 +1365,8 @@ mod tests {
     /// Property test: Merkle proof verification is sound for small trees.
     #[test]
     fn test_merkle_proof_soundness() {
-        use zkmist_merkle_tree::{build_tree_streaming_with_depth, verify_merkle_proof, hash_leaf};
         use light_poseidon::PoseidonHasher;
+        use zkmist_merkle_tree::{build_tree_streaming_with_depth, hash_leaf, verify_merkle_proof};
 
         // Build trees of different sizes and verify proofs
         for num_addrs in 1usize..=8 {
@@ -1305,16 +1379,17 @@ mod tests {
                 .collect();
 
             // Depth must be >= ceil(log2(num_addrs)) for the tree to fit all addresses
-            let min_depth = std::cmp::max(1, num_addrs.next_power_of_two().trailing_zeros() as usize);
+            let min_depth =
+                std::cmp::max(1, num_addrs.next_power_of_two().trailing_zeros() as usize);
             for depth in min_depth..=(min_depth + 2) {
                 for target_idx in 0..num_addrs {
-                    let (root, proof) = build_tree_streaming_with_depth(
-                        &addresses, depth, Some(target_idx),
-                    );
+                    let (root, proof) =
+                        build_tree_streaming_with_depth(&addresses, depth, Some(target_idx));
                     let (siblings, path_indices) = proof.expect("proof failed");
 
                     // Verify proof
-                    let mut hasher = light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(1).unwrap();
+                    let mut hasher =
+                        light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(1).unwrap();
                     let leaf = hash_leaf(&addresses[target_idx], &mut hasher);
                     let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
 

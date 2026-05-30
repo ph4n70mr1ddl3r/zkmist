@@ -2,7 +2,9 @@
 
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector, TableColumn},
+    plonk::{
+        Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector, TableColumn,
+    },
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
@@ -24,7 +26,9 @@ impl Circuit<Fr> for TrivialCircuit {
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
-        Self { x: Value::unknown() }
+        Self {
+            x: Value::unknown(),
+        }
     }
 
     fn configure(meta: &mut ConstraintSystem<Fr>) -> TrivialConfig {
@@ -43,12 +47,7 @@ impl Circuit<Fr> for TrivialCircuit {
         layouter.assign_region(
             || "assign x",
             |mut region| {
-                let x_cell = region.assign_advice(
-                    || "private x",
-                    config.advice,
-                    0,
-                    || self.x,
-                )?;
+                let x_cell = region.assign_advice(|| "private x", config.advice, 0, || self.x)?;
                 // Copy instance into advice row 1, then constrain equality
                 let instance_cell = region.assign_advice_from_instance(
                     || "instance",
@@ -84,7 +83,9 @@ impl Circuit<Fr> for MultiplyCircuit {
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
-        Self { x: Value::unknown() }
+        Self {
+            x: Value::unknown(),
+        }
     }
 
     fn configure(meta: &mut ConstraintSystem<Fr>) -> MultiplyConfig {
@@ -112,7 +113,13 @@ impl Circuit<Fr> for MultiplyCircuit {
             vec![(a, table)]
         });
 
-        MultiplyConfig { advice, instance, s_mul, constant, table }
+        MultiplyConfig {
+            advice,
+            instance,
+            s_mul,
+            constant,
+            table,
+        }
     }
 
     fn synthesize(
@@ -146,21 +153,11 @@ impl Circuit<Fr> for MultiplyCircuit {
                 region.assign_fixed(|| "two", config.constant, 0, || Value::known(Fr::from(2)))?;
 
                 // Assign x at row 0 (also checked by lookup)
-                region.assign_advice(
-                    || "x",
-                    config.advice,
-                    0,
-                    || self.x,
-                )?;
+                region.assign_advice(|| "x", config.advice, 0, || self.x)?;
 
                 // Assign x*2 at row 1
                 let two_x = self.x.map(|v| Fr::from(2) * v);
-                let result_cell = region.assign_advice(
-                    || "x*2",
-                    config.advice,
-                    1,
-                    || two_x,
-                )?;
+                let result_cell = region.assign_advice(|| "x*2", config.advice, 1, || two_x)?;
 
                 // Copy instance into advice row 2, then constrain result == instance
                 let instance_cell = region.assign_advice_from_instance(
@@ -227,7 +224,10 @@ mod tests {
         };
         let wrong_inputs = vec![Fr::from(99)];
         let prover = MockProver::run(k, &circuit, vec![wrong_inputs]).unwrap();
-        assert!(prover.verify().is_err(), "Should reject wrong multiplication result");
+        assert!(
+            prover.verify().is_err(),
+            "Should reject wrong multiplication result"
+        );
     }
 
     #[test]
@@ -257,8 +257,8 @@ mod tests {
     #[test]
     fn test_real_kzg_proof_and_verify() {
         use halo2_proofs::{
-            poly::commitment::Params,
             plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
+            poly::commitment::Params,
             transcript::{Blake2bRead, Blake2bWrite, Challenge255},
         };
         use halo2curves::bn256::G1Affine;
@@ -292,7 +292,8 @@ mod tests {
         eprintln!("✅ Real KZG proof generated: {} bytes", proof.len());
 
         let strategy = SingleVerifier::new(&params);
-        let mut read_transcript = Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof.as_slice());
+        let mut read_transcript =
+            Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof.as_slice());
 
         let result = verify_proof(
             &params,
@@ -320,8 +321,12 @@ mod tests {
         eprintln!("   Copy constraints:        enable_equality + assign_advice_from_instance + constrain_equal");
         eprintln!("   Fixed columns:           query_fixed() takes NO Rotation (per-region)");
         eprintln!("   Proof gen:               create_proof(params, pk, circuits, inputs, rng, transcript)");
-        eprintln!("   Proof verify:            verify_proof(params, vk, strategy, inputs, transcript)");
-        eprintln!("   Transcripts:             Blake2bWrite for proving, Blake2bRead for verifying");
+        eprintln!(
+            "   Proof verify:            verify_proof(params, vk, strategy, inputs, transcript)"
+        );
+        eprintln!(
+            "   Transcripts:             Blake2bWrite for proving, Blake2bRead for verifying"
+        );
         eprintln!("   Curve type:              G1Affine (not Bn256) for generic params");
         eprintln!("   MockProver:              MockProver::run(k, circuit, vec![public_inputs])");
         eprintln!();

@@ -547,7 +547,10 @@ mod tests {
         let key = [0x01u8; 32];
         let n_custom = compute_nullifier_with_domain(&key, b"CUSTOM_DOMAIN", &mut hasher);
         let n_default = compute_nullifier(&key, &mut hasher);
-        assert_ne!(n_custom, n_default, "Custom domain nullifier must differ from default");
+        assert_ne!(
+            n_custom, n_default,
+            "Custom domain nullifier must differ from default"
+        );
     }
 
     /// Shared test addresses used across multiple tests.
@@ -632,11 +635,7 @@ mod tests {
     /// Test tree cache serialization round-trip.
     #[test]
     fn test_tree_cache_roundtrip() {
-        let addresses: [[u8; 20]; 3] = [
-            TEST_ADDRESSES[0],
-            TEST_ADDRESSES[1],
-            TEST_ADDRESSES[4],
-        ];
+        let addresses: [[u8; 20]; 3] = [TEST_ADDRESSES[0], TEST_ADDRESSES[1], TEST_ADDRESSES[4]];
 
         let test_depth = 4usize;
         let layers = build_tree_with_depth(&addresses, test_depth);
@@ -681,11 +680,7 @@ mod tests {
     /// depth 4 (16 leaves) — small enough for a fast unit test.
     #[test]
     fn test_streaming_matches_full() {
-        let addresses: [[u8; 20]; 3] = [
-            TEST_ADDRESSES[0],
-            TEST_ADDRESSES[1],
-            TEST_ADDRESSES[4],
-        ];
+        let addresses: [[u8; 20]; 3] = [TEST_ADDRESSES[0], TEST_ADDRESSES[1], TEST_ADDRESSES[4]];
 
         let test_depth = 4;
 

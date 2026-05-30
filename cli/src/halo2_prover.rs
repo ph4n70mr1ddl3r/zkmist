@@ -8,10 +8,7 @@ use std::path::Path;
 
 use ark_ff::{BigInteger, PrimeField};
 use zkmist_circuits::{
-    ZKMistV2Claim,
-    merkle::TREE_DEPTH,
-    nullifier::domain_field_element,
-    poseidon::ark_to_halo2,
+    merkle::TREE_DEPTH, nullifier::domain_field_element, poseidon::ark_to_halo2, ZKMistV2Claim,
 };
 use zkmist_merkle_tree::compute_nullifier;
 
@@ -44,7 +41,9 @@ fn cached_params_path(k: u32) -> Result<std::path::PathBuf, String> {
 ///
 /// The params are deterministic (derived from the Ethereum KZG ceremony SRS),
 /// so caching is safe. Cache invalidation only happens when k changes.
-fn load_or_gen_params(k: u32) -> Result<halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>, String> {
+fn load_or_gen_params(
+    k: u32,
+) -> Result<halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>, String> {
     use halo2_proofs::poly::commitment::Params;
     use halo2curves::bn256::G1Affine;
     use std::io::{BufReader, BufWriter};
@@ -53,7 +52,10 @@ fn load_or_gen_params(k: u32) -> Result<halo2_proofs::poly::commitment::Params<h
 
     // Try loading from cache
     if path.exists() {
-        eprintln!("         Loading cached KZG params from {}...", path.display());
+        eprintln!(
+            "         Loading cached KZG params from {}...",
+            path.display()
+        );
         match std::fs::File::open(&path) {
             Ok(file) => {
                 let mut reader = BufReader::new(file);
@@ -63,18 +65,28 @@ fn load_or_gen_params(k: u32) -> Result<halo2_proofs::poly::commitment::Params<h
                         return Ok(params);
                     }
                     Err(e) => {
-                        eprintln!("         Warning: cached params corrupt ({}), regenerating", e);
+                        eprintln!(
+                            "         Warning: cached params corrupt ({}), regenerating",
+                            e
+                        );
                     }
                 }
             }
             Err(e) => {
-                eprintln!("         Warning: cannot read cached params ({}), regenerating", e);
+                eprintln!(
+                    "         Warning: cannot read cached params ({}), regenerating",
+                    e
+                );
             }
         }
     }
 
     // Generate fresh params
-    eprintln!("         Generating KZG params (k={}, {} rows)...", k, 1u64 << k);
+    eprintln!(
+        "         Generating KZG params (k={}, {} rows)...",
+        k,
+        1u64 << k
+    );
     let params = Params::<G1Affine>::new(k);
     eprintln!("         ✓ KZG params generated");
 
@@ -118,18 +130,14 @@ pub fn generate_v2_proof(
     output_path: &Path,
 ) -> Result<[u8; 32], String> {
     // ── Compute public inputs natively ───────────────────────────────
-    let root_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(merkle_root),
-    );
+    let root_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(merkle_root));
 
     // Compute nullifier using domain separator ("ZKMist_V2_NULLIFIER").
     // This MUST match the domain used inside the Halo2 circuit's nullifier gadget.
-    let mut interior_hasher = crate::helpers::ark_poseidon_hasher(2)
-        .ok_or("Failed to create Poseidon hasher")?;
+    let mut interior_hasher =
+        crate::helpers::ark_poseidon_hasher(2).ok_or("Failed to create Poseidon hasher")?;
     let nullifier_bytes = compute_nullifier(private_key, &mut interior_hasher);
-    let nullifier_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes),
-    );
+    let nullifier_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes));
 
     // Cross-check: the circuit's native nullifier must match
     {
@@ -156,9 +164,7 @@ pub fn generate_v2_proof(
     // Recipient as field element (left-padded to 32 bytes)
     let mut recipient_padded = [0u8; 32];
     recipient_padded[12..32].copy_from_slice(recipient);
-    let recipient_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(&recipient_padded),
-    );
+    let recipient_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&recipient_padded));
 
     // ── Build the circuit ────────────────────────────────────────────
     let circuit = ZKMistV2Claim {
@@ -189,10 +195,9 @@ pub fn generate_v2_proof(
 
     eprintln!("      [2/5] Generating verification key...");
     let vk_start = std::time::Instant::now();
-    let vk = keygen_vk(&params, &circuit)
-        .map_err(|e| format!("VK generation failed: {:?}", e))?;
-    let pk = keygen_pk(&params, vk, &circuit)
-        .map_err(|e| format!("PK generation failed: {:?}", e))?;
+    let vk = keygen_vk(&params, &circuit).map_err(|e| format!("VK generation failed: {:?}", e))?;
+    let pk =
+        keygen_pk(&params, vk, &circuit).map_err(|e| format!("PK generation failed: {:?}", e))?;
     eprintln!(
         "      [2/5] VK/PK generated ({:.1}s)",
         vk_start.elapsed().as_secs_f64()
@@ -259,11 +264,13 @@ pub fn generate_v2_proof(
 
     let json = serde_json::to_string_pretty(&proof_file)
         .map_err(|e| format!("Failed to serialize proof: {}", e))?;
-    std::fs::write(output_path, &json)
-        .map_err(|e| format!("Failed to write proof: {}", e))?;
+    std::fs::write(output_path, &json).map_err(|e| format!("Failed to write proof: {}", e))?;
 
     let total_time = start.elapsed();
-    eprintln!("      Total proving pipeline: {:.1}s", total_time.as_secs_f64());
+    eprintln!(
+        "      Total proving pipeline: {:.1}s",
+        total_time.as_secs_f64()
+    );
     eprintln!(
         "      Breakdown: params={:.1}s, keygen={:.1}s, prove={:.1}s, verify={:.1}s",
         0.0, // params time included in start
@@ -283,8 +290,8 @@ pub fn generate_v2_proof(
 pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     let content = std::fs::read_to_string(proof_path)
         .map_err(|e| format!("Failed to read {}: {}", proof_path.display(), e))?;
-    let proof: ProofFile = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse proof file: {}", e))?;
+    let proof: ProofFile =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse proof file: {}", e))?;
 
     if proof.version != 2 {
         return Err(format!("Expected version 2 proof, got {}", proof.version));
@@ -306,8 +313,7 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         return Err("Proof is empty".to_string());
     }
 
-    let proof_bytes = hex::decode(&proof.proof)
-        .map_err(|e| format!("Invalid proof hex: {}", e))?;
+    let proof_bytes = hex::decode(&proof.proof).map_err(|e| format!("Invalid proof hex: {}", e))?;
 
     if proof_bytes.len() < 400 || proof_bytes.len() > 1200 {
         return Err(format!(
@@ -346,48 +352,46 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
 
     let k = CIRCUIT_K;
     let params = load_or_gen_params(k)?;
-    let vk = keygen_vk(&params, &circuit)
-        .map_err(|e| format!("VK generation failed: {:?}", e))?;
+    let vk = keygen_vk(&params, &circuit).map_err(|e| format!("VK generation failed: {:?}", e))?;
 
-    eprintln!(
-        "  VK regenerated ({:.1}s)",
-        start.elapsed().as_secs_f64()
-    );
+    eprintln!("  VK regenerated ({:.1}s)", start.elapsed().as_secs_f64());
 
     // Reconstruct public inputs from the proof file
-    let nullifier_bytes = hex::decode(&proof.nullifier)
-        .map_err(|e| format!("Invalid nullifier hex: {}", e))?;
-    let recipient_bytes = hex::decode(&proof.recipient)
-        .map_err(|e| format!("Invalid recipient hex: {}", e))?;
+    let nullifier_bytes =
+        hex::decode(&proof.nullifier).map_err(|e| format!("Invalid nullifier hex: {}", e))?;
+    let recipient_bytes =
+        hex::decode(&proof.recipient).map_err(|e| format!("Invalid recipient hex: {}", e))?;
 
     if nullifier_bytes.len() != 32 {
-        return Err(format!("Nullifier must be 32 bytes, got {}", nullifier_bytes.len()));
+        return Err(format!(
+            "Nullifier must be 32 bytes, got {}",
+            nullifier_bytes.len()
+        ));
     }
     if recipient_bytes.len() != 20 {
-        return Err(format!("Recipient must be 20 bytes, got {}", recipient_bytes.len()));
+        return Err(format!(
+            "Recipient must be 20 bytes, got {}",
+            recipient_bytes.len()
+        ));
     }
 
     let mut nullifier_arr = [0u8; 32];
     nullifier_arr.copy_from_slice(&nullifier_bytes);
-    let nullifier_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_arr),
-    );
+    let nullifier_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_arr));
 
     let mut recipient_padded = [0u8; 32];
     recipient_padded[12..32].copy_from_slice(&recipient_bytes);
-    let recipient_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(&recipient_padded),
-    );
+    let recipient_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&recipient_padded));
 
     // The merkle root is a known constant — extract from proof file or use known value
-    let known_root_hex = KNOWN_MERKLE_ROOT.strip_prefix("0x").unwrap_or(KNOWN_MERKLE_ROOT);
-    let root_bytes = hex::decode(known_root_hex)
-        .map_err(|e| format!("Invalid known merkle root hex: {}", e))?;
+    let known_root_hex = KNOWN_MERKLE_ROOT
+        .strip_prefix("0x")
+        .unwrap_or(KNOWN_MERKLE_ROOT);
+    let root_bytes =
+        hex::decode(known_root_hex).map_err(|e| format!("Invalid known merkle root hex: {}", e))?;
     let mut root_arr = [0u8; 32];
     root_arr.copy_from_slice(&root_bytes);
-    let root_fr = ark_to_halo2(
-        &ark_bn254::Fr::from_be_bytes_mod_order(&root_arr),
-    );
+    let root_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_arr));
 
     let public_inputs = [root_fr, nullifier_fr, recipient_fr];
 
@@ -405,19 +409,20 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         &mut read_transcript,
     ) {
         Ok(()) => {
-            eprintln!("  ✅ Proof is cryptographically valid ({:.1}s total)", start.elapsed().as_secs_f64());
+            eprintln!(
+                "  ✅ Proof is cryptographically valid ({:.1}s total)",
+                start.elapsed().as_secs_f64()
+            );
             eprintln!("     Merkle root: 0x{}", KNOWN_MERKLE_ROOT);
             eprintln!("     Nullifier:   0x{}", proof.nullifier);
             eprintln!("     Recipient:   0x{}", proof.recipient);
             eprintln!("     Proof size:  {} bytes", proof_bytes.len());
             Ok(())
         }
-        Err(e) => {
-            Err(format!(
-                "❌ Cryptographic proof verification FAILED: {:?}\n\
+        Err(e) => Err(format!(
+            "❌ Cryptographic proof verification FAILED: {:?}\n\
                  The proof is invalid. Do NOT submit this proof.",
-                e
-            ))
-        }
+            e
+        )),
     }
 }

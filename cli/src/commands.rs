@@ -7,8 +7,8 @@ use std::io::{self, Write};
 
 use sha2::{Digest as Sha2Digest, Sha256};
 use zkmist_merkle_tree::{
-    build_tree_streaming, compute_nullifier, deserialize_proof,
-    hash_leaf, serialize_proof, verify_merkle_proof, TREE_DEPTH,
+    build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
+    verify_merkle_proof, TREE_DEPTH,
 };
 
 use crate::abi::*;
@@ -147,7 +147,10 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         let (cached_root, _leaf_index, cached_siblings, cached_path) =
             deserialize_proof(reader).map_err(|e| format!("Failed to read proof cache: {}", e))?;
 
-        eprintln!("      ✓ Proof cache loaded ({} levels)", cached_siblings.len());
+        eprintln!(
+            "      ✓ Proof cache loaded ({} levels)",
+            cached_siblings.len()
+        );
         eprintln!("      Root: {}", format_bytes32(&cached_root));
 
         if let Some(manifest) = load_manifest()? {
@@ -191,8 +194,14 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         let file = std::fs::File::create(&cache_path)
             .map_err(|e| format!("Failed to create proof cache: {}", e))?;
         let writer = std::io::BufWriter::new(file);
-        serialize_proof(&streaming_root, leaf_index, &streaming_siblings, &streaming_path, writer)
-            .map_err(|e| format!("Failed to write proof cache: {}", e))?;
+        serialize_proof(
+            &streaming_root,
+            leaf_index,
+            &streaming_siblings,
+            &streaming_path,
+            writer,
+        )
+        .map_err(|e| format!("Failed to write proof cache: {}", e))?;
 
         (streaming_root, streaming_siblings, streaming_path)
     };
@@ -202,7 +211,9 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     if siblings.len() != expected_depth || path_indices.len() != expected_depth {
         return Err(format!(
             "Sibling/path count mismatch: {} siblings, {} path indices (expected {})",
-            siblings.len(), path_indices.len(), expected_depth
+            siblings.len(),
+            path_indices.len(),
+            expected_depth
         ));
     }
 
@@ -213,7 +224,8 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     if computed_root != root {
         return Err(format!(
             "Merkle proof verification failed: {} != {}",
-            format_bytes32(&computed_root), format_bytes32(&root)
+            format_bytes32(&computed_root),
+            format_bytes32(&root)
         ));
     }
     eprintln!("      ✓ Merkle proof verified locally");
@@ -235,7 +247,10 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     eprintln!("      ╔══════════════════════════════════════════════════════════╗");
     eprintln!("      ║  Ready to generate Halo2-KZG proof.                     ║");
     eprintln!("      ║  • Recipient: {}  ║", format_address(&recipient));
-    eprintln!("      ║  • Amount:    {} ZKM                           ║", CLAIM_AMOUNT);
+    eprintln!(
+        "      ║  • Amount:    {} ZKM                           ║",
+        CLAIM_AMOUNT
+    );
     eprintln!("      ║  • Duration:  ~10-30 seconds                           ║");
     eprintln!("      ║  • ⚠️  RECIPIENT IS IRREVOCABLE after proof generation   ║");
     eprintln!("      ╚══════════════════════════════════════════════════════════╝");
@@ -252,10 +267,8 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // Convert siblings/path_indices to fixed arrays for the circuit
     let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
     let mut path_arr = [0u8; TREE_DEPTH];
-    for i in 0..TREE_DEPTH {
-        sibling_arr[i] = siblings[i];
-        path_arr[i] = path_indices[i];
-    }
+    sibling_arr[..TREE_DEPTH].copy_from_slice(&siblings[..TREE_DEPTH]);
+    path_arr[..TREE_DEPTH].copy_from_slice(&path_indices[..TREE_DEPTH]);
 
     // Generate proof via Halo2
     std::fs::create_dir_all(proofs_dir())
@@ -274,7 +287,11 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
 
     eprintln!();
     eprintln!("      ✓ Proof saved: {}", proof_path.display());
-    eprintln!("      {} ZKM will be minted to {} on claim.", CLAIM_AMOUNT, format_address(&recipient));
+    eprintln!(
+        "      {} ZKM will be minted to {} on claim.",
+        CLAIM_AMOUNT,
+        format_address(&recipient)
+    );
     eprintln!("      Run: zkmist submit {}", proof_path.display());
     eprintln!("      Or send to any relayer.");
 
@@ -308,15 +325,14 @@ pub fn cmd_submit(
 
     // Reject submission to the placeholder contract address.
     if proof.contract_address == "0x000000000000000000000000000000000000dEaD"
-        || proof.contract_address.parse::<alloy::primitives::Address>() == Ok(alloy::primitives::Address::ZERO)
+        || proof.contract_address.parse::<alloy::primitives::Address>()
+            == Ok(alloy::primitives::Address::ZERO)
     {
-        return Err(
-            "Proof file contains a placeholder contract address. \
+        return Err("Proof file contains a placeholder contract address. \
              The airdrop contract has not been deployed yet, \
              or this CLI version is outdated. \
              Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment."
-                .to_string(),
-        );
+            .to_string());
     }
 
     // Get submitter's private key for gas
@@ -396,14 +412,8 @@ pub fn cmd_submit(
                 buffered
             }
             Err(e) => {
-                eprintln!(
-                    "  ⚠️  Gas estimation failed: {}",
-                    e
-                );
-                eprintln!(
-                    "      Using fallback gas limit: {}",
-                    FALLBACK_GAS_LIMIT
-                );
+                eprintln!("  ⚠️  Gas estimation failed: {}", e);
+                eprintln!("      Using fallback gas limit: {}", FALLBACK_GAS_LIMIT);
                 FALLBACK_GAS_LIMIT
             }
         };
@@ -520,7 +530,10 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             let tx = alloy::rpc::types::transaction::TransactionRequest::default()
                 .to(contract)
                 .input(call.abi_encode().into());
-            let resp = provider.call(tx).await.map_err(|e| format!("totalClaims call failed: {}", e))?;
+            let resp = provider
+                .call(tx)
+                .await
+                .map_err(|e| format!("totalClaims call failed: {}", e))?;
             IZKMAirdrop::totalClaimsCall::abi_decode_returns(&resp)
                 .map_err(|e| format!("totalClaims decode failed: {}", e))
         };
@@ -530,7 +543,10 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             let tx = alloy::rpc::types::transaction::TransactionRequest::default()
                 .to(contract)
                 .input(call.abi_encode().into());
-            let resp = provider.call(tx).await.map_err(|e| format!("isClaimWindowOpen call failed: {}", e))?;
+            let resp = provider
+                .call(tx)
+                .await
+                .map_err(|e| format!("isClaimWindowOpen call failed: {}", e))?;
             IZKMAirdrop::isClaimWindowOpenCall::abi_decode_returns(&resp)
                 .map_err(|e| format!("isClaimWindowOpen decode failed: {}", e))
         };
@@ -540,7 +556,10 @@ pub fn cmd_status(rpc_url: Option<&str>) -> Result<(), String> {
             let tx = alloy::rpc::types::transaction::TransactionRequest::default()
                 .to(contract)
                 .input(call.abi_encode().into());
-            let resp = provider.call(tx).await.map_err(|e| format!("token() call failed: {}", e))?;
+            let resp = provider
+                .call(tx)
+                .await
+                .map_err(|e| format!("token() call failed: {}", e))?;
             IZKMAirdrop::tokenCall::abi_decode_returns(&resp)
                 .map_err(|e| format!("token() decode failed: {}", e))
         };

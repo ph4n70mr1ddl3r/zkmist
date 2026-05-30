@@ -27,10 +27,7 @@ pub struct CondSwapConfig {
 
 impl CondSwapConfig {
     /// Add conditional swap gates. Advice columns must already have `enable_equality`.
-    pub fn configure(
-        meta: &mut ConstraintSystem<Fr>,
-        advice: [Column<Advice>; 3],
-    ) -> Self {
+    pub fn configure(meta: &mut ConstraintSystem<Fr>, advice: [Column<Advice>; 3]) -> Self {
         let s_swap = meta.selector();
         let s_bool = meta.selector();
 
@@ -50,7 +47,11 @@ impl CondSwapConfig {
             vec![s * (term1 + term2 - out)]
         });
 
-        Self { advice, s_swap, s_bool }
+        Self {
+            advice,
+            s_swap,
+            s_bool,
+        }
     }
 }
 
@@ -71,12 +72,7 @@ pub fn cond_swap(
     let b_val = b.value().copied();
 
     // Row 0: boolean constraint on sel
-    let sel_copy = region.assign_advice(
-        || "sel_bool",
-        config.advice[0],
-        offset,
-        || sel_val,
-    )?;
+    let sel_copy = region.assign_advice(|| "sel_bool", config.advice[0], offset, || sel_val)?;
     region.constrain_equal(sel.cell(), sel_copy.cell())?;
     config.s_bool.enable(region, offset)?;
 
@@ -89,12 +85,7 @@ pub fn cond_swap(
 
     region.assign_advice(|| "sb", config.advice[0], offset + 1, || sel_b)?;
     region.assign_advice(|| "omsa", config.advice[1], offset + 1, || oms_a)?;
-    let out_left = region.assign_advice(
-        || "ol",
-        config.advice[2],
-        offset + 1,
-        || out_left_val,
-    )?;
+    let out_left = region.assign_advice(|| "ol", config.advice[2], offset + 1, || out_left_val)?;
     config.s_swap.enable(region, offset + 1)?;
 
     // Row 2: out_right = sel*a + (1-sel)*b
@@ -104,12 +95,8 @@ pub fn cond_swap(
 
     region.assign_advice(|| "sa", config.advice[0], offset + 2, || sel_a)?;
     region.assign_advice(|| "omsb", config.advice[1], offset + 2, || oms_b)?;
-    let out_right = region.assign_advice(
-        || "or",
-        config.advice[2],
-        offset + 2,
-        || out_right_val,
-    )?;
+    let out_right =
+        region.assign_advice(|| "or", config.advice[2], offset + 2, || out_right_val)?;
     config.s_swap.enable(region, offset + 2)?;
 
     Ok((out_left, out_right))

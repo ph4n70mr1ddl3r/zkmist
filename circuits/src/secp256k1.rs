@@ -29,6 +29,14 @@
 //!
 //! The `field_add_carried` method provides carry-propagated addition with
 //! explicit carry constraints, which is more sound than the basic `field_add`.
+//!
+//! **⚠️ EXTERNAL SECURITY AUDIT REQUIRED BEFORE MAINNET DEPLOYMENT.**
+//!
+//! This hand-rolled non-native field arithmetic has NOT been externally audited.
+//! While soundness mitigations are in place (on-curve check, limb range checks,
+//! intermediate range checks every 32 scalar mul steps, carry propagation),
+//! bugs in limb arithmetic could allow proof forgery. See `SECURITY.md` for
+//! the full audit status and recommendations.
 
 use ff::{Field, PrimeField};
 use halo2_proofs::{
@@ -167,9 +175,7 @@ impl NativeSecpField {
             const C: u64 = 0x1000003D1;
             let mut add_carry = 0u128;
             for i in 0..4 {
-                let val = r.0[i] as u128
-                    + if i == 0 { C as u128 } else { 0 }
-                    + add_carry;
+                let val = r.0[i] as u128 + if i == 0 { C as u128 } else { 0 } + add_carry;
                 r.0[i] = val as u64;
                 add_carry = val >> 64;
             }
@@ -312,12 +318,7 @@ impl NativeSecpField {
     /// Modular inverse using Fermat's little theorem: a^(p-2) mod p.
     pub fn inverse(&self) -> Self {
         // p - 2 = SECP_P - 2
-        let exp = [
-            SECP_P[0] - 2,
-            SECP_P[1],
-            SECP_P[2],
-            SECP_P[3],
-        ];
+        let exp = [SECP_P[0] - 2, SECP_P[1], SECP_P[2], SECP_P[3]];
         self.exp(&exp)
     }
 
@@ -446,7 +447,11 @@ pub fn native_derive_address(private_key: &[u8; 32]) -> ([u8; 20], [u8; 32], [u8
     }
     limbs.reverse();
     let point = NativePoint::scalar_mul(&limbs);
-    (point.to_address(), point.x.to_bytes_be(), point.y.to_bytes_be())
+    (
+        point.to_address(),
+        point.x.to_bytes_be(),
+        point.y.to_bytes_be(),
+    )
 }
 
 /// Decompose a private key into 256 bits (MSB first).
@@ -786,7 +791,8 @@ impl<'a> Secp256k1Chip<'a> {
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
-                    let carry_in_val = carry_values.map(|c| if i == 0 { Fr::ZERO } else { c[i - 1] });
+                    let carry_in_val =
+                        carry_values.map(|c| if i == 0 { Fr::ZERO } else { c[i - 1] });
                     let r_val = raw_result.as_ref().map(|r| r[i]);
 
                     // Copy a[i] to advice[0]
@@ -920,8 +926,7 @@ impl<'a> Secp256k1Chip<'a> {
                 let b_v = b.values();
 
                 // Compute all 16 schoolbook products and constrain them
-                let mut products: [[Option<AssignedCell<Fr, Fr>>; 4]; 4] =
-                    Default::default();
+                let mut products: [[Option<AssignedCell<Fr, Fr>>; 4]; 4] = Default::default();
                 let mut offset = 0;
 
                 for i in 0..4 {
@@ -973,7 +978,11 @@ impl<'a> Secp256k1Chip<'a> {
                     let contribs: Vec<AssignedCell<Fr, Fr>> = (0..4)
                         .filter_map(|i| {
                             let j = k as isize - i as isize;
-                            if (0..4).contains(&j) { products[i][j as usize].clone() } else { None }
+                            if (0..4).contains(&j) {
+                                products[i][j as usize].clone()
+                            } else {
+                                None
+                            }
                         })
                         .collect();
 
@@ -1049,13 +1058,15 @@ impl<'a> Secp256k1Chip<'a> {
 
                 // ── Constrained reduction: wide limbs → final 4 limbs ─────────
                 // The native computation provides the correctly-reduced result.
-                // We assign it and cross-check by constraining that the native
-                // result multiplied back out matches the wide limb sum.
+                // We assign it and add a cross-check constraint on the low limb
+                // to catch gross reduction errors.
                 //
                 // Defense in depth: the final constrain_affine() at the end of
                 // the circuit ensures all intermediate values are consistent.
                 let result_limbs = a_v.zip(b_v).map(|(a_v, b_v)| {
-                    limbs_to_native(&a_v).mul(&limbs_to_native(&b_v)).to_bn254_limbs()
+                    limbs_to_native(&a_v)
+                        .mul(&limbs_to_native(&b_v))
+                        .to_bn254_limbs()
                 });
 
                 let mut assigned = Vec::with_capacity(4);
@@ -1068,6 +1079,32 @@ impl<'a> Secp256k1Chip<'a> {
                         || r_val,
                     )?;
                     assigned.push(cell);
+                }
+
+                // Cross-check: constrain that the low 64 bits of the wide product
+                // match the result's low limb. This catches the most common
+                // reduction bugs where the low limb is incorrectly computed.
+                // For a correct multiplication, wide[0] == result[0] (no reduction
+                // affects the low limb since p > 2^192).
+                //
+                // This uses an s_add gate: wide[0] + zero = result[0],
+                // which simplifies to constrain_equal(wide[0], result[0]).
+                if let Some(wide_lo) = wide_limbs.first() {
+                    let wide_lo_copy = region.assign_advice(
+                        || "wide_lo_copy",
+                        self.config.advice[0],
+                        offset,
+                        || wide_lo.value().copied(),
+                    )?;
+                    region.constrain_equal(wide_lo.cell(), wide_lo_copy.cell())?;
+                    let result_lo_copy = region.assign_advice(
+                        || "result_lo_copy",
+                        self.config.advice[1],
+                        offset,
+                        || assigned[0].value().copied(),
+                    )?;
+                    region.constrain_equal(assigned[0].cell(), result_lo_copy.cell())?;
+                    region.constrain_equal(wide_lo_copy.cell(), result_lo_copy.cell())?;
                 }
 
                 Ok(AssignedFieldElement {
@@ -1378,12 +1415,8 @@ impl<'a> Secp256k1Chip<'a> {
                 let mut offset = 0;
 
                 // Row 0: Constrain sel to be boolean
-                let sel_cell = region.assign_advice(
-                    || "sel",
-                    self.config.advice[0],
-                    offset,
-                    || bit,
-                )?;
+                let sel_cell =
+                    region.assign_advice(|| "sel", self.config.advice[0], offset, || bit)?;
                 self.config.s_bool.enable(&mut region, offset)?;
 
                 // Row 1: Constrain one_minus_sel: sel + one_minus_sel = 1
@@ -1448,29 +1481,62 @@ impl<'a> Secp256k1Chip<'a> {
                     let sum_val = sel_a_val.zip(oms_b_val).map(|(a, b)| a + b);
 
                     // Row: s_mul for sel * a[i]
-                    let sel_r = region.assign_advice(|| "sr", self.config.advice[0], offset, || bit)?;
+                    let sel_r =
+                        region.assign_advice(|| "sr", self.config.advice[0], offset, || bit)?;
                     region.constrain_equal(sel_cell.cell(), sel_r.cell())?;
-                    let a_r = region.assign_advice(|| "ar", self.config.advice[1], offset, || a_val)?;
+                    let a_r =
+                        region.assign_advice(|| "ar", self.config.advice[1], offset, || a_val)?;
                     region.constrain_equal(a.limbs[i].cell(), a_r.cell())?;
-                    let sel_a_cell = region.assign_advice(|| "sa", self.config.advice[2], offset, || sel_a_val)?;
+                    let sel_a_cell = region.assign_advice(
+                        || "sa",
+                        self.config.advice[2],
+                        offset,
+                        || sel_a_val,
+                    )?;
                     self.config.s_mul.enable(&mut region, offset)?;
                     offset += 1;
 
                     // Row: s_mul for (1-sel) * b[i]
-                    let oms_r = region.assign_advice(|| "or", self.config.advice[0], offset, || one_minus_sel_val)?;
+                    let oms_r = region.assign_advice(
+                        || "or",
+                        self.config.advice[0],
+                        offset,
+                        || one_minus_sel_val,
+                    )?;
                     region.constrain_equal(one_minus_sel.cell(), oms_r.cell())?;
-                    let b_r = region.assign_advice(|| "br", self.config.advice[1], offset, || b_val)?;
+                    let b_r =
+                        region.assign_advice(|| "br", self.config.advice[1], offset, || b_val)?;
                     region.constrain_equal(b.limbs[i].cell(), b_r.cell())?;
-                    let oms_b_cell = region.assign_advice(|| "ob", self.config.advice[2], offset, || oms_b_val)?;
+                    let oms_b_cell = region.assign_advice(
+                        || "ob",
+                        self.config.advice[2],
+                        offset,
+                        || oms_b_val,
+                    )?;
                     self.config.s_mul.enable(&mut region, offset)?;
                     offset += 1;
 
                     // Row: s_add for sel_a + oms_b = result
-                    let sa_r = region.assign_advice(|| "sar", self.config.advice[0], offset, || sel_a_val)?;
+                    let sa_r = region.assign_advice(
+                        || "sar",
+                        self.config.advice[0],
+                        offset,
+                        || sel_a_val,
+                    )?;
                     region.constrain_equal(sel_a_cell.cell(), sa_r.cell())?;
-                    let ob_r = region.assign_advice(|| "obr", self.config.advice[1], offset, || oms_b_val)?;
+                    let ob_r = region.assign_advice(
+                        || "obr",
+                        self.config.advice[1],
+                        offset,
+                        || oms_b_val,
+                    )?;
                     region.constrain_equal(oms_b_cell.cell(), ob_r.cell())?;
-                    let sum_cell = region.assign_advice(|| "sum", self.config.advice[2], offset, || sum_val)?;
+                    let sum_cell = region.assign_advice(
+                        || "sum",
+                        self.config.advice[2],
+                        offset,
+                        || sum_val,
+                    )?;
                     self.config.s_add.enable(&mut region, offset)?;
                     offset += 1;
 
@@ -1543,7 +1609,6 @@ impl<'a> Secp256k1Chip<'a> {
     /// After 8 steps, z_8 must equal the limb value. Each byte is range-checked
     /// via the lookup table. The running sum uses existing s_mul_fixed and
     /// s_add gates.
-
     fn check_single_limb(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -1691,7 +1756,12 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     limbs.push(cell);
                 }
-                [limbs[0].clone(), limbs[1].clone(), limbs[2].clone(), limbs[3].clone()]
+                [
+                    limbs[0].clone(),
+                    limbs[1].clone(),
+                    limbs[2].clone(),
+                    limbs[3].clone(),
+                ]
             },
         };
         let x3_plus_7 = self.field_add(layouter, &x3, &seven)?;

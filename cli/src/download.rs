@@ -17,7 +17,10 @@ pub fn fetch_manifest(rt: &tokio::runtime::Runtime) -> Result<Manifest, String> 
         "https://github.com/{}/releases/download/{}/manifest.json",
         GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
     );
-    eprintln!("      Source: GitHub Releases ({}/{})", GITHUB_REPO, ELIGIBILITY_RELEASE_TAG);
+    eprintln!(
+        "      Source: GitHub Releases ({}/{})",
+        GITHUB_REPO, ELIGIBILITY_RELEASE_TAG
+    );
 
     match rt.block_on(fetch_json::<Manifest>(&github_url)) {
         Ok(manifest) => {

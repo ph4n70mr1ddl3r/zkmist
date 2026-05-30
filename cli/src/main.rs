@@ -90,12 +90,8 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Fetch {
-            no_verify,
-        } => cmd_fetch(no_verify),
-        Commands::Prove { key_file } => {
-            cmd_prove(key_file.as_deref())
-        }
+        Commands::Fetch { no_verify } => cmd_fetch(no_verify),
+        Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
         Commands::Submit {
             proof_file,
             rpc_url,

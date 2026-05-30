@@ -125,8 +125,7 @@ pub fn keccak_f(state: &mut [u64; 25]) {
         let mut b = [0u64; 25];
         for x in 0..5 {
             for y in 0..5 {
-                b[y + 5 * ((2 * x + 3 * y) % 5)] =
-                    state[x + 5 * y].rotate_left(RHO_OFFSETS[x][y]);
+                b[y + 5 * ((2 * x + 3 * y) % 5)] = state[x + 5 * y].rotate_left(RHO_OFFSETS[x][y]);
             }
         }
         // χ step
@@ -293,7 +292,9 @@ impl<'a> KeccakChip<'a> {
         let a_val = a.value().copied();
         let b_val = b.value().copied();
         let ab_val = a_val.zip(b_val).map(|(a, b)| a * b);
-        let out_val = a_val.zip(b_val).map(|(a, b)| a + b - Fr::from(2u64) * (a * b));
+        let out_val = a_val
+            .zip(b_val)
+            .map(|(a, b)| a + b - Fr::from(2u64) * (a * b));
 
         // Copy a into advice[0]
         let a_c = region.assign_advice(|| "xor_a", self.config.advice[0], offset, || a_val)?;
@@ -340,8 +341,8 @@ impl<'a> KeccakChip<'a> {
         &self,
         region: &mut Region<Fr>,
         offset: &mut usize,
-        a: &[AssignedCell<Fr, Fr>],  // 64 bits
-        b: &[AssignedCell<Fr, Fr>],  // 64 bits
+        a: &[AssignedCell<Fr, Fr>], // 64 bits
+        b: &[AssignedCell<Fr, Fr>], // 64 bits
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
         let mut out = Vec::with_capacity(64);
         for i in 0..64 {
@@ -356,8 +357,8 @@ impl<'a> KeccakChip<'a> {
         &self,
         region: &mut Region<Fr>,
         offset: &mut usize,
-        a: &[AssignedCell<Fr, Fr>],  // 64 bits
-        b: &[AssignedCell<Fr, Fr>],  // 64 bits
+        a: &[AssignedCell<Fr, Fr>], // 64 bits
+        b: &[AssignedCell<Fr, Fr>], // 64 bits
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
         let mut out = Vec::with_capacity(64);
         for i in 0..64 {
@@ -371,7 +372,11 @@ impl<'a> KeccakChip<'a> {
     /// No gates needed — just rearranges bit indices.
     fn rotate_lane(lane: &[AssignedCell<Fr, Fr>], n: u32) -> Vec<AssignedCell<Fr, Fr>> {
         let n = n as usize % 64;
-        lane.iter().skip(n).chain(lane.iter().take(n)).cloned().collect()
+        lane.iter()
+            .skip(n)
+            .chain(lane.iter().take(n))
+            .cloned()
+            .collect()
     }
 
     // ── Keccak-f steps ─────────────────────────────────────────────
@@ -385,7 +390,7 @@ impl<'a> KeccakChip<'a> {
         &self,
         region: &mut Region<Fr>,
         offset: &mut usize,
-        state: &[Vec<AssignedCell<Fr, Fr>>],  // 25 lanes × 64 bits, indexed [x*5+y]
+        state: &[Vec<AssignedCell<Fr, Fr>>], // 25 lanes × 64 bits, indexed [x*5+y]
     ) -> Result<Vec<Vec<AssignedCell<Fr, Fr>>>, Error> {
         // Step 1: Compute C[x] = XOR of 5 lanes in column x
         let mut c_cols: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::with_capacity(5);
@@ -443,7 +448,7 @@ impl<'a> KeccakChip<'a> {
         &self,
         region: &mut Region<Fr>,
         offset: &mut usize,
-        state: &[Vec<AssignedCell<Fr, Fr>>],  // B state after ρ+π
+        state: &[Vec<AssignedCell<Fr, Fr>>], // B state after ρ+π
     ) -> Result<Vec<Vec<AssignedCell<Fr, Fr>>>, Error> {
         let mut new_state = Vec::with_capacity(25);
         for y in 0..5 {
@@ -478,8 +483,8 @@ impl<'a> KeccakChip<'a> {
                 // Bit is 1: XOR with a constant 1 cell
                 // We need an AssignedCell with value Fr::ONE
                 // Assign constant 1 to advice[4] (not advice[0]) to avoid
-            // conflicting with xor_pair which copies `a` into advice[0].
-            let one = region.assign_advice(
+                // conflicting with xor_pair which copies `a` into advice[0].
+                let one = region.assign_advice(
                     || "iota_one",
                     self.config.advice[4],
                     *offset,
@@ -624,9 +629,8 @@ impl<'a> KeccakChip<'a> {
                 // Keccak-256 output = first 32 bytes of the state
                 // Lane(0,0) = bytes 0..8, Lane(1,0) = bytes 8..16,
                 // Lane(2,0) = bytes 16..24, Lane(3,0) = bytes 24..32
-                let _hash_bits: Vec<AssignedCell<Fr, Fr>> = (0..4)
-                    .flat_map(|x| state[x * 5].clone())
-                    .collect();
+                let _hash_bits: Vec<AssignedCell<Fr, Fr>> =
+                    (0..4).flat_map(|x| state[x * 5].clone()).collect();
 
                 // Step 4: Extract address bits (bits 96..255 of the hash,
                 // which correspond to bytes 12..31)
@@ -705,8 +709,8 @@ mod tests {
     fn test_native_hash_pubkey_test_vector() {
         let pub_x: [u8; 32] = [
             0x46, 0x46, 0xae, 0x50, 0x47, 0x31, 0x6b, 0x42, 0x30, 0xd0, 0x08, 0x6c, 0x8a, 0xce,
-            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58,
-            0xac, 0x0a, 0x9a, 0x8f, 0xff,
+            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58, 0xac,
+            0x0a, 0x9a, 0x8f, 0xff,
         ];
         let pub_y: [u8; 32] = [
             0xfe, 0x77, 0xb4, 0xdd, 0x0a, 0x4b, 0xfb, 0x95, 0x85, 0x1f, 0x3b, 0x73, 0x55, 0xc7,
@@ -808,8 +812,8 @@ mod tests {
         // Test input: a 64-byte public key (pub_x || pub_y)
         let pub_x: [u8; 32] = [
             0x46, 0x46, 0xae, 0x50, 0x47, 0x31, 0x6b, 0x42, 0x30, 0xd0, 0x08, 0x6c, 0x8a, 0xce,
-            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58,
-            0xac, 0x0a, 0x9a, 0x8f, 0xff,
+            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58, 0xac,
+            0x0a, 0x9a, 0x8f, 0xff,
         ];
         let pub_y: [u8; 32] = [
             0xfe, 0x77, 0xb4, 0xdd, 0x0a, 0x4b, 0xfb, 0x95, 0x85, 0x1f, 0x3b, 0x73, 0x55, 0xc7,
@@ -861,11 +865,8 @@ mod tests {
                 mut layouter: impl Layouter<Fr>,
             ) -> Result<(), Error> {
                 let chip = super::KeccakChip::new(&config.keccak);
-                let (_hash_bits, address) = chip.hash_pubkey_to_address(
-                    &mut layouter,
-                    &self.pub_x,
-                    &self.pub_y,
-                )?;
+                let (_hash_bits, address) =
+                    chip.hash_pubkey_to_address(&mut layouter, &self.pub_x, &self.pub_y)?;
 
                 // Verify the address matches native computation
                 let expected = extract_address(&native_hash_pubkey(&self.pub_x, &self.pub_y));

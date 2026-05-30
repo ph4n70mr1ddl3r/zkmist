@@ -14,12 +14,9 @@
 
 use std::path::PathBuf;
 
-use halo2_proofs::{
-    poly::commitment::Params,
-    plonk::keygen_vk,
-};
-use halo2curves::bn256::G1Affine;
 use ff::Field;
+use halo2_proofs::{plonk::keygen_vk, poly::commitment::Params};
+use halo2curves::bn256::G1Affine;
 use zkmist_circuits::ZKMistV2Claim;
 
 fn main() {
@@ -58,7 +55,9 @@ fn main() {
                 eprintln!("With --features v2 (snark-verifier):");
                 eprintln!("  Generates a production verifier with full KZG pairing verification.");
                 eprintln!("Without snark-verifier:");
-                eprintln!("  Generates a VK-embedded verifier with VK hash for integrity checking.");
+                eprintln!(
+                    "  Generates a VK-embedded verifier with VK hash for integrity checking."
+                );
                 return;
             }
             _ => {
@@ -88,24 +87,22 @@ fn main() {
 
     // The VK is uniquely identified by its internal transcript_repr field,
     // which is a Blake2b hash of the pinned VK (fixed commitments, constraint
-    // system, domain, permutation). We derive a human-readable hash from k.
-    let vk_hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        k.hash(&mut hasher);
-        // Hash the pinned VK debug string (covers all VK state)
-        format!("{:?}", vk.pinned()).hash(&mut hasher);
-        format!("{:032x}", hasher.finish())
-    };
+    // system, domain, permutation). We use SHA-256 over the pinned VK debug
+    // representation for a deterministic, cryptographic integrity hash.
+    let (vk_hash, num_fixed) = {
+        let pinned_debug = format!("{:?}", vk.pinned());
+        // SHA-256 of the pinned VK string (cryptographic, deterministic)
+        use sha2::{Digest as Sha2Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(pinned_debug.as_bytes());
+        let hash_bytes = hasher.finalize();
+        let vk_hash_hex = hex::encode(hash_bytes);
 
-    // The number of fixed commitments is determined by the circuit's
-    // constraint system configuration (Poseidon, secp256k1, Keccak, etc.)
-    let num_fixed = {
-        // Count from the pinned CS — the circuit uses fixed columns
-        // for constants (round constants, MDS matrix, etc.)
-        // A rough estimate based on the circuit structure
-        8 // advice columns configured; actual fixed columns vary
+        // Estimate fixed commitments from the pinned representation.
+        // The actual number is internal to halo2_proofs, but we can count
+        // fixed_commitment entries from the debug output.
+        let num_fixed = pinned_debug.matches("fixed_commitments").count().max(1);
+        (vk_hash_hex, num_fixed)
     };
     eprintln!("  VK hash: 0x{}", vk_hash);
     eprintln!("  Fixed commitments: {}", num_fixed);
@@ -118,7 +115,10 @@ fn main() {
             Ok(solidity) => {
                 std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
                 std::fs::write(&output_path, &solidity).unwrap();
-                eprintln!("  ✓ Production verifier written to: {}", output_path.display());
+                eprintln!(
+                    "  ✓ Production verifier written to: {}",
+                    output_path.display()
+                );
                 print_next_steps(true);
                 return;
             }
@@ -240,12 +240,11 @@ fn generate_solidity_from_vk(
     // once the exact API compatibility with halo2_proofs 0.3.0 is confirmed.
 
     let vk_hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        k.hash(&mut hasher);
-        format!("{:?}", vk.pinned()).hash(&mut hasher);
-        format!("{:032x}", hasher.finish())
+        let pinned_debug = format!("{:?}", vk.pinned());
+        use sha2::{Digest as Sha2Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(pinned_debug.as_bytes());
+        hex::encode(h.finalize())
     };
 
     eprintln!("  ⚠️  snark-verifier Solidity codegen not yet fully implemented.");
@@ -277,7 +276,8 @@ fn generate_solidity_from_vk(
 /// Must NOT be used for:
 /// - Mainnet deployment (use --features v2 for snark-verifier output)
 fn generate_vk_embedded_verifier(vk_hash: &str, num_fixed: usize, k: u32) -> String {
-    format!(r#"// SPDX-License-Identifier: MIT
+    format!(
+        r#"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
 /// @title IHalo2Verifier — Interface for Halo2-KZG proof verification
@@ -324,7 +324,7 @@ contract Halo2Verifier is IHalo2Verifier {{
     // ── Verification key hash (integrity check) ─────────────────────
     /// @dev Deterministic hash of the circuit's fixed column commitments.
     ///      Changes if the circuit layout changes.
-    bytes32 public constant VK_HASH = bytes32(uint256(0x{vk_hash_short}));
+    bytes32 public constant VK_HASH = 0x{vk_hash};
 
     // ── Circuit parameters ───────────────────────────────────────────
     uint256 public constant NUM_INSTANCES = 3;
@@ -415,7 +415,6 @@ contract Halo2Verifier is IHalo2Verifier {{
 }}
 "#,
         vk_hash = vk_hash,
-        vk_hash_short = &vk_hash[..16],
         k = k,
         rows = 1u64 << k,
         num_fixed = num_fixed,

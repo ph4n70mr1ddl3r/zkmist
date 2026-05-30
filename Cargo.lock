@@ -5640,6 +5640,7 @@ dependencies = [
  "halo2curves",
  "hex",
  "light-poseidon",
+ "sha2",
  "snark-verifier",
  "zkmist-circuits",
  "zkmist-merkle-tree",

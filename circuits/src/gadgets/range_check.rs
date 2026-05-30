@@ -62,7 +62,10 @@ impl RangeCheckConfig {
 
     /// Load the 8-bit range table (values 0..=255).
     /// Must be called exactly once during synthesis, before any lookups.
-    pub fn load_range_table(&self, layouter: &mut impl halo2_proofs::circuit::Layouter<Fr>) -> Result<(), Error> {
+    pub fn load_range_table(
+        &self,
+        layouter: &mut impl halo2_proofs::circuit::Layouter<Fr>,
+    ) -> Result<(), Error> {
         layouter.assign_table(
             || "range8",
             |mut table| {
@@ -86,12 +89,7 @@ impl RangeCheckConfig {
         offset: usize,
         value: Value<Fr>,
     ) -> Result<AssignedCell<Fr, Fr>, Error> {
-        let cell = region.assign_advice(
-            || "range_check_byte",
-            self.advice,
-            offset,
-            || value,
-        )?;
+        let cell = region.assign_advice(|| "range_check_byte", self.advice, offset, || value)?;
         self.s_decompose.enable(region, offset)?;
         Ok(cell)
     }
@@ -115,8 +113,7 @@ pub fn native_recompose_from_bytes(bytes: &[u8]) -> Fr {
     use ff::PrimeField;
     let mut le_bytes = [0u8; 32];
     le_bytes[..bytes.len()].copy_from_slice(bytes);
-    Fr::from_repr(le_bytes)
-        .expect("valid field element")
+    Fr::from_repr(le_bytes).expect("valid field element")
 }
 
 /// Constrain a cell to be boolean (0 or 1) using a gate.
@@ -147,9 +144,7 @@ impl BoolConfig {
         meta.create_gate("bool", |meta| {
             let s = meta.query_selector(s_bool);
             let x = meta.query_advice(advice, Rotation::cur());
-            let one = halo2_proofs::plonk::Expression::Constant(
-                <Fr as ff::Field>::ONE,
-            );
+            let one = halo2_proofs::plonk::Expression::Constant(<Fr as ff::Field>::ONE);
             vec![s * (x.clone() * (one - x))]
         });
         Self { advice, s_bool }

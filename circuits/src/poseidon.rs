@@ -53,8 +53,7 @@ pub fn ark_to_halo2(ark: &ark_bn254::Fr) -> Fr {
     padded[32 - be_bytes.len()..].copy_from_slice(&be_bytes);
     // Reverse big-endian → little-endian
     padded.reverse();
-    <Fr as Halo2PrimeField>::from_repr(padded)
-        .expect("valid BN254 field element")
+    <Fr as Halo2PrimeField>::from_repr(padded).expect("valid BN254 field element")
 }
 
 /// Convert a `halo2curves::bn256::Fr` (little-endian) to `ark_bn254::Fr` (big-endian).
@@ -97,9 +96,8 @@ impl PoseidonParams {
     pub fn new_circom(nr_inputs: usize) -> Self {
         use light_poseidon::parameters::bn254_x5;
 
-        let ark_params =
-            bn254_x5::get_poseidon_parameters::<ark_bn254::Fr>(nr_inputs as u8 + 1)
-                .expect("light-poseidon parameter generation failed");
+        let ark_params = bn254_x5::get_poseidon_parameters::<ark_bn254::Fr>(nr_inputs as u8 + 1)
+            .expect("light-poseidon parameter generation failed");
 
         let ark: Vec<Fr> = ark_params.ark.iter().map(ark_to_halo2).collect();
         let mds: Vec<Vec<Fr>> = ark_params
@@ -475,12 +473,7 @@ impl<'a> PoseidonChip<'a> {
         let x_val = input.value().copied();
 
         // Copy input
-        let x = region.assign_advice(
-            || "sbox_x",
-            self.config.advice[0],
-            offset,
-            || x_val,
-        )?;
+        let x = region.assign_advice(|| "sbox_x", self.config.advice[0], offset, || x_val)?;
         region.constrain_equal(input.cell(), x.cell())?;
 
         // x² = x * x
@@ -555,7 +548,8 @@ impl<'a> PoseidonChip<'a> {
             region.constrain_equal(acc.cell(), ac.cell())?;
             let cc = region.assign_advice(|| "scc", self.config.advice[1], *offset, || cell_val)?;
             region.constrain_equal(cell.cell(), cc.cell())?;
-            let new_acc = region.assign_advice(|| "sns", self.config.advice[2], *offset, || new_sum)?;
+            let new_acc =
+                region.assign_advice(|| "sns", self.config.advice[2], *offset, || new_sum)?;
             self.config.s_add.enable(region, *offset)?;
             *offset += 1;
             acc = new_acc;
@@ -605,8 +599,7 @@ mod tests {
         let our_output = native_poseidon(&params, &[input_halo2]);
         let our_ark = halo2_to_ark(&our_output);
 
-        let mut hasher =
-            light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(1).unwrap();
+        let mut hasher = light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(1).unwrap();
         let lp_output = hasher.hash(&[input_ark]).unwrap();
 
         assert_eq!(
@@ -632,8 +625,7 @@ mod tests {
         let our_output = native_poseidon(&params, &[input1_halo2, input2_halo2]);
         let our_ark = halo2_to_ark(&our_output);
 
-        let mut hasher =
-            light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(2).unwrap();
+        let mut hasher = light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(2).unwrap();
         let lp_output = hasher.hash(&[input1_ark, input2_ark]).unwrap();
 
         assert_eq!(

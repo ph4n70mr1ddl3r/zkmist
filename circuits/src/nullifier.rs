@@ -96,9 +96,8 @@ mod tests {
         let v1_bytes = b"ZKMist_V1_NULLIFIER";
         let mut v1_padded = [0u8; 32];
         v1_padded[..v1_bytes.len()].copy_from_slice(v1_bytes);
-        let v1_domain = crate::poseidon::ark_to_halo2(
-            &ark_bn254::Fr::from_be_bytes_mod_order(&v1_padded),
-        );
+        let v1_domain =
+            crate::poseidon::ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&v1_padded));
         let v1 = native_poseidon(&params, &[key, v1_domain]);
 
         assert_ne!(v2, v1, "V2 nullifier must differ from V1");
