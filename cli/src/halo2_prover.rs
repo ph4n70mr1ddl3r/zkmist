@@ -15,9 +15,10 @@ use zkmist_merkle_tree::compute_nullifier;
 use crate::constants::*;
 use crate::types::ProofFile;
 
-/// Default k parameter for the circuit (2^22 = 4M rows).
+/// Default k parameter for the circuit (2^23 = 8M rows).
 /// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle.
-const CIRCUIT_K: u32 = 22;
+/// k=22 (4M rows) is insufficient — the circuit exceeds 4M rows.
+const CIRCUIT_K: u32 = 23;
 
 // ── Params caching ───────────────────────────────────────────────────
 //

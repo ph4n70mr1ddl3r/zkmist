@@ -562,13 +562,14 @@ mod tests {
             recipient,
         };
 
-        // The full circuit (secp256k1 + Keccak + Poseidon + Merkle) requires k=22+.
-        // k=21 (2M rows) is insufficient — the Synthesis error confirms the circuit
-        // exceeds 2M rows. k=22 (4M rows) provides headroom.
+        // The full circuit (secp256k1 + Keccak + Poseidon + Merkle) requires k=23.
+        // k=21 (2M rows) is insufficient. k=22 (4M rows) is also insufficient —
+        // the Synthesis error confirms the circuit exceeds 4M rows.
+        // k=23 (8M rows) provides headroom.
         //
-        // Expected runtime: 15-30 minutes (MockProver is a debug tool, not optimized
-        // for speed). The Keccak gadget alone takes ~16 min at k=22.
-        let k = 22;
+        // Expected runtime: 30-90 minutes (MockProver is a debug tool, not optimized
+        // for speed). The secp256k1 + Keccak gadgets dominate.
+        let k = 23;
         eprintln!(
             "   Running full circuit E2E MockProver test with k={}...",
             k
@@ -595,7 +596,7 @@ mod tests {
                 panic!(
                     "MockProver::run failed at k={}: {:?}. \
                      The full circuit (secp256k1 + Keccak + Poseidon + Merkle) \
-                     may need k=23 or higher.",
+                     may need k=24 or higher.",
                     k, e
                 );
             }
@@ -874,7 +875,26 @@ mod tests {
                 }
                 Err(e) => {
                     eprintln!("   ❌ secp256k1 MockProver verify FAILED:");
-                    for err in &e {
+                    let constraint_fails = e
+                        .iter()
+                        .filter(|e| {
+                            matches!(
+                                e,
+                                halo2_proofs::dev::VerifyFailure::ConstraintNotSatisfied { .. }
+                            )
+                        })
+                        .count();
+                    let perm_fails = e
+                        .iter()
+                        .filter(|e| {
+                            matches!(e, halo2_proofs::dev::VerifyFailure::Permutation { .. })
+                        })
+                        .count();
+                    eprintln!(
+                        "      {} constraint failures, {} permutation failures",
+                        constraint_fails, perm_fails
+                    );
+                    for err in e.iter().take(20) {
                         eprintln!("      {:?}", err);
                     }
                     panic!("secp256k1 MockProver verification failed");

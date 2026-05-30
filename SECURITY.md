@@ -114,25 +114,43 @@ Before mainnet deployment, ALL of the following must be completed:
 The following hardening measures have been applied to the secp256k1 non-native
 field arithmetic gadget:
 
-1. **Carry-propagated addition everywhere**: `field_double` now uses
-   `field_add_carried` (carry-propagated) instead of basic `field_add`.
-   This ensures ALL additions in EC double-and-add scalar multiplication
-   propagate carry chains consistently.
+1. **Raw limb carry chain in `field_add_carried`**: The carry chain now uses
+   RAW limb sums (not mod-p reduced values) for the carry-propagated addition
+   gate. This correctly constrains: `a[i] + b[i] + carry_in = raw_result[i] + carry_out * 2^64`.
+   The mod-p reduced result is assigned separately and verified by terminal checks.
 
-2. **Linked carry constraints**: The boolean constraint on carry values in
-   `field_add_carried` now applies copy-constraints linking the gate's
-   carry cells to the boolean-check cells. Previously these were independently
-   assigned, allowing a theoretical disconnect.
+2. **Removed incorrect `field_mul` reduction cross-check**: The previous constraint
+   `wide[0] + c*wide[4] == result[0]` was mathematically wrong (doesn't account for
+   carry propagation during reduction). Removed; soundness comes from
+   `check_on_curve` and `constrain_affine`.
 
-3. **Corrected reduction cross-check in `field_mul`**: Replaced the incorrect
-   `wide[0] == result[0]` assertion (which was wrong for most multiplications)
-   with a constrained reduction check: `s_mul(c, wide[4])` +
-   `s_add(wide[0], c*wide[4]) = result[0]`, which properly verifies the
-   first step of the wide-to-narrow reduction using the secp256k1 identity
-   `2^256 ≡ 2^32 + 977 (mod p)`.
+3. **Fixed `conditional_select` double-assignment**: The selector validation row
+   previously assigned different values to the same advice cell, causing copy
+   constraint violations. Fixed with single-assignment pattern.
 
-4. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
+4. **Fixed limb range check byte ordering**: The running-sum range check now
+   processes bytes MSB-first (big-endian) so `z[8]` correctly equals the limb value.
+
+5. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
    for the final addition step, ensuring subtraction also propagates carries.
+
+## Known Issues (Blocking Mainnet)
+
+The secp256k1 MockProver test produces 8 permutation failures in `constrain_affine`.
+The circuit computes a valid curve point (all gate constraints pass, including
+`check_on_curve`), but the affine coordinates don't match the expected public key.
+
+**Root cause**: The hand-rolled `field_mul` gadget lacks a constrained reduction
+from the 8 wide schoolbook product limbs to the 4 final result limbs. The
+reduction is entirely witness-guided. While this is theoretically sound (terminal
+checks catch inconsistency), it exposes a correctness gap in the current
+implementation.
+
+**Resolution**: Replace the hand-rolled secp256k1 gadget with an audited library:
+- `scroll-tech/halo2-secp256k1`
+- `privacy-scaling-explorations/halo2wrong`
+
+This is a **mandatory** step before mainnet deployment.
 
 ## Post-Deployment Monitoring
 

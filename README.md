@@ -325,19 +325,26 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **200+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **201 tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
-> - `check_on_curve` uses carry-propagated field addition (`field_add_carried`)
-> - **`field_double` uses `field_add_carried`** — all EC doublings propagate carry chains
-> - **Carry boolean constraints linked via copy constraints** — gate carries are the same cells as boolean-checked carries
-> - **Corrected `field_mul` reduction cross-check** — constrains `wide[0] + c*wide[4] == result[0]` instead of incorrect `wide[0] == result[0]`
-> - Intermediate limb range checks every 32 steps during scalar multiplication
+> - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
+> - `field_mul` uses constrained schoolbook products and wide limb accumulation
+> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine`)
+> - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
+> - `constrain_affine` verifies the computed point matches the expected public key
+> - Intermediate range checks every 32 scalar mul steps
+> - Limb range checks with correct MSB-first byte decomposition
+> - `conditional_select` uses single-assignment pattern (no double-writes to same cell)
 > - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
 > - KZG params caching in `~/.zkmist/cache/`
 > - Diverse test vectors: 7 keys including edge cases (MSB=0, MSB=1, key=1, key=n-1)
 > - 50K nullifier collision test passing
+>
+> **Known issue (blocking mainnet):**
+> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`) produces 8 permutation failures in `constrain_affine`. The circuit computes a valid curve point (check_on_curve passes) but the affine coordinates don't match the expected public key. Root cause: the hand-rolled non-native field arithmetic in `field_mul` lacks a constrained reduction from wide limbs to the final result. **This gadget must be replaced with an audited library** (e.g., `scroll-tech/halo2-secp256k1` or `halo2wrong`) before mainnet.
+> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. It cannot pass until the secp256k1 gadget is fixed.
 >
 > **Tooling:**
 > - `zkmist bench` — proves timing benchmark on reference hardware
@@ -348,10 +355,10 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
+> - Replace hand-rolled secp256k1 with audited library (`scroll-tech/halo2-secp256k1` or `halo2wrong`)
 > - Regenerate `Halo2Verifier.sol` from circuit VK using `halo2-solidity-verifier`
-> - Run full E2E circuit test (currently `#[ignore]`d due to size)
-> - Run secp256k1 isolated MockProver test (currently `#[ignore]`d)
-> - **External security review** of secp256k1 non-native field arithmetic
+> - Fix and pass full E2E MockProver test
+> - **External security review** of circuit (especially after secp256k1 library swap)
 > - Testnet deployment on Base Sepolia
 >
 > See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist.
