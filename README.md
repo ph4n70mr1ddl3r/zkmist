@@ -146,7 +146,7 @@ zkmist/
 ├── tools/             # Dev utilities
 │   └── src/
 │       ├── compute_root.rs    # Compute Merkle root from CSV
-│       ├── gen_verifier.rs     # Generate Halo2Verifier.sol
+│       ├── gen_verifier.rs     # Generate Halo2Verifier.sol + VK blob
 │       ├── monitor.rs          # On-chain monitoring tool
 │       └── readiness.rs        # Pre-deployment readiness checker
 ├── contracts/         # Solidity (Foundry)
@@ -157,6 +157,9 @@ zkmist/
 │   ├── test/          # Unit + e2e + fuzz + integration tests
 │   └── script/
 │       └── Deploy.s.sol
+├── scripts/           # Deployment and testing scripts
+│   ├── testnet-deploy.sh     # Base Sepolia deployment
+│   └── e2e-test.sh           # Full local E2E test suite
 └── V2_PLAN.md         # Architecture document
 ```
 
@@ -290,13 +293,18 @@ cd contracts
 # 1. Set deployer key (needs ETH on Base for gas)
 export PRIVATE_KEY=0x...
 
-# 2. Deploy
+# 2. Deploy to testnet first (Base Sepolia)
+./scripts/testnet-deploy.sh
+
+# 3. After testnet validation, deploy to mainnet (Base)
 forge script script/Deploy.s.sol --rpc-url https://mainnet.base.org --broadcast
 
-# 3. Verify contracts
+# 4. Verify contracts
 forge verify-contract <address> Halo2Verifier --chain base
 forge verify-contract <address> ZKMToken --chain base
 forge verify-contract <address> ZKMAirdrop --chain base
+
+# 5. Update AIRDROP_CONTRACT in cli/src/constants.rs
 ```
 
 ---
@@ -317,7 +325,7 @@ forge verify-contract <address> ZKMAirdrop --chain base
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **182+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
+> **200+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity). Zero clippy warnings. Gas snapshot regenerated.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
@@ -331,14 +339,16 @@ forge verify-contract <address> ZKMAirdrop --chain base
 > - Diverse test vectors: 7 keys including edge cases (MSB=0, MSB=1, key=1, key=n-1)
 > - 50K nullifier collision test passing
 >
-> **Tooling (new):**
+> **Tooling:**
 > - `zkmist bench` — proves timing benchmark on reference hardware
 > - `monitor` — on-chain monitoring with anomaly detection
 > - `readiness` — pre-deployment readiness checker (8 checks)
-> - Integration tests for contract deployment flow
+> - `gen-verifier` — generates VK-embedded verifier + serialized VK blob
+> - `scripts/testnet-deploy.sh` — one-command testnet deployment
+> - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Regenerate `Halo2Verifier.sol` from circuit VK using `snark-verifier`
+> - Regenerate `Halo2Verifier.sol` from circuit VK using `halo2-solidity-verifier`
 > - Run full E2E circuit test (currently `#[ignore]`d due to size)
 > - Run secp256k1 isolated MockProver test (currently `#[ignore]`d)
 > - **External security review** of secp256k1 non-native field arithmetic

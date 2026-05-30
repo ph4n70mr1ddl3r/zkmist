@@ -106,6 +106,7 @@ jobs:
         run: forge snapshot
         continue-on-error: true  # Non-blocking: creates/updates snapshot
 
+  # ── Forge fmt ───────────────────────────────────────────────────────────
   forge-fmt:
     name: Forge – Format
     runs-on: ubuntu-latest
@@ -120,3 +121,22 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
       - name: Check formatting
         run: forge fmt --check
+
+  # ── E2E test suite (manual trigger) ─────────────────────────────────────
+  e2e-test:
+    name: E2E Test Suite
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          submodules: recursive
+      - name: Run E2E tests
+        run: chmod +x scripts/e2e-test.sh && ./scripts/e2e-test.sh
+        env:
+          # Skip the bench step in CI (too slow)
+          SKIP_BENCH: 1

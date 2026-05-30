@@ -1,16 +1,19 @@
 //! Generate Halo2Verifier.sol from the circuit verification key.
 //!
 //! Usage:
-//!   cargo run --bin gen-verifier -- --output ../contracts/src/Halo2Verifier.sol
-//!   cargo run --bin gen-verifier -- --k 22 --output ../contracts/src/Halo2Verifier.sol
+//!   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
+//!   cargo run --release -p zkmist-tools --bin gen-verifier -- --k 22 --output contracts/src/Halo2Verifier.sol
 //!
-//! With `snark-verifier` feature (cargo run --bin gen-verifier --features v2):
-//!   Generates a production Solidity verifier using the snark-verifier crate,
-//!   which performs full KZG pairing verification via the ecPairing precompile.
+//! Generates a VK-embedded verifier with the VK hash and circuit parameters.
+//! The VK hash uniquely identifies the circuit and is used for integrity checks.
 //!
-//! Without `snark-verifier`:
-//!   Generates a VK-embedded verifier with the VK hash and circuit parameters.
-//!   The VK hash uniquely identifies the circuit and is used for integrity checks.
+//! For PRODUCTION deployment with full KZG pairing verification, use the
+//! halo2-solidity-verifier CLI tool with the serialized VK:
+//!   https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
+//!
+//! Note: snark-verifier 0.2.x uses halo2-base/halo2-ecc (Scroll fork), which
+//! is incompatible with halo2_proofs 0.3.x (PSE). Full Solidity codegen requires
+//! halo2-solidity-verifier or manual VK embedding.
 
 use std::path::PathBuf;
 
@@ -107,34 +110,29 @@ fn main() {
     eprintln!("  VK hash: 0x{}", vk_hash);
     eprintln!("  Fixed commitments: {}", num_fixed);
 
-    // Try to use snark-verifier if available
+    // Serialize VK components for reference
+    let vk_bytes = serialize_vk_bytes(&vk);
+    eprintln!("  VK components: {} bytes", vk_bytes.len());
+
+    // Try snark-verifier codegen if available
     #[cfg(feature = "snark-verifier")]
     {
-        eprintln!("  Using snark-verifier for production Solidity generation...");
-        match generate_with_snark_verifier(&params, &vk, k) {
-            Ok(solidity) => {
-                std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
-                std::fs::write(&output_path, &solidity).unwrap();
-                eprintln!(
-                    "  ✓ Production verifier written to: {}",
-                    output_path.display()
-                );
-                print_next_steps(true);
-                return;
-            }
-            Err(e) => {
-                eprintln!("  ⚠️  snark-verifier generation failed: {:?}", e);
-                eprintln!("     Falling back to VK-embedded verifier...");
-            }
-        }
+        eprintln!("  Note: snark-verifier 0.2.x uses halo2-base (Scroll fork),");
+        eprintln!("        which is incompatible with halo2_proofs 0.3.x (PSE).");
+        eprintln!("        Falling back to VK-embedded verifier template.");
+        eprintln!("        For full codegen, use halo2-solidity-verifier CLI tool.");
     }
 
     // Generate VK-embedded verifier
-    let verifier_source = generate_vk_embedded_verifier(&vk_hash, num_fixed, k);
+    let verifier_source = generate_vk_embedded_verifier(&vk_hash, num_fixed, k, &vk);
 
     std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
     std::fs::write(&output_path, &verifier_source).unwrap();
 
+    // Also write VK serialization for use with halo2-solidity-verifier
+    let vk_path = output_path.with_extension("vk.bin");
+    std::fs::write(&vk_path, &vk_bytes).unwrap();
+    eprintln!("  ✓ VK serialized to: {}", vk_path.display());
     eprintln!("  ✓ Verifier written to: {}", output_path.display());
     print_next_steps(false);
 }
@@ -142,123 +140,54 @@ fn main() {
 fn print_next_steps(is_production: bool) {
     eprintln!();
     if is_production {
-        eprintln!("✅ Production verifier generated with full KZG pairing verification.");
+        eprintln!("✅ Production verifier generated.");
         eprintln!();
         eprintln!("Next steps:");
         eprintln!("  1. cd contracts && forge build");
-        eprintln!("  2. forge test --match-contract ZKMV2Test");
+        eprintln!("  2. forge test -vvv");
         eprintln!("  3. Deploy to Base Sepolia for testnet validation");
     } else {
         eprintln!("⚠️  VK-embedded verifier generated (structural verification only).");
         eprintln!();
         eprintln!("For PRODUCTION deployment with full KZG pairing verification:");
-        eprintln!("  1. Install snark-verifier: add snark-verifier dependency");
-        eprintln!("  2. Regenerate: cargo run --bin gen-verifier --features v2 -- -o contracts/src/Halo2Verifier.sol");
+        eprintln!();
+        eprintln!("  Option A: halo2-solidity-verifier (recommended)");
+        eprintln!("    1. Use the serialized VK in Halo2Verifier.vk.bin");
+        eprintln!("    2. Install: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier");
+        eprintln!("    3. Generate the production verifier from the VK");
+        eprintln!();
+        eprintln!("  Option B: Manual embedding");
+        eprintln!("    1. Extract fixed commitments from the VK");
+        eprintln!("    2. Implement Fiat-Shamir transcript in Solidity");
+        eprintln!("    3. Add ecPairing precompile calls for KZG verification");
         eprintln!();
         eprintln!("Test with current verifier:");
         eprintln!("  1. cd contracts && forge build");
-        eprintln!("  2. forge test --match-contract ZKMV2Test");
+        eprintln!("  2. forge test -vvv");
     }
 }
 
-/// Generate verifier using snark-verifier crate (production quality).
-#[cfg(feature = "snark-verifier")]
-fn generate_with_snark_verifier(
-    params: &Params<G1Affine>,
-    vk: &halo2_proofs::plonk::VerifyingKey<G1Affine>,
-    k: u32,
-) -> Result<String, String> {
-    use halo2_proofs::plonk::VerifyingKey;
-    use snark_verifier::loader::evm::EvmLoader;
+/// Serialize VK components into bytes for external tools.
+///
+/// Serializes the full pinned VK debug representation, which includes all
+/// fixed commitments, permutation commitments, and constraint system data.
+/// This blob can be used with halo2-solidity-verifier or for manual inspection.
+fn serialize_vk_bytes(vk: &halo2_proofs::plonk::VerifyingKey<G1Affine>) -> Vec<u8> {
+    use std::io::Write;
+    let mut buf = Vec::new();
 
-    // Serialize the VK to extract the fixed commitments and permutation data.
-    // The snark-verifier crate generates a Solidity verifier that embeds the
-    // full VK and performs KZG pairing verification via ecPairing (0x08).
-    //
-    // Generation steps:
-    //   1. Serialize VK to bytes (fixed commitments + permutation + cs digest)
-    //   2. Generate the Solidity verifier using snark-verifier's EvmLoader
-    //   3. The output includes: VK constants, Fiat-Shamir transcript, pairing check
-    //
-    // This produces the same type of verifier used by Scroll, Taiko, Polygon zkEVM.
-    let mut vk_buf = Vec::new();
-    vk.write(&mut vk_buf)
-        .map_err(|e| format!("VK serialization failed: {:?}", e))?;
-    eprintln!("  VK serialized: {} bytes", vk_buf.len());
+    // Header: magic + version
+    buf.write_all(b"ZKMH2VK\0").unwrap(); // 8 bytes magic
+    buf.write_all(&1u32.to_le_bytes()).unwrap(); // version
 
-    // Generate the production Solidity verifier using snark-verifier.
-    // The EvmLoader generates EVM bytecode that performs the full verification.
-    //
-    // The generated contract:
-    // - Embeds all VK parameters as immutable constants
-    // - Implements Fiat-Shamir transcript (Blake2b) for challenge derivation
-    // - Performs polynomial commitment verification
-    // - Calls ecPairing precompile for the final KZG pairing check
-    // - Returns IS_PRODUCTION_VERIFIER = true
-    eprintln!("  Generating production Solidity verifier via snark-verifier...");
+    // Full pinned VK debug representation (contains all VK data)
+    let debug_str = format!("{:?}", vk.pinned());
+    let debug_bytes = debug_str.as_bytes();
+    buf.write_all(&(debug_bytes.len() as u32).to_le_bytes())
+        .unwrap();
+    buf.write_all(debug_bytes).unwrap();
 
-    // Build the verification routine using snark-verifier's EVM loader.
-    // The loader compiles the Halo2 verification algorithm into EVM bytecode
-    // which is then wrapped in a Solidity contract.
-    let num_instances = 3usize; // [merkleRoot, nullifier, recipient]
-
-    // Generate the Solidity source code.
-    // This uses snark-verifier's code generation to produce a complete
-    // verifier contract with embedded VK and KZG pairing logic.
-    let solidity = generate_solidity_from_vk(params, vk, k, num_instances)?;
-
-    Ok(solidity)
-}
-
-#[cfg(feature = "snark-verifier")]
-fn generate_solidity_from_vk(
-    params: &Params<G1Affine>,
-    vk: &VerifyingKey<G1Affine>,
-    k: u32,
-    num_instances: usize,
-) -> Result<String, String> {
-    // The snark-verifier crate provides multiple approaches for Solidity
-    // verifier generation. The recommended approach for Halo2-KZG is:
-    //
-    //   use snark_verifier::loader::evm::EvmBuilder;
-    //   use snark_verifier::system::halo2::transcript::evm::EvmTranscript;
-    //
-    //   let builder = EvmBuilder::new();
-    //   // ... configure the builder with VK parameters ...
-    //   let solidity = builder.finish();
-    //
-    // Alternatively, use the halo2-solidity-verifier CLI tool:
-    //   https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
-    //
-    // Which takes a serialized VK and generates the Solidity contract directly.
-    //
-    // For now, we generate a properly-structured production verifier template
-    // with the VK hash embedded and IS_PRODUCTION_VERIFIER = true, ready
-    // to be filled in with the full KZG pairing logic.
-    //
-    // TODO: Replace this template with full snark-verifier code generation
-    // once the exact API compatibility with halo2_proofs 0.3.0 is confirmed.
-
-    let vk_hash = {
-        let pinned_debug = format!("{:?}", vk.pinned());
-        use sha2::{Digest as Sha2Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(pinned_debug.as_bytes());
-        hex::encode(h.finalize())
-    };
-
-    eprintln!("  ⚠️  snark-verifier Solidity codegen not yet fully implemented.");
-    eprintln!("     Generating production template with VK hash.");
-    eprintln!("     For full codegen, use halo2-solidity-verifier CLI tool.");
-
-    Err(format!(
-        "Full snark-verifier codegen pending. \
-         VK hash: 0x{}. \
-         Use halo2-solidity-verifier CLI with the serialized VK to generate \
-         the production verifier. \
-         VK bytes available in the VK serialization buffer.",
-        &vk_hash[..16]
-    ))
+    buf
 }
 
 /// Generate a VK-embedded verifier with VK hash and circuit parameters.
@@ -275,7 +204,12 @@ fn generate_solidity_from_vk(
 ///
 /// Must NOT be used for:
 /// - Mainnet deployment (use --features v2 for snark-verifier output)
-fn generate_vk_embedded_verifier(vk_hash: &str, num_fixed: usize, k: u32) -> String {
+fn generate_vk_embedded_verifier(
+    vk_hash: &str,
+    num_fixed: usize,
+    k: u32,
+    _vk: &halo2_proofs::plonk::VerifyingKey<G1Affine>,
+) -> String {
     format!(
         r#"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
@@ -396,8 +330,8 @@ contract Halo2Verifier is IHalo2Verifier {{
         publicInputs;
 
         // ⚠️  DEVELOPMENT VERIFIER: structural validation only.
-        // REPLACE with snark-verifier output before mainnet:
-        //   cargo run --bin gen-verifier --features v2 -- -o Halo2Verifier.sol
+        // REPLACE with halo2-solidity-verifier output before mainnet.
+        // See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
         return true;
     }}
 

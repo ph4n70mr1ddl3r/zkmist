@@ -342,15 +342,31 @@ fn main() {
         eprintln!();
         eprintln!("  ✅ All automated checks passed!");
         eprintln!();
-        eprintln!("  Remaining manual steps before mainnet deployment:");
-        eprintln!("    [ ] External security audit of secp256k1 non-native field arithmetic");
-        eprintln!(
-            "    [ ] Run full E2E MockProver test (cargo test -p zkmist-circuits -- --ignored)"
-        );
-        eprintln!("    [ ] Testnet deployment on Base Sepolia with full claim flow");
-        eprintln!("    [ ] Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment");
-        eprintln!("    [ ] Verify proof size in [400, 1200] byte range with real proof");
-        eprintln!("    [ ] Benchmark proving time on reference hardware (<60 sec target)");
+        eprintln!("  Remaining steps before mainnet deployment:");
+        eprintln!("    ┌──────────────────────────────────────────────────────────────");
+        eprintln!("    │ CRITICAL (blocks deployment):");
+        eprintln!("    │ [ ] External security audit of secp256k1 non-native field arithmetic");
+        eprintln!("    │     → See: circuits/src/secp256k1.rs security note");
+        eprintln!("    │ [ ] Generate production Halo2Verifier.sol with halo2-solidity-verifier");
+        eprintln!("    │     → Use: tools/gen-verifier with serialized VK");
+        eprintln!("    │ [ ] Verify IS_PRODUCTION_VERIFIER = true in generated verifier");
+        eprintln!("    │ [ ] Run full E2E MockProver test (slow, ~15-30 min):");
+        eprintln!("    │     cargo test -p zkmist-circuits -- --ignored --nocapture");
+        eprintln!("    │ [ ] Testnet deployment on Base Sepolia with full claim flow");
+        eprintln!("    │     → ./scripts/testnet-deploy.sh");
+        eprintln!("    │");
+        eprintln!("    │ HIGH PRIORITY:");
+        eprintln!("    │ [ ] Generate real proof and validate size in [400, 1200] byte range");
+        eprintln!("    │     → cargo run --release -p zkmist-cli -- bin zkmist -- bench");
+        eprintln!("    │ [ ] Benchmark proving time on reference hardware (<60 sec target)");
+        eprintln!("    │ [ ] Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment");
+        eprintln!("    │ [ ] Set up on-chain monitor: cargo run -p zkmist-tools --bin monitor");
+        eprintln!("    │");
+        eprintln!("    │ RECOMMENDED:");
+        eprintln!("    │ [ ] Run full E2E test suite: ./scripts/e2e-test.sh");
+        eprintln!("    │ [ ] Set up monitoring/alerting (BaseScan, Tenderly, Dune)");
+        eprintln!("    │ [ ] Consider replacing hand-rolled secp256k1 with audited library");
+        eprintln!("    └──────────────────────────────────────────────────────────────");
     }
 }
 

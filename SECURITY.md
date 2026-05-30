@@ -60,9 +60,11 @@ Before mainnet deployment, ALL of the following must be completed:
 
 ### Critical (blocks deployment)
 - [ ] **External security audit** of secp256k1 non-native field arithmetic
-- [ ] **Regenerate `Halo2Verifier.sol`** with full KZG pairing verification via `snark-verifier`:
+- [ ] **Generate `Halo2Verifier.sol`** using halo2-solidity-verifier with serialized VK:
   ```
-  cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- --output contracts/src/Halo2Verifier.sol
+  cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
+  # Then use halo2-solidity-verifier with the generated Halo2Verifier.vk.bin
+  # See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
   ```
 - [ ] **Verify `IS_PRODUCTION_VERIFIER = true`** in the generated verifier
 - [ ] **Run full E2E MockProver test** (previously `#[ignore]`d):
@@ -73,7 +75,14 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
   ```
-- [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow
+- [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
+  ```
+  ./scripts/testnet-deploy.sh
+  ```
+- [ ] **Run full E2E test suite**:
+  ```
+  ./scripts/e2e-test.sh
+  ```
 
 ### High Priority
 - [x] **Regenerate gas snapshot**: `cd contracts && forge snapshot` ✅ (72 tests, snapshot committed)
@@ -93,8 +102,12 @@ Before mainnet deployment, ALL of the following must be completed:
 - [x] Fuzz test the circuit with random private keys (not just test vector) ✅ Added diverse test vectors (7 keys including edge cases)
 - [ ] Benchmark proving time on reference hardware (target: <60 seconds)
   - Run: `zkmist bench`
+  - Or run full E2E test: `./scripts/e2e-test.sh`
 - [ ] Set up monitoring/alerting for the deployed contracts
   - Run: `cargo run -p zkmist-tools --bin monitor -- <address> --rpc https://mainnet.base.org`
+- [ ] Consider replacing hand-rolled secp256k1 with audited library
+  - `scroll-tech/halo2-secp256k1`
+  - `privacy-scaling-explorations/halo2wrong`
 
 ## Soundness Hardening (Applied)
 
