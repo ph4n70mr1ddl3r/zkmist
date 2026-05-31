@@ -11,7 +11,11 @@ contract MockHalo2Verifier {
         address, /* vk */
         bytes calldata, /* proof */
         uint256[] calldata publicInputs
-    ) external pure returns (bool) {
+    )
+        external
+        pure
+        returns (bool)
+    {
         // Reject zero recipient (publicInputs[2])
         if (publicInputs.length < 3) return false;
         return publicInputs[2] != 0;

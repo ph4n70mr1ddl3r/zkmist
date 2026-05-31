@@ -28,12 +28,7 @@ contract ZKMAirdrop {
 
     event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient, uint256 totalClaims);
 
-    constructor(
-        address _token,
-        address _verifier,
-        address _verifyingKey,
-        bytes32 _merkleRoot
-    ) {
+    constructor(address _token, address _verifier, address _verifyingKey, bytes32 _merkleRoot) {
         token = ZKMToken(_token);
         verifier = Halo2Verifier(_verifier);
         verifyingKey = Halo2VerifyingKey(_verifyingKey);
@@ -62,10 +57,7 @@ contract ZKMAirdrop {
 
         // Verify Halo2 proof via the production verifier contract.
         // Uses full KZG pairing verification via BN254 ecPairing precompile.
-        require(
-            verifier.verifyProof(address(verifyingKey), proof, publicInputs),
-            "Invalid proof"
-        );
+        require(verifier.verifyProof(address(verifyingKey), proof, publicInputs), "Invalid proof");
 
         // Mark claimed and mint
         usedNullifiers[nullifier] = true;

@@ -97,12 +97,7 @@ contract Deploy is Script {
         // ── Step 5: Deploy ZKMAirdrop ─────────────────────────────────
         console.log("");
         console.log("Step 5: Deploying ZKMAirdrop...");
-        ZKMAirdrop airdrop = new ZKMAirdrop(
-            address(token),
-            address(verifier),
-            address(vk),
-            MERKLE_ROOT
-        );
+        ZKMAirdrop airdrop = new ZKMAirdrop(address(token), address(verifier), address(vk), MERKLE_ROOT);
         console.log("  ZKMAirdrop:", address(airdrop));
 
         // ── Post-deployment validation ────────────────────────────────

@@ -13,4 +13,7 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
 
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+# Auto-generated verifier has long inline assembly lines
+# that forge fmt cannot reformat. Exclude it.
+[fmt]
+ignore = ["src/Halo2Verifier.sol", "src/Halo2VerifyingKey.sol"]

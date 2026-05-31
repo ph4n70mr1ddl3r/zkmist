@@ -34,7 +34,8 @@ We ask that you:
 
 ### Smart Contracts
 - All contracts are **immutable** (no admin, no owner, no upgrade mechanism)
-- The `Halo2Verifier` must be production-ready (`IS_PRODUCTION_VERIFIER == true`) before mainnet deployment
+- The `Halo2Verifier` uses real KZG pairing verification via BN254 ecPairing precompile
+- The `Halo2VerifyingKey` must contain the correct VK from the full production circuit
 - Double-claim prevention relies on the nullifier uniqueness of `poseidon(key, domain)`
 
 ### ZK Circuits
@@ -68,13 +69,16 @@ Before mainnet deployment, ALL of the following must be completed:
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including new Schwartz–Zippel verification)
-- [ ] **Generate `Halo2Verifier.sol`** using halo2-solidity-verifier with serialized VK:
+- [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
   ```
   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
   # Then use halo2-solidity-verifier with the generated Halo2Verifier.vk.bin
   # See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
   ```
-- [ ] **Verify `IS_PRODUCTION_VERIFIER = true`** in the generated verifier
+  **IMPORTANT**: The current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments.
+  This is from a partial circuit configuration, NOT the full production circuit (which needs k=23).
+  Must regenerate from the full circuit after MockProver tests pass.
+- [ ] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol`
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```
   ./scripts/testnet-deploy.sh
@@ -160,6 +164,10 @@ all permutation failures:
 cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
 cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
 ```
+
+**VK mismatch**: The current `Halo2VerifyingKey.sol` has k=21 (2M rows) with all-zero fixed
+commitments. The full production circuit requires k=23 (8M rows). The VK must be regenerated
+from the full circuit after the MockProver tests pass.
 
 **Remaining recommendation**: Replace the hand-rolled secp256k1 gadget with an audited library
 for defense-in-depth:

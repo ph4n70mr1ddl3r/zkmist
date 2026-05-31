@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 import {Halo2Verifier} from "../src/Halo2Verifier.sol";
+import {Halo2VerifyingKey} from "../src/Halo2VerifyingKey.sol";
 import {MockHalo2Verifier} from "./TestUtils.sol";
 
 /// @title ZKMV2 Integration Test — Full deployment and claim flow
@@ -60,7 +61,7 @@ contract ZKMV2Integration is Test {
         assertTrue(address(verifier).code.length > 0);
     }
 
-    function test_integration_verifier_rejects_short_proof() public {
+    function test_integration_airdrop_rejects_short_proof() public {
         // Short proof is rejected by the airdrop contract's length check.
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
@@ -70,7 +71,7 @@ contract ZKMV2Integration is Test {
         a.claim(shortProof, bytes32(uint256(1)), address(0xB0B));
     }
 
-    function test_integration_verifier_rejects_long_proof() public {
+    function test_integration_airdrop_rejects_long_proof() public {
         // Long proof is rejected by the airdrop contract's length check.
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
@@ -80,7 +81,7 @@ contract ZKMV2Integration is Test {
         a.claim(longProof, bytes32(uint256(1)), address(0xB0B));
     }
 
-    function test_integration_verifier_rejects_zero_recipient() public {
+    function test_integration_airdrop_rejects_zero_recipient() public {
         // Zero recipient is rejected by the airdrop contract (not verifier)
         bytes memory fakeProof = new bytes(500);
         MockHalo2Verifier mockV = new MockHalo2Verifier();
@@ -90,12 +91,31 @@ contract ZKMV2Integration is Test {
         a.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
 
-    function test_integration_verifier_proof_validation() public {
+    function test_integration_production_verifier_rejects_invalid_proof() public {
         // The production verifier performs real KZG pairing verification.
-        // It requires a deployed VK contract. Without a valid VK + valid proof,
-        // verification fails. This is tested at the airdrop level.
-        // Here we just verify the verifier contract deployed correctly.
-        assertTrue(address(verifier).code.length > 0);
+        // A garbage proof should be rejected at the verifier level (not airdrop level).
+        Halo2VerifyingKey vk = new Halo2VerifyingKey();
+        bytes memory garbageProof = new bytes(0x1600); // correct length for verifier
+        uint256[] memory instances = new uint256[](3);
+        instances[0] = uint256(MERKLE_ROOT);
+        instances[1] = uint256(bytes32(uint256(1)));
+        instances[2] = uint256(uint160(address(0xB0B)));
+
+        // Call verifyProof directly — the production verifier should reject garbage proofs.
+        // It may either return false or revert on invalid EC points.
+        (bool success, bytes memory returndata) = address(verifier)
+            .staticcall(abi.encodeCall(Halo2Verifier.verifyProof, (address(vk), garbageProof, instances)));
+        // Either reverted or returned false
+        if (success && returndata.length >= 32) {
+            bool result = abi.decode(returndata, (bool));
+            assertFalse(result, "Production verifier should reject garbage proofs");
+        }
+        // If it reverted, that's also acceptable behavior for invalid proofs
+    }
+
+    function test_integration_production_vk_deployed() public {
+        Halo2VerifyingKey vk = new Halo2VerifyingKey();
+        assertTrue(address(vk).code.length > 0);
     }
 
     // ── Token economics ──────────────────────────────────────────────

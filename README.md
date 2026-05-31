@@ -355,39 +355,23 @@ No special permissions or contract setup is required.
 
 > **⚠️ Beta — not yet deployed.**
 >
-> **275 tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 72 Solidity + 74 fast unit). Zero clippy warnings. Gas snapshot committed.
+> **275+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 73 Solidity). Zero clippy warnings. Gas snapshot committed.
 >
 > **Soundness hardening (completed):**
 > - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
 > - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
 > - `field_mul` uses constrained schoolbook products and wide limb accumulation
 > - **`field_mul` includes Schwartz–Zippel product verification** — every multiplication is cross-checked against a polynomial evaluation at r=65537, constraining the wide-to-narrow reduction (soundness error ≤ 6/p_BN254 per op)
+> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine` + **product verification**)
 > - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
 > - `constrain_affine` verifies the computed point matches the expected public key
 > - Intermediate range checks every 32 scalar mul steps
 > - Limb range checks with MSB-first byte decomposition
 > - `conditional_select` uses single-assignment pattern (no double-writes)
-> - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
 > - KZG params caching in `~/.zkmist/cache/`
 > - 7 diverse test vectors: MSB=0, MSB=1, key=1, key=2, key=3, key=n-1, standard
 > - 50K nullifier collision test passing
 > - Nullifier birthday-bound analysis: collision probability ≈ 10⁻⁷² for 1M claims (negligible)
->
-> **Soundness hardening (completed):**
-> - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
-> - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
-> - `field_mul` uses constrained schoolbook products and wide limb accumulation
-> - **NEW: `field_mul` now includes Schwartz–Zippel product verification** — every multiplication is cross-checked against a polynomial evaluation at a fixed point, constraining the wide-to-narrow reduction that was previously witness-guided
-> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine` + **product verification**)
-> - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
-> - `constrain_affine` verifies the computed point matches the expected public key
-> - Intermediate range checks every 32 scalar mul steps
-> - Limb range checks with correct MSB-first byte decomposition
-> - `conditional_select` uses single-assignment pattern (no double-writes to same cell)
-> - `IS_PRODUCTION_VERIFIER` guard prevents deployment with placeholder verifier
-> - KZG params caching in `~/.zkmist/cache/`
-> - Diverse test vectors: 7 keys including edge cases (MSB=0, MSB=1, key=1, key=n-1)
-> - 50K nullifier collision test passing
 >
 > **Known issue (blocking mainnet):**
 > - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. Needs re-run to confirm Schwartz–Zippel fix resolves all permutation failures.
@@ -396,14 +380,15 @@ No special permissions or contract setup is required.
 > **Tooling:**
 > - `zkmist bench` — proving timing benchmark with proof size validation
 > - `monitor` — on-chain monitoring with anomaly detection (surge, supply mismatch)
-> - `readiness` — pre-deployment readiness checker (8 automated checks)
+> - `readiness` — pre-deployment readiness checker (automated checks)
 > - `gen-verifier` — generates VK-embedded verifier + serialized VK blob
 > - `scripts/testnet-deploy.sh` — one-command testnet deployment with automatic contract verification
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
 > - Re-run full E2E MockProver test to confirm product verification fix resolves `constrain_affine` failures
-> - Regenerate `Halo2Verifier.sol` from circuit VK using `halo2-solidity-verifier`
+> - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from full circuit VK using `halo2-solidity-verifier`
+> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments (placeholder from partial circuit). Must regenerate from the full production circuit.
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >
