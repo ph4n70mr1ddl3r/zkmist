@@ -26,7 +26,7 @@ contract ZKMV2E2ETest is Test {
     function setUp() public {
         verifier = new MockHalo2Verifier();
         token = new ZKMToken(MINTER);
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
     }
 
     // ── Deployment integrity tests ──────────────────────────────────────
@@ -58,7 +58,7 @@ contract ZKMV2E2ETest is Test {
         // Deploy with correct minter prediction
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(500);
         bytes32 nullifier = keccak256("test_nullifier");
@@ -73,7 +73,7 @@ contract ZKMV2E2ETest is Test {
     function test_e2e_double_claim_rejected() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(500);
         bytes32 nullifier = keccak256("test_nullifier");
@@ -88,7 +88,7 @@ contract ZKMV2E2ETest is Test {
     function test_e2e_claim_rejected_zero_recipient() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(500);
         bytes32 nullifier = keccak256("test_nullifier");
@@ -159,7 +159,7 @@ contract ZKMV2E2ETest is Test {
         MockHalo2Verifier v = new MockHalo2Verifier();
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), address(0), MERKLE_ROOT);
 
         // Verify deployment integrity
         assertEq(t.minter(), address(a));
@@ -172,7 +172,7 @@ contract ZKMV2E2ETest is Test {
     function test_e2e_claim_rejected_after_deadline() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         // Warp past the deadline (2027-01-01)
         vm.warp(1_798_761_601);
@@ -189,7 +189,7 @@ contract ZKMV2E2ETest is Test {
     function test_e2e_claim_window_closes_at_cap() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         // Claim 5 times to verify the flow works
         for (uint256 i = 0; i < 5; i++) {
@@ -207,7 +207,7 @@ contract ZKMV2E2ETest is Test {
     function test_e2e_claim_rejected_at_max_claims() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         // Store original totalSupply to verify consistency
         uint256 supplyBefore = t.totalSupply();

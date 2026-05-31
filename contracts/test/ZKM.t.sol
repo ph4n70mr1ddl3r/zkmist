@@ -91,7 +91,7 @@ contract ZKMV2Test is Test {
     // ── ZKMAirdrop Tests ───────────────────────────────────────────────
 
     function test_airdrop_deploy() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         assertEq(address(airdrop.token()), address(token));
         assertEq(address(airdrop.verifier()), address(verifier));
         assertEq(airdrop.merkleRoot(), MERKLE_ROOT);
@@ -100,22 +100,22 @@ contract ZKMV2Test is Test {
         assertEq(airdrop.CLAIM_DEADLINE(), 1_798_761_600);
     }
 
-    function test_airdrop_rejects_non_production_verifier() public {
-        // Deploying with the placeholder Halo2Verifier (IS_PRODUCTION_VERIFIER = false)
-        // MUST revert to prevent mainnet deployment with a non-cryptographic verifier.
-        Halo2Verifier devVerifier = new Halo2Verifier();
-        vm.expectRevert("Verifier not production-ready");
-        new ZKMAirdrop(address(token), address(devVerifier), MERKLE_ROOT);
+    function test_airdrop_deploy_with_production_verifier() public {
+        // Deploy with the production Halo2Verifier (from halo2-solidity-verifier).
+        // The production verifier always performs real KZG pairing verification.
+        Halo2Verifier prodVerifier = new Halo2Verifier();
+        ZKMAirdrop a = new ZKMAirdrop(address(token), address(prodVerifier), address(0), MERKLE_ROOT);
+        assertEq(address(a.verifier()), address(prodVerifier));
     }
 
     function test_airdrop_is_claim_window_open() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         // Before deadline and before cap: should be open
         assertTrue(airdrop.isClaimWindowOpen());
     }
 
     function test_airdrop_claims_remaining_initial() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         assertEq(airdrop.claimsRemaining(), 1_000_000);
     }
 
@@ -123,7 +123,7 @@ contract ZKMV2Test is Test {
         // Deploy with correct minter prediction
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         bytes memory validLengthProof = new bytes(500);
         bytes32 nullifier = bytes32(uint256(1));
@@ -138,33 +138,33 @@ contract ZKMV2Test is Test {
     }
 
     function test_airdrop_is_claimed_initial() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         bytes32 nullifier = bytes32(uint256(42));
         assertFalse(airdrop.isClaimed(nullifier));
     }
 
     function test_airdrop_constants() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         assertEq(airdrop.MIN_PROOF_LENGTH(), 400);
         assertEq(airdrop.MAX_PROOF_LENGTH(), 1200);
     }
 
     function test_airdrop_claim_rejects_zero_recipient() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         bytes memory fakeProof = new bytes(500);
         vm.expectRevert("Recipient cannot be zero");
         airdrop.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
 
     function test_airdrop_claim_rejects_short_proof() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         bytes memory shortProof = new bytes(100);
         vm.expectRevert("Invalid proof length");
         airdrop.claim(shortProof, bytes32(uint256(1)), address(0xB0B));
     }
 
     function test_airdrop_claim_rejects_long_proof() public {
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
         bytes memory longProof = new bytes(2000);
         vm.expectRevert("Invalid proof length");
         airdrop.claim(longProof, bytes32(uint256(1)), address(0xB0B));
@@ -179,7 +179,7 @@ contract ZKMV2Test is Test {
 
         // For testing, just verify the constructor chain works
         ZKMToken t = new ZKMToken(address(0x100));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
         assertEq(address(a.token()), address(t));
         assertEq(t.minter(), address(0x100));

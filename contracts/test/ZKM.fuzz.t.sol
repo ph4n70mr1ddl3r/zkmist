@@ -20,7 +20,7 @@ contract ZKMV2FuzzTest is Test {
     function setUp() public {
         verifier = new MockHalo2Verifier();
         token = new ZKMToken(MINTER);
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
     }
 
     // ── Token fuzz tests ─────────────────────────────────────────────────
