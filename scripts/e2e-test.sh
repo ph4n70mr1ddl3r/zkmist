@@ -118,6 +118,22 @@ echo ""
 
 # ── Step 5: Run readiness checker ──────────────────────────────────
 echo "[5/6] Running pre-deployment readiness check..."
+
+# Quick k-value consistency check
+VK_K=$(grep '// k$' "$PROJECT_ROOT/contracts/src/Halo2VerifyingKey.sol" 2>/dev/null | grep -oP '0x\K[0-9a-fA-F]+' | head -1)
+PROVER_K=$(grep 'CIRCUIT_K' "$PROJECT_ROOT/cli/src/halo2_prover.rs" 2>/dev/null | grep -oP '\d+' | head -1)
+if [ -n "$VK_K" ] && [ -n "$PROVER_K" ]; then
+    VK_K_DEC=$((16#$VK_K))
+    if [ "$VK_K_DEC" != "$PROVER_K" ]; then
+        echo -e "  ${RED}❌ FAIL${NC}: VK k=$VK_K_DEC does not match prover CIRCUIT_K=$PROVER_K"
+        FAILED=$((FAILED + 1))
+    else
+        pass "VK k-value ($VK_K_DEC) matches prover CIRCUIT_K"
+    fi
+else
+    warn "Could not check VK k-value consistency"
+fi
+
 READINESS_OUTPUT=$(cargo run --release -p zkmist-tools --bin readiness -- --skip-slow 2>&1) || true
 echo "$READINESS_OUTPUT" | grep -E "Results:|PASS|FAIL|✅|❌|⚠️"
 

@@ -100,7 +100,7 @@ impl CondSwapConfig {
 #[derive(Debug, Clone)]
 struct RangeCheckConfig {
     #[allow(dead_code)] advice: Column<Advice>,
-    #[allow(dead_code)] table: TableColumn,
+    table: TableColumn,
     #[allow(dead_code)] s_decompose: Selector,
 }
 
@@ -113,6 +113,28 @@ impl RangeCheckConfig {
             vec![(val, table)]
         });
         Self { advice, table, s_decompose }
+    }
+
+    /// Load the 8-bit range table (values 0..=255).
+    /// Must be called during synthesis so keygen captures the fixed column commitment.
+    fn load_range_table(
+        &self,
+        layouter: &mut impl halo2_proofs::circuit::Layouter<Fr>,
+    ) -> Result<(), Error> {
+        layouter.assign_table(
+            || "range8",
+            |mut table| {
+                for i in 0u64..256 {
+                    table.assign_cell(
+                        || "range8_val",
+                        self.table,
+                        i as usize,
+                        || Value::known(Fr::from(i)),
+                    )?;
+                }
+                Ok(())
+            },
+        )
     }
 }
 
@@ -168,6 +190,15 @@ impl Secp256k1Config {
             vec![s * (x.clone() * (Expression::Constant(Fr::ONE) - x))]
         });
         Self { advice, fixed, range_check, s_mul, s_add, s_add_fixed, s_mul_fixed, s_add_carry, s_bool }
+    }
+
+    /// Load lookup tables needed by the secp256k1 gadget.
+    /// Delegates to range_check.load_range_table().
+    fn load_tables(
+        &self,
+        layouter: &mut impl halo2_proofs::circuit::Layouter<Fr>,
+    ) -> Result<(), Error> {
+        self.range_check.load_range_table(layouter)
     }
 }
 
@@ -272,7 +303,14 @@ impl Circuit<Fr> for ZKMistV2Claim {
         ZKMistV2ClaimConfig { poseidon, cond_swap, secp256k1, keccak, range_check, instance, advice }
     }
 
-    fn synthesize(&self, _config: ZKMistV2ClaimConfig, _layouter: impl Layouter<Fr>) -> Result<(), Error> {
+    fn synthesize(&self, config: ZKMistV2ClaimConfig, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+        // Load fixed-column tables so keygen_vk captures their commitments.
+        // Without these, the VK has zero fixed commitments and every real
+        // proof will fail on-chain because the VK digest won't match.
+        config.range_check.load_range_table(&mut layouter)?;
+        // secp256k1 uses the same range table (delegates to range_check).
+        // No need to call it twice — the table column is shared.
+        let _ = &config.secp256k1; // suppress unused warning
         Ok(())
     }
 }
@@ -280,7 +318,7 @@ impl Circuit<Fr> for ZKMistV2Claim {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_dir = PathBuf::from("../contracts/src");
-    let mut k: u32 = 21;
+    let mut k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
 
     let mut i = 1;
     while i < args.len() {
@@ -297,10 +335,18 @@ fn main() {
     eprintln!("╚════════════════════════════════════════════════════════════╝");
     eprintln!();
 
-    eprintln!("[1/4] Creating circuit...");
+    // Validate k consistency with the prover.
+    let expected_k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
+    if k != expected_k {
+        eprintln!("⚠️  WARNING: k={} does not match expected CIRCUIT_K={}", k, expected_k);
+        eprintln!("   The generated verifier will reject proofs created with a different k.");
+        eprintln!("   Proceeding anyway. Use --k {} for the production value.", expected_k);
+    }
+
+    eprintln!("[1/4] Creating circuit (k={})...", k);
     let circuit = ZKMistV2Claim;
 
-    eprintln!("[2/4] Generating KZG params (k={})...", k);
+    eprintln!("[2/4] Generating KZG params...");
     let start = std::time::Instant::now();
     let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(k, &mut rand::thread_rng());
     eprintln!("      ✓ ({:.1}s)", start.elapsed().as_secs_f64());

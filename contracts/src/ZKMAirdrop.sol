@@ -39,6 +39,21 @@ contract ZKMAirdrop {
     /// @param proof The Halo2 KZG proof bytes.
     /// @param nullifier The claim's nullifier (poseidon(key, domain)).
     /// @param recipient Address to receive 10,000 ZKM.
+    ///
+    /// @dev Checks-Effects-Interactions (CEI) pattern:
+    ///      1. Checks: deadline, cap, nullifier, recipient, proof length, proof validity
+    ///      2. Effects: mark nullifier, increment totalClaims
+    ///      3. Interactions: token.mint() — external call to immutable ZKMToken
+    ///
+    ///      ZKMToken.mint() is a simple ERC-20 with no callbacks or hooks.
+    ///      The minter is immutable (set at construction), so even if token.mint()
+    ///      were to re-enter, it cannot re-enter claim() because:
+    ///      - usedNullifiers[nullifier] is already true (set before mint)
+    ///      - totalClaims is already incremented (set before mint)
+    ///
+    /// @dev Gas: Real Halo2-KZG proof verification with ecPairing costs ~350-500K gas.
+    ///      The total claim transaction is estimated at ~400-550K gas.
+    ///      The FALLBACK_GAS_LIMIT in the CLI is 700K to account for variance.
     function claim(bytes calldata proof, bytes32 nullifier, address recipient) external {
         // Check basic invariants FIRST (cheap checks before expensive verification)
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");

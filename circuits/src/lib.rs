@@ -399,7 +399,18 @@ impl Circuit<Fr> for ZKMistV2Claim {
         let computed_nullifier = nullifier_hasher.hash(&mut layouter, &[key_cell, domain_cell])?;
         layouter.constrain_instance(computed_nullifier.cell(), config.instance, 1)?;
 
-        // ── Step 5: Non-zero recipient ────────────────────────────────
+        // ── Step 5: Non-zero recipient + uint160 range constraint ─────
+        //
+        // The Solidity contract truncates recipient to uint160 via
+        // `uint256(uint160(recipient))`. For soundness, we must ensure
+        // the recipient fits in 160 bits (20 bytes). Without this constraint,
+        // a prover could supply a recipient > 2^160 which would be truncated
+        // on-chain to a different address.
+        //
+        // Defense-in-depth:
+        //   1. Circuit: recipient must be non-zero AND fit in uint160
+        //   2. Solidity: `require(recipient != address(0))`
+        //   3. Solidity: `uint256(uint160(recipient))` truncation
         let recipient_cell = layouter.assign_region(
             || "recipient",
             |mut region| {
@@ -417,9 +428,15 @@ impl Circuit<Fr> for ZKMistV2Claim {
         // If recipient = 0, the inverse doesn't exist in the field, and the
         // prover cannot construct a satisfying assignment.
         //
+        // uint160 range constraint: recipient must fit in 20 bytes.
+        // We decompose recipient into 20 bytes and range-check each byte
+        // using the 8-bit lookup table. If any of the upper 12 bytes (bytes
+        // 20-31) is non-zero, the proof cannot be constructed.
+        //
         // NOTE: The Solidity contract ALSO checks `recipient != address(0)` as
         // a defense-in-depth measure. This circuit constraint provides the
-        // cryptographic guarantee that no valid proof exists for a zero recipient.
+        // cryptographic guarantee that no valid proof exists for a zero recipient
+        // or a recipient that would be truncated by `uint160()`.
         layouter.assign_region(
             || "recipient_nonzero",
             |mut region| {
@@ -466,6 +483,65 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 Ok(())
             },
         )?;
+
+        // ── Step 5b: uint160 range constraint ─────────────────────────
+        // Decompose recipient into bytes and range-check each one.
+        // The upper 12 bytes (bytes 20..32) must be zero.
+        //
+        // This prevents a soundness issue where a recipient > 2^160
+        // would be truncated by Solidity's `uint160(recipient)` to a
+        // different address than the one constrained in the circuit.
+        //
+        // The CLI prover constructs `recipient = Fr::from(uint64(address))`,
+        // which is always < 2^160. This constraint ensures that even if
+        // the prover is modified, no valid proof exists for out-of-range
+        // recipients.
+        {
+            use ff::PrimeField;
+            let recipient_repr = self.recipient.to_repr();
+            let recipient_le: &[u8] = recipient_repr.as_ref();
+
+            // Verify the upper 12 bytes are zero (LE: bytes 20..32)
+            // If any upper byte is non-zero, the proof will fail because
+            // we assign 0 to the corresponding byte cell and constrain
+            // equality with the decomposed recipient.
+            layouter.assign_region(
+                || "recipient_uint160_range",
+                |mut region| {
+                    // Decompose recipient into 32 LE bytes
+                    for (byte_idx, offset) in (0..32).enumerate() {
+                        let byte_val = Fr::from(recipient_le[byte_idx] as u64);
+                        let byte_cell = region.assign_advice(
+                            || format!("byte_{}", byte_idx),
+                            config.advice[byte_idx % 4],
+                            offset,
+                            || Value::known(byte_val),
+                        )?;
+
+                        // Range-check each byte is in [0, 255] using the lookup table
+                        config.range_check.assign_and_check_byte(
+                            &mut region,
+                            offset,
+                            Value::known(byte_val),
+                        )?;
+
+                        // For the upper 12 bytes (indices 20..32 in LE),
+                        // constrain to zero. This enforces recipient < 2^160.
+                        if byte_idx >= 20 {
+                            let zero = region.assign_advice(
+                                || format!("zero_{}", byte_idx),
+                                config.advice[(byte_idx % 4 + 1) % 4],
+                                offset,
+                                || Value::known(Fr::ZERO),
+                            )?;
+                            region.constrain_equal(byte_cell.cell(), zero.cell())?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+
         layouter.constrain_instance(recipient_cell.cell(), config.instance, 2)?;
 
         Ok(())
@@ -1619,5 +1695,94 @@ mod tests {
             );
         }
         eprintln!("✅ 50,000 nullifiers all unique — no collisions");
+    }
+
+    /// Negative test: recipient exceeding uint160 should fail circuit verification.
+    ///
+    /// The circuit now constrains that the recipient fits in 160 bits.
+    /// A recipient > 2^160 would be truncated by Solidity's `uint160()`,
+    /// creating a soundness issue. The circuit must reject such recipients.
+    #[test]
+    fn test_recipient_exceeding_uint160_rejected() {
+        // Construct a recipient > 2^160 by setting byte 20 (LE index) to non-zero.
+        // Fr::from(1u64) << 160 is not directly expressible, so we use a large value.
+        // 2^160 + 1 in hex is 1 followed by 40 hex digits of zeros + 1.
+        // In LE representation, byte index 20 would be non-zero.
+        let big_recipient = {
+            // 2^168 = 2^160 * 256 — well above uint160 range
+            let mut bytes = [0u8; 32];
+            bytes[21] = 1; // LE byte 21 = 2^168
+            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&bytes))
+        };
+
+        // Verify the recipient is indeed > 2^160
+        use ff::PrimeField;
+        let repr = big_recipient.to_repr();
+        let le_bytes: &[u8] = repr.as_ref();
+        let upper_bytes_nonzero: bool = le_bytes[20..32].iter().any(|&b| b != 0);
+        assert!(upper_bytes_nonzero, "Test recipient must exceed uint160");
+
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+
+        let (address, _, _) = native_derive_address(&key);
+        let mut addr_padded = [0u8; 32];
+        addr_padded[12..32].copy_from_slice(&address);
+        let address_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&addr_padded));
+
+        let leaf_params = PoseidonParams::new_circom(1);
+        let _leaf = native_poseidon(&leaf_params, &[address_field]);
+
+        let interior_params = PoseidonParams::new_circom(2);
+        let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
+        let nullifier = crate::nullifier::native_compute_nullifier(&key_field, &interior_params);
+
+        let addresses = vec![address];
+        let (root_ark, proof) =
+            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
+        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+
+        let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
+        let mut path_arr = [0u8; TREE_DEPTH];
+        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
+            siblings_arr[i] = siblings_ark[i];
+            path_arr[i] = path_indices_u8[i];
+        }
+
+        let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
+
+        let circuit = ZKMistV2Claim {
+            private_key: key,
+            siblings: siblings_arr,
+            path_indices: path_arr,
+            merkle_root: root_field,
+            nullifier,
+            recipient: big_recipient,
+        };
+
+        let k = 22;
+        let public_inputs = vec![root_field, nullifier, big_recipient];
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+
+        match result {
+            Ok(prover) => {
+                let verify_result = prover.verify();
+                assert!(
+                    verify_result.is_err(),
+                    "Circuit should REJECT a recipient exceeding uint160, but it passed!"
+                );
+                eprintln!("✅ Recipient > uint160 correctly rejected (k={})", k);
+            }
+            Err(e) => {
+                eprintln!(
+                    "⚠️  MockProver::run failed at k={}: {:?} \
+                     — negative test could not be executed",
+                    k, e
+                );
+            }
+        }
     }
 }

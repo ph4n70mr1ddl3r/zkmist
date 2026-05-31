@@ -18,6 +18,8 @@ use crate::types::ProofFile;
 /// Default k parameter for the circuit (2^23 = 8M rows).
 /// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle.
 /// k=22 (4M rows) is insufficient — the circuit exceeds 4M rows.
+/// ⚠️  This MUST match the k used to generate Halo2VerifyingKey.sol.
+/// Run gen-production-verifier with --k 23 to regenerate the VK.
 const CIRCUIT_K: u32 = 23;
 
 // ── Params caching ───────────────────────────────────────────────────

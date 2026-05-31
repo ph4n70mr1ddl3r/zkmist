@@ -1,20 +1,26 @@
 //! Pre-deployment readiness checker for ZKMist.
 //!
 //! Validates that all prerequisites are met before deploying to mainnet.
+//!
 //! Checks:
-//!   1. Halo2Verifier.sol has real KZG pairing verification (ecPairing precompile)
-//!   2. Halo2VerifyingKey.sol has non-zero VK data
-//!   3. Merkle root matches the known eligibility tree root
-//!   4. Constants are consistent between CLI and contracts
-//!   5. No placeholder values remain
-//!   6. Cargo clippy passes
-//!   7. Cargo fmt passes
-//!   8. Forge tests pass
-//!   9. Cargo tests pass
+//!
+//! - 1. Halo2Verifier.sol has real KZG pairing verification (ecPairing precompile)
+//! - 1b. Halo2VerifyingKey.sol has non-zero VK data and correct k-value
+//! - 2. Merkle root matches the known eligibility tree root
+//! - 3. Constants are consistent between CLI and contracts
+//! - 3b. VK k-value matches prover CIRCUIT_K
+//! - 4. No placeholder values remain
+//! - 5. Cargo clippy passes
+//! - 6. Cargo fmt passes
+//! - 7. Forge tests pass
+//! - 8. Cargo tests pass
 //!
 //! Usage:
-//!   cargo run -p zkmist-tools --bin readiness
-//!   cargo run -p zkmist-tools --bin readiness -- --skip-slow
+//!
+//! ```sh
+//! cargo run -p zkmist-tools --bin readiness
+//! cargo run -p zkmist-tools --bin readiness -- --skip-slow
+//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -97,7 +103,7 @@ fn main() {
         failed += 1;
     }
 
-    // ── Check 1b: Halo2VerifyingKey.sol has non-zero VK data ───────────
+    // ── Check 1b: Halo2VerifyingKey.sol has non-zero VK data and correct k ──
     eprintln!("[1b/8] Checking Halo2VerifyingKey.sol...");
     let vk_path = root.join("contracts/src/Halo2VerifyingKey.sol");
     if let Ok(vk_content) = std::fs::read_to_string(&vk_path) {
@@ -109,15 +115,66 @@ fn main() {
                     || !l.contains("0x")
             });
 
-        if has_perm_comms && has_nonzero_data {
+        // Check that fixed commitments are not all zero (indicating real keygen)
+        let all_fixed_zero = vk_content
+            .lines()
+            .filter(|l| l.contains("fixed_comms"))
+            .all(|l| {
+                l.contains("0x0000000000000000000000000000000000000000000000000000000000000000")
+            });
+
+        // Extract k value from VK
+        let vk_k = extract_vk_k(&vk_content);
+
+        // Get expected k from prover
+        let expected_k = extract_prover_k(&root.join("cli/src/halo2_prover.rs"));
+
+        if has_perm_comms && has_nonzero_data && !all_fixed_zero {
             eprintln!("      ✅ Halo2VerifyingKey.sol has VK data with non-zero commitments");
             passed += 1;
+        } else if has_perm_comms && has_nonzero_data && all_fixed_zero {
+            eprintln!("      ⚠️  Halo2VerifyingKey.sol has permutation commitments but ALL fixed commitments are zero");
+            eprintln!("         This means the VK was generated with an empty synthesize() —");
+            eprintln!("         the on-chain verifier will reject every real proof.");
+            eprintln!(
+                "         Fix: regenerate with gen-production-verifier (now loads range tables)"
+            );
+            failed += 1;
         } else {
             eprintln!("      ⚠️  Halo2VerifyingKey.sol may contain placeholder VK data");
-            eprintln!("         Fixed commitments are all zero — VK may be from a partial circuit");
             eprintln!("         Regenerate after full E2E MockProver test passes");
-            // Not a hard failure — placeholder VK is expected pre-deployment
             skipped += 1;
+        }
+
+        // Check k-value consistency
+        match (vk_k, expected_k) {
+            (Some(vk), Some(exp)) if vk == exp => {
+                eprintln!("      ✅ VK k-value ({}) matches prover CIRCUIT_K", vk);
+            }
+            (Some(vk), Some(exp)) => {
+                eprintln!(
+                    "      ❌ VK k-value MISMATCH: VK has k={} but prover uses CIRCUIT_K={}",
+                    vk, exp
+                );
+                eprintln!(
+                    "         Proofs generated at k={} will NOT verify against a k={} VK.",
+                    exp, vk
+                );
+                eprintln!(
+                    "         Fix: regenerate VK with gen-production-verifier --k {}",
+                    exp
+                );
+                failed += 1;
+            }
+            (Some(vk), None) => {
+                eprintln!(
+                    "      ⚠️  VK k-value is {} but could not read prover CIRCUIT_K",
+                    vk
+                );
+            }
+            _ => {
+                eprintln!("      ⚠️  Could not extract k-values for comparison");
+            }
         }
     } else {
         eprintln!("      ⚠️  Halo2VerifyingKey.sol not found");
@@ -386,17 +443,18 @@ fn main() {
         eprintln!("    │ CRITICAL (blocks deployment):");
         eprintln!("    │ [ ] Re-run full E2E MockProver test (k=23, ~30-90 min):");
         eprintln!("    │     cargo test -p zkmist-circuits -- --ignored --nocapture");
-        eprintln!("    │ [ ] Verify Halo2VerifyingKey.sol has correct k (should match circuit)");
+        eprintln!("    │ [ ] Regenerate Halo2Verifier.sol + Halo2VerifyingKey.sol with");
+        eprintln!("    │     gen-production-verifier (now loads range tables, k=23)");
+        eprintln!("    │ [ ] Verify VK k-value matches CIRCUIT_K (checked above)");
+        eprintln!("    │ [ ] Verify VK has non-zero fixed commitments (checked above)");
         eprintln!("    │ [ ] External security audit of secp256k1 non-native field arithmetic");
         eprintln!("    │     → See: circuits/src/secp256k1.rs security note");
-        eprintln!("    │ [ ] Generate production Halo2Verifier.sol + Halo2VerifyingKey.sol");
-        eprintln!("    │     → Use: tools/gen-verifier with serialized VK from full circuit");
         eprintln!("    │ [ ] Testnet deployment on Base Sepolia with full claim flow");
         eprintln!("    │     → ./scripts/testnet-deploy.sh");
         eprintln!("    │");
         eprintln!("    │ HIGH PRIORITY:");
         eprintln!("    │ [ ] Generate real proof and validate size in [4000, 8000] byte range");
-        eprintln!("    │     → cargo run --release -p zkmist-cli -- bin zkmist -- bench");
+        eprintln!("    │     → cargo run --release -p zkmist-cli -- bench");
         eprintln!("    │ [ ] Benchmark proving time on reference hardware (<60 sec target)");
         eprintln!("    │ [ ] Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment");
         eprintln!("    │ [ ] Set up on-chain monitor: cargo run -p zkmist-tools --bin monitor");
@@ -483,6 +541,41 @@ fn find_test_merkle_root(test_dir: &Path) -> Option<String> {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the k-value from Halo2VerifyingKey.sol.
+/// Looks for the line: `mstore(0x0040, 0x...0015) // k`
+fn extract_vk_k(vk_content: &str) -> Option<u32> {
+    for line in vk_content.lines() {
+        if line.contains("// k") || line.trim().ends_with("// k") {
+            // Extract hex value from mstore
+            if let Some(start) = line.find("0x") {
+                let hex = &line[start + 2..];
+                let hex_clean: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if let Ok(val) = u32::from_str_radix(&hex_clean, 16) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract CIRCUIT_K from the prover source.
+fn extract_prover_k(prover_path: &Path) -> Option<u32> {
+    let content = std::fs::read_to_string(prover_path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("CIRCUIT_K") && trimmed.contains('=') && !trimmed.starts_with("//") {
+            if let Some(idx) = trimmed.find('=') {
+                let val = trimmed[idx + 1..].trim().trim_end_matches(';').trim();
+                if let Ok(k) = val.parse::<u32>() {
+                    return Some(k);
                 }
             }
         }
