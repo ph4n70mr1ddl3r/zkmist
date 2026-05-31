@@ -796,26 +796,26 @@ mod tests {
 
     #[test]
     fn test_proof_byte_length_validation() {
-        // Valid range: [400, 1200] bytes
-        let valid_proofs = vec![400, 500, 800, 1200];
+        // Valid range: [4000, 8000] bytes (matches Halo2Verifier.sol proof size)
+        let valid_proofs = vec![4000, 5000, 5632, 8000];
         for len in valid_proofs {
             let hex_len = len * 2;
             let proof_hex = "a".repeat(hex_len);
             let bytes = hex::decode(&proof_hex).unwrap();
             assert!(
-                bytes.len() >= 400 && bytes.len() <= 1200,
+                bytes.len() >= PROOF_LENGTH_MIN && bytes.len() <= PROOF_LENGTH_MAX,
                 "{} bytes should be valid",
                 bytes.len()
             );
         }
 
         // Invalid ranges
-        let invalid_proofs = vec![100, 399, 1201, 5000];
+        let invalid_proofs = vec![100, 3999, 8001, 50000];
         for len in invalid_proofs {
             let hex_len = len * 2;
             let proof_hex = "a".repeat(hex_len);
             let bytes = hex::decode(&proof_hex).unwrap();
-            let is_valid = bytes.len() >= 400 && bytes.len() <= 1200;
+            let is_valid = bytes.len() >= PROOF_LENGTH_MIN && bytes.len() <= PROOF_LENGTH_MAX;
             assert!(!is_valid, "{} bytes should be invalid", bytes.len());
         }
     }

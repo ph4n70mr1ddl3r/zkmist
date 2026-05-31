@@ -456,8 +456,8 @@ contract ZKMAirdropV2 {
     uint256 public constant CLAIM_AMOUNT = 10_000e18;
     uint256 public constant MAX_CLAIMS = 1_000_000;
     uint256 public constant CLAIM_DEADLINE = 1_798_761_600; // 2027-01-01 00:00:00 UTC
-    uint256 public constant MIN_PROOF_LENGTH = 400;
-    uint256 public constant MAX_PROOF_LENGTH = 1200;
+    uint256 public constant MIN_PROOF_LENGTH = 4000;
+    uint256 public constant MAX_PROOF_LENGTH = 8000;
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;

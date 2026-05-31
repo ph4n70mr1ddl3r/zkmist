@@ -96,7 +96,8 @@ Before mainnet deployment, ALL of the following must be completed:
 - [x] **Add verifier rejection test**: integration test confirms placeholder verifier rejected ✅
 - [ ] **Update `AIRDROP_CONTRACT`** in `cli/src/constants.rs` after deployment
 - [ ] **Generate real proof + verify on testnet** end-to-end
-- [ ] **Proof size validation**: confirm proof fits in `[400, 1200]` byte range
+- [ ] **Proof size validation**: confirm proof fits in `[4000, 8000]` byte range
+  - The expected proof length is ~5632 bytes (determined by Halo2 circuit structure)
   - The `zkmist bench` subcommand reports proof size as part of its output
 - [ ] **Run pre-deployment readiness checker**: `cargo run -p zkmist-tools --bin readiness`
 - [ ] **Set up on-chain monitor**: `cargo run -p zkmist-tools --bin monitor -- <airdrop_address>`

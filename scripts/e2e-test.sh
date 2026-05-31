@@ -6,7 +6,7 @@
 #
 # What it does:
 #   1. Generates a proof using `zkmist bench` (small Merkle tree, fast)
-#   2. Validates proof size is in the [400, 1200] byte range
+#   2. Validates proof size is in the [4000, 8000] byte range
 #   3. Verifies the proof cryptographically (local verification)
 #   4. Reports timing for each phase
 #
@@ -93,14 +93,14 @@ ELAPSED=$(($(date +%s) - START))
 echo "$BENCH_OUTPUT" | grep -E "Benchmark|Total|Proof size|Proof in range|under|exceeds|expected"
 
 if echo "$BENCH_OUTPUT" | grep -q "Proof in range.*YES"; then
-    pass "Proof size in [400, 1200] byte range"
+    pass "Proof size in [4000, 8000] byte range"
 else
     PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
     if [ -n "$PROOF_SIZE" ]; then
         if [ "$PROOF_SIZE" -ge 400 ] && [ "$PROOF_SIZE" -le 1200 ]; then
             pass "Proof size ($PROOF_SIZE bytes) in range"
         else
-            fail "Proof size ($PROOF_SIZE bytes) outside [400, 1200]"
+            fail "Proof size ($PROOF_SIZE bytes) outside [4000, 8000]"
         fi
     else
         warn "Could not determine proof size"

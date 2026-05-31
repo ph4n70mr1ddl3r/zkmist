@@ -46,5 +46,16 @@ pub const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD";
 /// Nullifier domain separator.
 pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 
+/// Proof byte length bounds.
+/// These MUST match the Halo2Verifier.sol expected proof size.
+/// The current verifier (halo2-solidity-verifier) expects exactly 5632 bytes (0x1600).
+/// The bounds are wider to accommodate minor variations from VK regeneration.
+/// The verifier's internal length check is the authoritative validation.
+pub const PROOF_LENGTH_MIN: usize = 4000;
+pub const PROOF_LENGTH_MAX: usize = 8000;
+
+/// Expected exact proof length from the current Halo2Verifier.sol.
+pub const PROOF_LENGTH_EXPECTED: usize = 5632;
+
 /// Proof format version.
 pub const PROOF_FORMAT_VERSION: u64 = 2;

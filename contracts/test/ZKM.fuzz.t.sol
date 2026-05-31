@@ -113,7 +113,7 @@ contract ZKMV2FuzzTest is Test {
         bytes32 nullifier = bytes32(uint256(1));
         address recipient = address(0xB0B);
 
-        if (proofLength < 400 || proofLength > 1200) {
+        if (proofLength < 4000 || proofLength > 8000) {
             vm.expectRevert("Invalid proof length");
             airdrop.claim(fakeProof, nullifier, recipient);
         } else {
@@ -125,7 +125,7 @@ contract ZKMV2FuzzTest is Test {
 
     /// @dev Zero recipient always rejected (checked before verification)
     function testFuzz_zero_recipient_rejected(bytes32 nullifier, uint16 proofLen) public {
-        vm.assume(proofLen >= 400 && proofLen <= 1200);
+        vm.assume(proofLen >= 4000 && proofLen <= 8000);
         bytes memory fakeProof = new bytes(proofLen);
 
         vm.expectRevert("Recipient cannot be zero");

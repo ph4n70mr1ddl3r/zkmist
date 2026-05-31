@@ -109,11 +109,14 @@ forge script script/Deploy.s.sol \
     --private-key "$PRIVATE_KEY" \
     -vvv
 
-# ── Post-deployment: extract addresses from broadcast ─────────────────
+# ── Post-deployment: extract addresses and root ───────────────────────
+MERKLE_ROOT=$(grep 'MERKLE_ROOT =' "$CONTRACTS_DIR/script/Deploy.s.sol" | sed 's/.*= *//; s/;.*//' | tr -d ' ')
+
 BROADCAST_DIR="$CONTRACTS_DIR/broadcast/Deploy.s.sol/$EXPECTED_CHAIN_ID"
 LATEST_RUN=$(ls -t "$BROADCAST_DIR"/run-*.json 2>/dev/null | head -1)
 
 VERIFIER_ADDR=""
+VK_ADDR=""
 TOKEN_ADDR=""
 AIRDROP_ADDR=""
 
@@ -122,18 +125,20 @@ if [ -n "$LATEST_RUN" ]; then
     echo "Extracting deployed addresses from broadcast..."
     # Parse contracts from the broadcast JSON
     VERIFIER_ADDR=$(grep -A1 '"contractName": "Halo2Verifier"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
+    VK_ADDR=$(grep -A1 '"contractName": "Halo2VerifyingKey"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
     TOKEN_ADDR=$(grep -A1 '"contractName": "ZKMToken"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
     AIRDROP_ADDR=$(grep -A1 '"contractName": "ZKMAirdrop"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
 
     if [ -n "$VERIFIER_ADDR" ]; then
-        echo "  Halo2Verifier: $VERIFIER_ADDR"
-        echo "  ZKMToken:      $TOKEN_ADDR"
-        echo "  ZKMAirdrop:    $AIRDROP_ADDR"
+        echo "  Halo2Verifier:     $VERIFIER_ADDR"
+        echo "  Halo2VerifyingKey: $VK_ADDR"
+        echo "  ZKMToken:          $TOKEN_ADDR"
+        echo "  ZKMAirdrop:        $AIRDROP_ADDR"
     fi
 fi
 
 # ── Verify contracts on BaseScan ──────────────────────────────────────
-if [ -n "$VERIFIER_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; then
+if [ -n "$VERIFIER_ADDR" ] && [ -n "$VK_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; then
     echo ""
     echo "Verifying contracts on BaseScan..."
 
@@ -141,19 +146,21 @@ if [ -n "$VERIFIER_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; th
         echo -e "  ${YELLOW}Verifier verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} Halo2Verifier verified"
 
+    forge verify-contract "$VK_ADDR" Halo2VerifyingKey --chain base-sepolia --watch 2>&1 || \
+        echo -e "  ${YELLOW}VK verification failed (may need manual retry)${NC}"
+    echo -e "  ${GREEN}✓${NC} Halo2VerifyingKey verified"
+
     forge verify-contract "$TOKEN_ADDR" ZKMToken --chain base-sepolia --watch 2>&1 || \
         echo -e "  ${YELLOW}Token verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} ZKMToken verified"
 
     forge verify-contract "$AIRDROP_ADDR" ZKMAirdrop --constructor-args \
-        "$(cast abi-encode "constructor(address,address,bytes32)" "$TOKEN_ADDR" "$VERIFIER_ADDR" "$MERKLE_ROOT")" \
+        "$(cast abi-encode "constructor(address,address,address,bytes32)" "$TOKEN_ADDR" "$VERIFIER_ADDR" "$VK_ADDR" "$MERKLE_ROOT")" \
         --chain base-sepolia --watch 2>&1 || \
         echo -e "  ${YELLOW}Airdrop verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} ZKMAirdrop verified"
 fi
 
-# Read MERKLE_ROOT from the deploy script (for constructor args above)
-MERKLE_ROOT=$(grep 'MERKLE_ROOT =' "$CONTRACTS_DIR/script/Deploy.s.sol" | sed 's/.*= *//; s/;.*//' | tr -d ' ')
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
@@ -162,9 +169,10 @@ echo -e "${GREEN}═════════════════════
 if [ -n "$AIRDROP_ADDR" ]; then
     echo ""
     echo "  Deployed contracts:"
-    echo "    Halo2Verifier: $VERIFIER_ADDR"
-    echo "    ZKMToken:      $TOKEN_ADDR"
-    echo "    ZKMAirdrop:    $AIRDROP_ADDR"
+    echo "    Halo2Verifier:     $VERIFIER_ADDR"
+    echo "    Halo2VerifyingKey: $VK_ADDR"
+    echo "    ZKMToken:          $TOKEN_ADDR"
+    echo "    ZKMAirdrop:        $AIRDROP_ADDR"
 fi
 echo ""
 echo "Next steps:"

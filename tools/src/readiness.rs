@@ -395,7 +395,7 @@ fn main() {
         eprintln!("    │     → ./scripts/testnet-deploy.sh");
         eprintln!("    │");
         eprintln!("    │ HIGH PRIORITY:");
-        eprintln!("    │ [ ] Generate real proof and validate size in [400, 1200] byte range");
+        eprintln!("    │ [ ] Generate real proof and validate size in [4000, 8000] byte range");
         eprintln!("    │     → cargo run --release -p zkmist-cli -- bin zkmist -- bench");
         eprintln!("    │ [ ] Benchmark proving time on reference hardware (<60 sec target)");
         eprintln!("    │ [ ] Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment");

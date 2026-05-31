@@ -295,6 +295,10 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     );
     eprintln!("      Run: zkmist submit {}", proof_path.display());
     eprintln!("      Or send to any relayer.");
+    eprintln!();
+    eprintln!("      ⚠️  This proof file contains your nullifier and is traceable");
+    eprintln!("         to your claim. Store securely and only share with trusted");
+    eprintln!("         relayers. The qualified address is NOT revealed on-chain.");
 
     Ok(())
 }
@@ -337,11 +341,11 @@ pub fn cmd_submit(
     let proof_bytes_len = hex::decode(&proof.proof)
         .map_err(|e| format!("Invalid proof hex: {}", e))?
         .len();
-    if !(400..=1200).contains(&proof_bytes_len) {
+    if !(PROOF_LENGTH_MIN..=PROOF_LENGTH_MAX).contains(&proof_bytes_len) {
         return Err(format!(
-            "Proof length {} bytes is outside expected range [400, 1200]. \
+            "Proof length {} bytes is outside expected range [{}, {}]. \
              The proof may be corrupted or generated with wrong parameters.",
-            proof_bytes_len
+            proof_bytes_len, PROOF_LENGTH_MIN, PROOF_LENGTH_MAX
         ));
     }
 
@@ -576,7 +580,7 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
     eprintln!("  Proof size:          {} bytes", proof_bytes.len());
     eprintln!(
         "  Proof in range:      {}",
-        if proof_bytes.len() >= 400 && proof_bytes.len() <= 1200 {
+        if proof_bytes.len() >= PROOF_LENGTH_MIN && proof_bytes.len() <= PROOF_LENGTH_MAX {
             "✅ YES"
         } else {
             "❌ NO"
@@ -593,12 +597,17 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
             total_time.as_secs_f64()
         );
     }
-    if proof_bytes.len() >= 400 && proof_bytes.len() <= 1200 {
-        eprintln!("  ✅ Proof size in expected range [400, 1200]");
+    if proof_bytes.len() >= PROOF_LENGTH_MIN && proof_bytes.len() <= PROOF_LENGTH_MAX {
+        eprintln!(
+            "  ✅ Proof size in expected range [{}, {}]",
+            PROOF_LENGTH_MIN, PROOF_LENGTH_MAX
+        );
     } else {
         eprintln!(
-            "  ⚠️  Proof size {} outside expected range [400, 1200]",
-            proof_bytes.len()
+            "  ⚠️  Proof size {} outside expected range [{}, {}]",
+            proof_bytes.len(),
+            PROOF_LENGTH_MIN,
+            PROOF_LENGTH_MAX
         );
     }
 

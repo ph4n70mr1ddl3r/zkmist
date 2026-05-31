@@ -60,7 +60,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(500);
+        bytes memory fakeProof = new bytes(5000);
         bytes32 nullifier = keccak256("test_nullifier");
         address recipient = address(0xB0B);
 
@@ -75,7 +75,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(500);
+        bytes memory fakeProof = new bytes(5000);
         bytes32 nullifier = keccak256("test_nullifier");
         address recipient = address(0xB0B);
 
@@ -90,7 +90,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(500);
+        bytes memory fakeProof = new bytes(5000);
         bytes32 nullifier = keccak256("test_nullifier");
 
         vm.expectRevert("Recipient cannot be zero");
@@ -106,7 +106,7 @@ contract ZKMV2E2ETest is Test {
     }
 
     function test_e2e_claim_rejected_long_proof() public {
-        bytes memory longProof = new bytes(2000);
+        bytes memory longProof = new bytes(10000);
         bytes32 nullifier = keccak256("test_nullifier");
 
         vm.expectRevert("Invalid proof length");
@@ -115,14 +115,14 @@ contract ZKMV2E2ETest is Test {
 
     // ── Boundary proof length tests ─────────────────────────────────────
 
-    function test_e2e_claim_rejected_proof_length_399() public {
-        bytes memory proof = new bytes(399);
+    function test_e2e_claim_rejected_proof_length_3999() public {
+        bytes memory proof = new bytes(3999);
         vm.expectRevert("Invalid proof length");
         airdrop.claim(proof, keccak256("n"), address(0xB0B));
     }
 
-    function test_e2e_claim_rejected_proof_length_1201() public {
-        bytes memory proof = new bytes(1201);
+    function test_e2e_claim_rejected_proof_length_8001() public {
+        bytes memory proof = new bytes(8001);
         vm.expectRevert("Invalid proof length");
         airdrop.claim(proof, keccak256("n"), address(0xB0B));
     }
@@ -177,7 +177,7 @@ contract ZKMV2E2ETest is Test {
         // Warp past the deadline (2027-01-01)
         vm.warp(1_798_761_601);
 
-        bytes memory fakeProof = new bytes(500);
+        bytes memory fakeProof = new bytes(5000);
         bytes32 nullifier = keccak256("test_nullifier");
 
         vm.expectRevert("Claim period ended");
@@ -193,7 +193,8 @@ contract ZKMV2E2ETest is Test {
 
         // Claim 5 times to verify the flow works
         for (uint256 i = 0; i < 5; i++) {
-            bytes memory fakeProof = new bytes(500);
+        // Make one claim
+        bytes memory fakeProof = new bytes(5000);
             bytes32 nullifier = bytes32(uint256(i + 1));
             address recipient = address(uint160(i + 1));
             a.claim(fakeProof, nullifier, recipient);
@@ -213,7 +214,7 @@ contract ZKMV2E2ETest is Test {
         uint256 supplyBefore = t.totalSupply();
 
         // Make one claim
-        bytes memory fakeProof = new bytes(500);
+        bytes memory fakeProof = new bytes(5000);
         bytes32 nullifier = bytes32(uint256(1));
         a.claim(fakeProof, nullifier, address(0xB0B));
 

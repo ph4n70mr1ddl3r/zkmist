@@ -180,6 +180,9 @@ zkmist/
 | **Claim** | **~350-400K** | **~$0.10-0.12** |
 | **Full Deploy (3 contracts)** | **~2.1M** | **~$0.50** |
 
+> **Note:** Halo2-KZG proofs are ~5.6 KB (5632 bytes). The verifier performs
+> full BN254 pairing verification via the `ecPairing` precompile (address `0x08`).
+
 ### Test
 
 ```shell
@@ -368,7 +371,7 @@ No special permissions or contract setup is required.
 > - Intermediate range checks every 32 scalar mul steps
 > - Limb range checks with MSB-first byte decomposition
 > - `conditional_select` uses single-assignment pattern (no double-writes)
-> - KZG params caching in `~/.zkmist/cache/`
+> - KZG params + VK caching in `~/.zkmist/cache/`
 > - 7 diverse test vectors: MSB=0, MSB=1, key=1, key=2, key=3, key=n-1, standard
 > - 50K nullifier collision test passing
 > - Nullifier birthday-bound analysis: collision probability ≈ 10⁻⁷² for 1M claims (negligible)
