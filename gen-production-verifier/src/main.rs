@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use ff::Field;
 use halo2_proofs::{
-    circuit::{Layouter, SimpleFloorPlanner},
+    circuit::{Layouter, SimpleFloorPlanner, Value},
     halo2curves::bn256::Fr,
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Instance, Selector, TableColumn},
     poly::{commitment::Params, Rotation},
@@ -144,7 +144,7 @@ struct Secp256k1Config {
     #[allow(dead_code)] fixed: Column<Fixed>,
     #[allow(dead_code)] range_check: RangeCheckConfig,
     s_mul: Selector, s_add: Selector, s_add_fixed: Selector,
-    s_mul_fixed: Selector, s_add_carry: Selector, s_bool: Selector,
+    s_mul_fixed: Selector, s_add_carry: Selector, s_bool: Selector, s_nonzero: Selector,
 }
 
 impl Secp256k1Config {
@@ -157,6 +157,7 @@ impl Secp256k1Config {
         let s_mul = meta.selector(); let s_add = meta.selector();
         let s_add_fixed = meta.selector(); let s_mul_fixed = meta.selector();
         let s_add_carry = meta.selector(); let s_bool = meta.selector();
+        let s_nonzero = meta.selector();
 
         meta.create_gate("secp_mul", |meta| {
             let s = meta.query_selector(s_mul);
@@ -189,7 +190,13 @@ impl Secp256k1Config {
             let x = meta.query_advice(advice[0], Rotation::cur());
             vec![s * (x.clone() * (Expression::Constant(Fr::ONE) - x))]
         });
-        Self { advice, fixed, range_check, s_mul, s_add, s_add_fixed, s_mul_fixed, s_add_carry, s_bool }
+        meta.create_gate("secp_nonzero", |meta| {
+            let s = meta.query_selector(s_nonzero);
+            let a = meta.query_advice(advice[0], Rotation::cur());
+            let b = meta.query_advice(advice[1], Rotation::cur());
+            vec![s * (a * b - Expression::Constant(Fr::ONE))]
+        });
+        Self { advice, fixed, range_check, s_mul, s_add, s_add_fixed, s_mul_fixed, s_add_carry, s_bool, s_nonzero }
     }
 
     /// Load lookup tables needed by the secp256k1 gadget.
@@ -315,6 +322,54 @@ impl Circuit<Fr> for ZKMistV2Claim {
     }
 }
 
+// ── Constraint-system digest parity (MEDIUM-finding guard) ────────────────
+//
+// This crate re-implements `configure()` by hand because it cannot import
+// `zkmist-circuits` (it needs the PSE halo2 git fork for `halo2_solidity_verifier`).
+// A verifying key is derived **only** from `configure()`, so if this copy ever
+// drifts from the real circuit, the generated Solidity verifier would silently
+// check a *different* circuit — accepting proofs for the wrong statement or
+// rejecting all honest ones.
+//
+// `constraint_system_digest` is a byte-for-byte copy of the function of the
+// same name in `zkmist-circuits/src/lib.rs`. We compute it for THIS crate's
+// `configure()` and assert it equals `EXPECTED_CS_DIGEST`, which is the value
+// captured by `zkmist-circuits`' test `test_circuit_constraint_system_digest`.
+// Update BOTH constants together whenever the circuit's `configure()` changes
+// (run that test, copy the printed `CS_DIGEST`).
+const EXPECTED_CS_DIGEST: &str = "72e30a6509cad673";
+
+fn constraint_system_digest(cs: &ConstraintSystem<Fr>) -> String {
+    // 1. Normalize: drop every "query_index: <num>, " occurrence.
+    let raw = format!("{:?}", cs.pinned());
+    let needle = b"query_index: ";
+    let bytes = raw.as_bytes();
+    let mut norm = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(needle) {
+            let mut j = i + needle.len();
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if bytes.get(j..j + 2) == Some(b", ") {
+                j += 2;
+            }
+            i = j;
+        } else {
+            norm.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    // 2. FNV-1a (64-bit).
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in norm.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_dir = PathBuf::from("../contracts/src");
@@ -345,6 +400,28 @@ fn main() {
 
     eprintln!("[1/4] Creating circuit (k={})...", k);
     let circuit = ZKMistV2Claim;
+
+    // Parity guard: refuse to emit a verifier whose VK would not match the
+    // production prover. If this assert fires, this crate's `configure()` has
+    // drifted from `zkmist-circuits` — re-sync the gate/column definitions and
+    // update `EXPECTED_CS_DIGEST` on both sides.
+    {
+        let mut cs = ConstraintSystem::<Fr>::default();
+        let _ = <ZKMistV2Claim as Circuit<Fr>>::configure(&mut cs);
+        let digest = constraint_system_digest(&cs);
+        if digest != EXPECTED_CS_DIGEST {
+            eprintln!("❌ Constraint-system digest mismatch!");
+            eprintln!("   this crate   : {}", digest);
+            eprintln!("   zkmist-circ  : {}", EXPECTED_CS_DIGEST);
+            eprintln!("   The hand-maintained configure() in this file has drifted from");
+            eprintln!("   zkmist-circuits/src/lib.rs. Re-sync the gate/column definitions.");
+            eprintln!("   If the change is intentional, update EXPECTED_CS_DIGEST in BOTH");
+            eprintln!("   files (run `cargo test -p zkmist-circuits ");
+            eprintln!("   test_circuit_constraint_system_digest -- --nocapture`).");
+            std::process::exit(1);
+        }
+        eprintln!("   ✓ constraint-system digest matches zkmist-circuits ({})", digest);
+    }
 
     eprintln!("[2/4] Generating KZG params...");
     let start = std::time::Instant::now();

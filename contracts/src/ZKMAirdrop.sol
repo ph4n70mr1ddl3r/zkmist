@@ -20,8 +20,19 @@ contract ZKMAirdrop {
     uint256 public constant CLAIM_AMOUNT = 10_000e18; // 10,000 ZKM
     uint256 public constant MAX_CLAIMS = 1_000_000;
     uint256 public constant CLAIM_DEADLINE = 1_798_761_600; // 2027-01-01 00:00:00 UTC
-    uint256 public constant MIN_PROOF_LENGTH = 4000;
-    uint256 public constant MAX_PROOF_LENGTH = 8000;
+
+    /// @notice Exact Halo2-KZG proof byte length.
+    /// @dev This is the authoritative length enforced inside `Halo2Verifier.sol`
+    ///      (`eq(0x1600, calldataload(PROOF_LEN_CPTR))`, where 0x1600 = 5632) and
+    ///      is fixed by the circuit's commitment structure. A pre-check here gives
+    ///      a clearer revert than the verifier's boolean return. If the circuit is
+    ///      ever regenerated such that the length changes, the verifier's hardcoded
+    ///      `0x1600` changes too (and the VK digest changes, invalidating all prior
+    ///      proofs), so this constant MUST be updated in lockstep with
+    ///      `Halo2Verifier.sol`. There is intentionally no "tolerance range": a
+    ///      proof whose length differs is for a different circuit and must be
+    ///      rejected.
+    uint256 public constant PROOF_LENGTH = 5632;
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;
@@ -61,8 +72,9 @@ contract ZKMAirdrop {
         require(!usedNullifiers[nullifier], "Already claimed");
         require(recipient != address(0), "Recipient cannot be zero");
 
-        // Validate proof length
-        require(proof.length >= MIN_PROOF_LENGTH && proof.length <= MAX_PROOF_LENGTH, "Invalid proof length");
+        // Validate proof length exactly matches the Halo2Verifier's expected
+        // size (see PROOF_LENGTH doc). The verifier re-checks this authoritatively.
+        require(proof.length == PROOF_LENGTH, "Invalid proof length");
 
         // Construct public inputs: [merkleRoot, nullifier, recipient]
         uint256[] memory publicInputs = new uint256[](3);

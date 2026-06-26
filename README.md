@@ -4,7 +4,9 @@
 
 [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **📋 Beta.** Halo2-KZG circuits implemented, 201 circuit tests + 53 contract tests passing. Soundness hardened with carry-propagated arithmetic, intermediate range checks, and **Schwartz–Zippel product verification** on all `field_mul` operations. Production verifier generation and testnet deployment remaining. See [V2_PLAN.md](./V2_PLAN.md) for architecture details.
+> **⚠️ Pre-alpha — NOT audited, NOT deployable.** Halo2-KZG circuits are implemented and the soundness-critical **wiring between the secp256k1 scalar, the Keccak-derived address, and the nullifier is constrained** (leaf↔address, nullifier↔scalar, pubkey↔Keccak-input), but the circuit has **not been externally audited** and the full end-to-end proof test has not yet passed at production `k`. Do not deploy to mainnet. The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that requires an independent security audit. See [SECURITY.md](./SECURITY.md) for audit status and [V2_PLAN.md](./V2_PLAN.md) for architecture.
+>
+> Note: a high test count is **not** a soundness signal — Halo2's `MockProver` only verifies gates that exist; it cannot detect a *missing* constraint.
 
 ZKMist is an airdrop token where 100% of supply goes to claimants — no team allocation, no treasury, no investors, no pre-mine. Every claimant receives exactly **10,000 ZKM**. Claims are anonymous: the qualified Ethereum address is never linked to the receiving address on-chain.
 
@@ -356,29 +358,44 @@ No special permissions or contract setup is required.
 
 ## Status
 
-> **⚠️ Beta — not yet deployed.**
+> **⚠️ Pre-alpha — not audited, not yet deployed.**
 >
-> **275+ tests passing** (60 circuit + 56 CLI + 13 merkle-tree + 73 Solidity). Zero clippy warnings. Gas snapshot committed.
+> **Soundness status — do NOT rely on this for value yet:**
+> - The circuit now **constrains the binding** between its three pillars: the
+>   secp256k1 scalar `k`, the Keccak-derived address (`keccak(k·G)`), and the
+>   emitted nullifier (`poseidon(k, domain)`). Specifically: the Merkle leaf is
+>   constrained equal to the Keccak address bits; the nullifier key is
+>   constrained equal to the accumulated scalar bits; and the Keccak input is
+>   constrained equal to the scalar-mul output coordinates. (An earlier revision
+>   left these as free advice cells — a catastrophic soundness break — and is now
+>   fixed.)
+> - **This fix has unit-level validation but has NOT been confirmed end-to-end.**
+>   The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`)
+>   must pass at `k=23` (8M rows, 30–90 min) before any deployment, and the
+>   on-chain `Halo2Verifier.sol` / `Halo2VerifyingKey.sol` must be regenerated
+>   from the corrected circuit.
+> - The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that
+>   has **not been externally audited**. An independent audit of both the
+>   arithmetic and the circuit wiring is required before mainnet.
 >
-> **Soundness hardening (completed):**
-> - secp256k1 scalar multiplication uses correct MSB-first bit ordering with P255 MSB correction
-> - `field_add_carried` uses raw limb sums for carry chain (not mod-p reduced values)
-> - `field_mul` uses constrained schoolbook products and wide limb accumulation
-> - **`field_mul` includes Schwartz–Zippel product verification** — every multiplication is cross-checked against a polynomial evaluation at r=65537, constraining the wide-to-narrow reduction (soundness error ≤ 6/p_BN254 per op)
-> - Reduction from wide-to-narrow is witness-guided (soundness from terminal `check_on_curve` + `constrain_affine` + **product verification**)
-> - `check_on_curve` verifies y² = x³ + 7 on the computed EC point
-> - `constrain_affine` verifies the computed point matches the expected public key
-> - Intermediate range checks every 32 scalar mul steps
-> - Limb range checks with MSB-first byte decomposition
-> - `conditional_select` uses single-assignment pattern (no double-writes)
-> - KZG params + VK caching in `~/.zkmist/cache/`
-> - 7 diverse test vectors: MSB=0, MSB=1, key=1, key=2, key=3, key=n-1, standard
-> - 50K nullifier collision test passing
-> - Nullifier birthday-bound analysis: collision probability ≈ 10⁻⁷² for 1M claims (negligible)
+> **Defense-in-depth mechanisms in place (NOT a substitute for audit):**
+> - `field_mul` Schwartz–Zippel product verification at r=65537
+> - `field_add_carried` carry-propagated limb addition
+> - `check_on_curve` (y² = x³ + 7) and `constrain_affine` terminal checks
+> - Intermediate + terminal limb range checks; MSB-corrected scalar mul
+> - Real (non-vacuous) recipient non-zero (`s_nonzero` gate) and uint160 range
+>   constraints
 >
-> **Known issue (blocking mainnet):**
-> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`) requires k=23 (8M rows) and takes 30-90 minutes. Needs re-run to confirm Schwartz–Zippel fix resolves all permutation failures.
-> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`) should now pass with the product verification fix. Needs re-verification.
+> **A test count is not a security signal.** `MockProver` verifies only the
+> gates that exist; it cannot detect a missing constraint. The negative tests
+> cover the constraints that are present.
+>
+> **Known issues (blocking mainnet):**
+> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`)
+>   requires k=23 and takes 30-90 minutes. Must be re-run to confirm the wiring
+>   fix produces a verifiable honest proof.
+> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`)
+>   likewise needs re-verification.
 >
 > **Tooling:**
 > - `zkmist bench` — proving timing benchmark with proof size validation

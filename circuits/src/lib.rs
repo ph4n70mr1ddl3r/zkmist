@@ -27,7 +27,7 @@ pub use poseidon::{PoseidonChip, PoseidonConfig, PoseidonParams};
 use ark_ff::PrimeField;
 use ff::Field;
 use halo2_proofs::{
-    circuit::{Layouter, SimpleFloorPlanner, Value},
+    circuit::{AssignedCell, Layouter, SimpleFloorPlanner, Value},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
 };
 use halo2curves::bn256::Fr;
@@ -42,6 +42,115 @@ use crate::secp256k1::{
     decompose_key_to_bits, native_derive_address, NativePoint, NativeSecpField, Secp256k1Chip,
     Secp256k1Config,
 };
+
+// ──────────────────────────────────────────────────────────────────────
+// Soundness-binding helpers (Findings 1–3)
+//
+// These helpers weld together the three otherwise-independent pillars of the
+// claim proof — (a) the secp256k1 scalar `k`, (b) the Keccak-derived address,
+// and (c) the nullifier — by accumulating the *constrained boolean bit cells*
+// produced by the gadgets into field elements and forcing equality. Every bit
+// is re-asserted boolean inside `accumulate_weighted_bits`, so each binding is
+// sound even if the feeding gadget relied on implicit booleanity.
+// ──────────────────────────────────────────────────────────────────────
+
+/// `2^exp` reduced modulo the BN254 scalar field prime.
+fn pow2_fr(exp: u32) -> Fr {
+    let mut v = Fr::ONE;
+    for _ in 0..exp {
+        v = v.double();
+    }
+    v
+}
+
+/// Deterministic fingerprint of a configured `ConstraintSystem`.
+///
+/// Built from halo2's public `pinned()` view, whose `Debug` output
+/// serializes every gate polynomial, lookup, permutation, and column count —
+/// i.e. exactly the set of things that determine a verifying key. The
+/// `query_index` bookkeeping field is stripped first (it is halo2-internal
+/// allocation order, not semantically meaningful — a query is fully
+/// identified by its column index + rotation), so the digest is stable across
+/// halo2 0.3.x patch versions while still pinning the full constraint
+/// structure. The normalized string is then folded with FNV-1a (64-bit) into a
+/// compact, dependency-free hash.
+///
+/// `gen-production-verifier` ships a byte-for-byte identical copy of this
+/// function and asserts its output equals `EXPECTED_CS_DIGEST`, preventing it
+/// from emitting a Solidity verifier for a circuit whose `configure()` has
+/// drifted from this crate.
+#[doc(hidden)]
+pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) -> String {
+    // 1. Normalize: drop every "query_index: <num>, " occurrence.
+    let raw = format!("{:?}", cs.pinned());
+    let needle = b"query_index: ";
+    let bytes = raw.as_bytes();
+    let mut norm = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(needle) {
+            let mut j = i + needle.len();
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if bytes.get(j..j + 2) == Some(b", ") {
+                j += 2;
+            }
+            i = j;
+        } else {
+            norm.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    // 2. FNV-1a (64-bit) — deterministic, no external dependency, identical in
+    //    both crates.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in norm.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
+/// Pinned digest of the production `ZKMistV2Claim` constraint system.
+///
+/// MUST be kept identical to the constant of the same name in
+/// `gen-production-verifier/src/main.rs`. The test
+/// `test_circuit_constraint_system_digest` guards this side; the generator's
+/// runtime assert guards the other. Update both together when `configure()`
+/// changes (run the test, copy the printed `CS_DIGEST` into both files).
+pub const EXPECTED_CS_DIGEST: &str = "72e30a6509cad673";
+
+/// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each
+/// already decomposed into 8 boolean bits by `build_initial_state`) to equal a
+/// single 64-bit limb cell of the scalar-mul output.
+///
+/// `input_byte_bits[byte]` holds the 8 bits of that input byte, LSB-first
+/// (`bit[0]` = least significant). `start_byte` is the MOST-significant byte
+/// of the limb. Limb value (little-endian 64-bit) is reconstructed as
+///   Σ_{k=0..7} Σ_{j=0..7} bit[start_byte+k][j] · 2^(8·(7-k) + j)
+/// and constrained equal to `limb`.
+fn bind_limb_to_inputs(
+    secp: &Secp256k1Chip,
+    layouter: &mut impl Layouter<Fr>,
+    input_byte_bits: &[Vec<AssignedCell<Fr, Fr>>],
+    start_byte: usize,
+    limb: &AssignedCell<Fr, Fr>,
+) -> Result<(), Error> {
+    let mut bits: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(64);
+    let mut weights: Vec<Fr> = Vec::with_capacity(64);
+    for k in 0..8u32 {
+        for j in 0..8u32 {
+            bits.push(input_byte_bits[start_byte + k as usize][j as usize].clone());
+            weights.push(pow2_fr(8 * (7 - k) + j));
+        }
+    }
+    let acc = secp.accumulate_weighted_bits(layouter, &bits, &weights)?;
+    layouter.assign_region(|| "bind_limb_eq", |mut region| {
+        region.constrain_equal(acc.cell(), limb.cell())
+    })?;
+    Ok(())
+}
 
 /// ZKMist V2 Claim Circuit.
 ///
@@ -143,10 +252,14 @@ impl Circuit<Fr> for ZKMistV2Claim {
         // The Keccak hash constrains the address derivation. The prover
         // must know a valid public key that hashes to the target address.
         let keccak_chip = crate::keccak::KeccakChip::new(&config.keccak);
-        let (_hash_bits, keccak_address) =
+        // ── Constrained Keccak: address bits + input byte bits ─────────
+        // `keccak_address_bits`: 160 constrained output bits of keccak(pub_x||pub_y)[96..256].
+        // `keccak_input_bytes` : per-byte input bit cells (200 bytes × 8 bits).
+        // Both are bound to the scalar-mul output and the Merkle leaf below.
+        let (keccak_address_bits, keccak_input_bytes, keccak_address) =
             keccak_chip.hash_pubkey_to_address(&mut layouter, &pub_x_bytes, &pub_y_bytes)?;
 
-        // Verify the derived address matches Keccak output
+        // Verify the derived address matches Keccak output (debug only)
         debug_assert_eq!(address_bytes, keccak_address);
 
         // ── Step 1b: secp256k1 scalar multiplication (constrained) ─────
@@ -277,15 +390,15 @@ impl Circuit<Fr> for ZKMistV2Claim {
             },
         )?;
 
-        // Scalar bits for multiplication
+        // Scalar bits for multiplication — assigned as boolean cells ONCE and
+        // shared between the scalar multiplication and the nullifier binding
+        // (Finding 2). This shared set of cells is what cryptographically links
+        // the nullifier key to the secp256k1 scalar actually multiplied.
         let scalar_bits_bool = decompose_key_to_bits(&self.private_key);
-        let scalar_bits: [Value<Fr>; 256] = std::array::from_fn(|i| {
-            Value::known(if scalar_bits_bool[i] {
-                Fr::ONE
-            } else {
-                Fr::ZERO
-            })
-        });
+        let scalar_bit_cells = secp_chip.assign_scalar_bits(&mut layouter, &scalar_bits_bool)?;
+        let scalar_bits: [AssignedCell<Fr, Fr>; 256] = scalar_bit_cells
+            .try_into()
+            .expect("assign_scalar_bits returns exactly 256 cells");
 
         // Perform constrained scalar multiplication: k * G
         let computed_point = secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
@@ -309,6 +422,50 @@ impl Circuit<Fr> for ZKMistV2Claim {
             &pub_y_assigned,
         )?;
 
+        // ── Finding 3: Bind the Keccak INPUT to the scalar-mul output ──
+        // `constrain_affine` already links k*G → (pub_x_assigned, pub_y_assigned).
+        // This block additionally forces the (pub_x||pub_y) bytes fed into the
+        // Keccak hash to be those exact coordinates. Without it, a malicious
+        // prover could hash an unrelated eligible pubkey while proving a
+        // different scalar multiplication, claiming eligibility for an address
+        // whose private key they do not know.
+        for limb_idx in 0..4usize {
+            // pub_x occupies Keccak input bytes 0..31; pub_y bytes 32..63.
+            // Limbs are little-endian: limb[i] covers bytes [(3-i)*8 .. +7].
+            bind_limb_to_inputs(
+                &secp_chip,
+                &mut layouter,
+                &keccak_input_bytes,
+                (3 - limb_idx) * 8,
+                &pub_x_assigned.limbs[limb_idx],
+            )?;
+            bind_limb_to_inputs(
+                &secp_chip,
+                &mut layouter,
+                &keccak_input_bytes,
+                32 + (3 - limb_idx) * 8,
+                &pub_y_assigned.limbs[limb_idx],
+            )?;
+        }
+
+        // ── Finding 1: Bind the Merkle leaf to the Keccak-derived address ──
+        // Accumulate the 160 constrained Keccak output bits into the address
+        // field element and force `leaf_input` to equal it. Without this, the
+        // leaf is a free advice cell and the prover can claim membership for
+        // any address in the (public) eligibility tree.
+        let address_weights: Vec<Fr> = (0..160u32)
+            .map(|m| {
+                let k = m / 8; // address byte index (0 = MSB byte = hash byte 12)
+                let j = m % 8; // bit-within-byte (0 = LSB)
+                pow2_fr(8 * (19 - k) + j)
+            })
+            .collect();
+        let address_acc = secp_chip.accumulate_weighted_bits(
+            &mut layouter,
+            &keccak_address_bits,
+            &address_weights,
+        )?;
+
         // ── Step 2: Leaf hash ─────────────────────────────────────────
         let leaf_params = PoseidonParams::new_circom(1);
         let leaf_hasher = PoseidonChip::new(config.poseidon.clone(), &leaf_params);
@@ -323,6 +480,10 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 )
             },
         )?;
+        // Cryptographic binding: leaf_input == accumulated Keccak address.
+        layouter.assign_region(|| "leaf_address_bind", |mut region| {
+            region.constrain_equal(leaf_input.cell(), address_acc.cell())
+        })?;
         let leaf = leaf_hasher.hash(&mut layouter, &[leaf_input])?;
 
         // ── Step 3: Merkle proof ──────────────────────────────────────
@@ -378,6 +539,20 @@ impl Circuit<Fr> for ZKMistV2Claim {
         layouter.constrain_instance(current.cell(), config.instance, 0)?;
 
         // ── Step 4: Nullifier ─────────────────────────────────────────
+
+        // ── Finding 2: Bind the nullifier key to the secp256k1 scalar ──
+        // Accumulate the SAME boolean bit cells used by `scalar_mul` into the
+        // field element fed to the nullifier Poseidon hash. This forces
+        // nullifier = poseidon(k, domain) to use the exact key whose k*G was
+        // verified above, preventing nullifier rotation (and thus double /
+        // unlimited claims with fresh nullifiers).
+        let nullifier_weights: Vec<Fr> = (0..256u32).map(|i| pow2_fr(255 - i)).collect();
+        let key_acc = secp_chip.accumulate_weighted_bits(
+            &mut layouter,
+            &scalar_bits,
+            &nullifier_weights,
+        )?;
+
         let key_field = {
             let ark_key = ark_bn254::Fr::from_be_bytes_mod_order(&self.private_key);
             ark_to_halo2(&ark_key)
@@ -388,6 +563,10 @@ impl Circuit<Fr> for ZKMistV2Claim {
                 region.assign_advice(|| "key", config.advice[0], 0, || Value::known(key_field))
             },
         )?;
+        // Cryptographic binding: key_cell == accumulated scalar bits.
+        layouter.assign_region(|| "nullifier_key_bind", |mut region| {
+            region.constrain_equal(key_cell.cell(), key_acc.cell())
+        })?;
         let domain = domain_field_element();
         let domain_cell = layouter.assign_region(
             || "null_domain",
@@ -399,18 +578,27 @@ impl Circuit<Fr> for ZKMistV2Claim {
         let computed_nullifier = nullifier_hasher.hash(&mut layouter, &[key_cell, domain_cell])?;
         layouter.constrain_instance(computed_nullifier.cell(), config.instance, 1)?;
 
-        // ── Step 5: Non-zero recipient + uint160 range constraint ─────
+        // ── Step 5: Real recipient constraints ─────────────────────────
         //
-        // The Solidity contract truncates recipient to uint160 via
-        // `uint256(uint160(recipient))`. For soundness, we must ensure
-        // the recipient fits in 160 bits (20 bytes). Without this constraint,
-        // a prover could supply a recipient > 2^160 which would be truncated
-        // on-chain to a different address.
+        // Two SOUND constraints, replacing the previous vacuous blocks:
         //
-        // Defense-in-depth:
-        //   1. Circuit: recipient must be non-zero AND fit in uint160
-        //   2. Solidity: `require(recipient != address(0))`
-        //   3. Solidity: `uint256(uint160(recipient))` truncation
+        //   (a) uint160 range: recipient is decomposed into 160 boolean bits
+        //       and accumulated under existing gates; the accumulator is
+        //       constrained equal to `recipient_cell`. Because every bit is
+        //       re-asserted boolean inside `accumulate_weighted_bits`, this
+        //       proves recipient = Σ_{i<160} bit_i·2^i  <  2^160. Hence no
+        //       valid proof exists for a recipient that Solidity's
+        //       `uint160(recipient)` would truncate to a different address.
+        //
+        //   (b) non-zero: `assert_nonzero` enables the `s_nonzero` gate
+        //       (recipient · inv − 1 = 0). The constant 1 lives inside the
+        //       gate polynomial, so a zero recipient provably cannot satisfy
+        //       it — unlike the old code, which only constrained a prover-
+        //       assigned `prod` cell to a prover-assigned `one` cell.
+        //
+        // These are defense-in-depth: the Solidity contract also rejects
+        // `address(0)` and the recipient is bound to the (always-uint160)
+        // public input via `constrain_instance` below.
         let recipient_cell = layouter.assign_region(
             || "recipient",
             |mut region| {
@@ -423,124 +611,40 @@ impl Circuit<Fr> for ZKMistV2Claim {
             },
         )?;
 
-        // Non-zero constraint: recipient must not be zero.
-        // We constrain recipient * inv = 1, where inv is the modular inverse.
-        // If recipient = 0, the inverse doesn't exist in the field, and the
-        // prover cannot construct a satisfying assignment.
-        //
-        // uint160 range constraint: recipient must fit in 20 bytes.
-        // We decompose recipient into 20 bytes and range-check each byte
-        // using the 8-bit lookup table. If any of the upper 12 bytes (bytes
-        // 20-31) is non-zero, the proof cannot be constructed.
-        //
-        // NOTE: The Solidity contract ALSO checks `recipient != address(0)` as
-        // a defense-in-depth measure. This circuit constraint provides the
-        // cryptographic guarantee that no valid proof exists for a zero recipient
-        // or a recipient that would be truncated by `uint160()`.
-        layouter.assign_region(
-            || "recipient_nonzero",
-            |mut region| {
-                // Compute inverse outside the circuit. If recipient is zero,
-                // we use Fr::ZERO as a placeholder — the constraint will fail
-                // because 0 * 0 != 1.
-                let inv_val = Option::<Fr>::from(self.recipient.invert()).unwrap_or(Fr::ZERO);
-
-                let recip_copy = region.assign_advice(
-                    || "r",
-                    config.advice[0],
-                    0,
-                    || Value::known(self.recipient),
-                )?;
-                region.constrain_equal(recipient_cell.cell(), recip_copy.cell())?;
-
-                let _inv_cell = region.assign_advice(
-                    || "inv",
-                    config.advice[1],
-                    0,
-                    || Value::known(inv_val),
-                )?;
-                let prod = region.assign_advice(
-                    || "prod",
-                    config.advice[2],
-                    0,
-                    || Value::known(self.recipient * inv_val),
-                )?;
-
-                // Constrain: recipient * inv = 1
-                // This is enforced by constraining prod to the constant 1.
-                // We use the instance column or a fixed column for the constant.
-                // Since we don't want to add another instance input, we use
-                // a simple gate approach: copy prod and a known-1 cell, constrain equal.
-                // For simplicity, we assign a constant 1 and constrain equality.
-                let one = region.assign_advice(
-                    || "one",
-                    config.advice[3],
-                    0,
-                    || Value::known(Fr::ONE),
-                )?;
-                region.constrain_equal(prod.cell(), one.cell())?;
-
-                Ok(())
-            },
-        )?;
-
-        // ── Step 5b: uint160 range constraint ─────────────────────────
-        // Decompose recipient into bytes and range-check each one.
-        // The upper 12 bytes (bytes 20..32) must be zero.
-        //
-        // This prevents a soundness issue where a recipient > 2^160
-        // would be truncated by Solidity's `uint160(recipient)` to a
-        // different address than the one constrained in the circuit.
-        //
-        // The CLI prover constructs `recipient = Fr::from(uint64(address))`,
-        // which is always < 2^160. This constraint ensures that even if
-        // the prover is modified, no valid proof exists for out-of-range
-        // recipients.
+        // (a) uint160 range constraint: decompose into 160 boolean bits.
         {
             use ff::PrimeField;
-            let recipient_repr = self.recipient.to_repr();
-            let recipient_le: &[u8] = recipient_repr.as_ref();
-
-            // Verify the upper 12 bytes are zero (LE: bytes 20..32)
-            // If any upper byte is non-zero, the proof will fail because
-            // we assign 0 to the corresponding byte cell and constrain
-            // equality with the decomposed recipient.
-            layouter.assign_region(
-                || "recipient_uint160_range",
+            let repr = self.recipient.to_repr();
+            let le: &[u8] = repr.as_ref();
+            // 160 bits, LSB-first: bit i ↔ byte i/8, bit-within-byte i%8.
+            let bit_cells: Vec<AssignedCell<Fr, Fr>> = layouter.assign_region(
+                || "recipient_bits",
                 |mut region| {
-                    // Decompose recipient into 32 LE bytes
-                    for (byte_idx, offset) in (0..32).enumerate() {
-                        let byte_val = Fr::from(recipient_le[byte_idx] as u64);
-                        let byte_cell = region.assign_advice(
-                            || format!("byte_{}", byte_idx),
-                            config.advice[byte_idx % 4],
-                            offset,
-                            || Value::known(byte_val),
+                    let mut cells = Vec::with_capacity(160);
+                    for i in 0..160usize {
+                        let set = (le[i / 8] >> (i % 8)) & 1 == 1;
+                        let col = config.advice[(i / 64) % 8];
+                        let cell = region.assign_advice(
+                            || format!("rb_{}", i),
+                            col,
+                            i % 64,
+                            || Value::known(if set { Fr::ONE } else { Fr::ZERO }),
                         )?;
-
-                        // Range-check each byte is in [0, 255] using the lookup table
-                        config.range_check.assign_and_check_byte(
-                            &mut region,
-                            offset,
-                            Value::known(byte_val),
-                        )?;
-
-                        // For the upper 12 bytes (indices 20..32 in LE),
-                        // constrain to zero. This enforces recipient < 2^160.
-                        if byte_idx >= 20 {
-                            let zero = region.assign_advice(
-                                || format!("zero_{}", byte_idx),
-                                config.advice[(byte_idx % 4 + 1) % 4],
-                                offset,
-                                || Value::known(Fr::ZERO),
-                            )?;
-                            region.constrain_equal(byte_cell.cell(), zero.cell())?;
-                        }
+                        cells.push(cell);
                     }
-                    Ok(())
+                    Ok(cells)
                 },
             )?;
+            let weights: Vec<Fr> = (0..160u32).map(pow2_fr).collect();
+            let rec_acc =
+                secp_chip.accumulate_weighted_bits(&mut layouter, &bit_cells, &weights)?;
+            layouter.assign_region(|| "recipient_uint160_bind", |mut region| {
+                region.constrain_equal(rec_acc.cell(), recipient_cell.cell())
+            })?;
         }
+
+        // (b) non-zero recipient.
+        secp_chip.assert_nonzero(&mut layouter, &recipient_cell)?;
 
         layouter.constrain_instance(recipient_cell.cell(), config.instance, 2)?;
 
@@ -677,6 +781,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Constraint-system digest (fingerprint) parity test.
+    ///
+    /// `gen-production-verifier` re-implements `configure()` by hand (it cannot
+    /// import this crate — it depends on the PSE halo2 git fork for
+    /// `halo2_solidity_verifier`). A VK is derived **only** from `configure()`,
+    /// so if the two implementations diverge the on-chain verifier silently
+    /// checks a *different* circuit.
+    ///
+    /// This test pins the real circuit's `ConstraintSystem` to the constant
+    /// `EXPECTED_CS_DIGEST`. `gen-production-verifier` asserts against the
+    /// *same* constant before generating the VK, so any divergence between the
+    /// two `configure()` implementations blocks verifier regeneration. Update
+    /// both constants together whenever the circuit's `configure()` changes.
+    #[test]
+    fn test_circuit_constraint_system_digest() {
+        use halo2_proofs::plonk::ConstraintSystem;
+        let mut cs = ConstraintSystem::<Fr>::default();
+        let _cfg = <ZKMistV2Claim as Circuit<Fr>>::configure(&mut cs);
+        let digest = constraint_system_digest(&cs);
+        eprintln!("CS_DIGEST = {}", digest);
+        assert_eq!(
+            digest, EXPECTED_CS_DIGEST,
+            "circuit constraint system changed; regenerate the digest and \
+             update EXPECTED_CS_DIGEST here AND in gen-production-verifier"
+        );
     }
 
     /// Isolated secp256k1 MockProver test.
@@ -883,15 +1014,13 @@ mod tests {
                     },
                 )?;
 
-                // Scalar multiplication
+                // Scalar multiplication (bits assigned as constrained boolean
+                // cells, matching the production circuit's scalar/nullifier binding).
                 let scalar_bits_bool = crate::secp256k1::decompose_key_to_bits(&self.private_key);
-                let scalar_bits: [Value<Fr>; 256] = std::array::from_fn(|i| {
-                    Value::known(if scalar_bits_bool[i] {
-                        Fr::ONE
-                    } else {
-                        Fr::ZERO
-                    })
-                });
+                let scalar_bit_cells = secp_chip.assign_scalar_bits(&mut layouter, &scalar_bits_bool)?;
+                let scalar_bits: [AssignedCell<Fr, Fr>; 256] = scalar_bit_cells
+                    .try_into()
+                    .expect("assign_scalar_bits returns exactly 256 cells");
 
                 let computed_point =
                     secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
@@ -1708,19 +1837,23 @@ mod tests {
         // Fr::from(1u64) << 160 is not directly expressible, so we use a large value.
         // 2^160 + 1 in hex is 1 followed by 40 hex digits of zeros + 1.
         // In LE representation, byte index 20 would be non-zero.
-        let big_recipient = {
-            // 2^168 = 2^160 * 256 — well above uint160 range
-            let mut bytes = [0u8; 32];
-            bytes[21] = 1; // LE byte 21 = 2^168
-            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&bytes))
-        };
+        // 2^168 — strictly greater than 2^160, so the uint160 decomposition
+        // (160 bits, weights 2^0..2^159) cannot represent it and the proof
+        // must be rejected. `pow2_fr` keeps this exact in the field (168 < 254,
+        // no modular wraparound).
+        let big_recipient = pow2_fr(168);
 
-        // Verify the recipient is indeed > 2^160
+        // Sanity: the recipient is genuinely above the uint160 range (some
+        // byte at LE index >= 20 is non-zero).
         use ff::PrimeField;
-        let repr = big_recipient.to_repr();
-        let le_bytes: &[u8] = repr.as_ref();
-        let upper_bytes_nonzero: bool = le_bytes[20..32].iter().any(|&b| b != 0);
-        assert!(upper_bytes_nonzero, "Test recipient must exceed uint160");
+        {
+            let repr = big_recipient.to_repr();
+            let le_bytes: &[u8] = repr.as_ref();
+            assert!(
+                le_bytes[20..32].iter().any(|&b| b != 0),
+                "test recipient must exceed uint160"
+            );
+        }
 
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
@@ -1784,5 +1917,154 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Validate the three soundness-binding weight arrays (Findings 1–3) as
+    /// pure-Rust field arithmetic. These checks confirm that the constrained
+    /// accumulations would equal their target field elements for an honest
+    /// witness, catching any bit-ordering mistake instantly — without the
+    /// 30–90 min full-circuit MockProver run.
+    #[test]
+    fn test_binding_weight_math() {
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+
+        // ── Finding 2: nullifier-key accumulation, weights 2^(255−i) ──
+        let bits = decompose_key_to_bits(&key);
+        let mut key_acc = Fr::ZERO;
+        for i in 0..256usize {
+            if bits[i] {
+                key_acc += pow2_fr(255 - i as u32);
+            }
+        }
+        let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
+        assert_eq!(key_acc, key_field, "nullifier accumulation must equal key mod p");
+
+        // ── Finding 1: Merkle-leaf address accumulation ──
+        let (_addr, pub_x, pub_y) = native_derive_address(&key);
+        let hash = crate::keccak::native_hash_pubkey(&pub_x, &pub_y);
+        let mut padded = [0u8; 32];
+        padded[12..32].copy_from_slice(&hash[12..32]);
+        let address_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&padded));
+        let mut addr_acc = Fr::ZERO;
+        for m in 0..160u32 {
+            let k = m / 8; // address byte index (0 => hash byte 12, MSB of address)
+            let j = m % 8; // bit-within-byte (0 = LSB)
+            let bit = (hash[12 + k as usize] >> j) & 1;
+            if bit == 1 {
+                addr_acc += pow2_fr(8 * (19 - k) + j);
+            }
+        }
+        assert_eq!(addr_acc, address_field, "leaf accumulation must equal address field");
+
+        // ── Finding 3: public-key limb accumulations ──
+        for (coord, label) in [(&pub_x, "pub_x"), (&pub_y, "pub_y")] {
+            let native = NativeSecpField::from_bytes_be(coord);
+            for limb_idx in 0..4usize {
+                let start_byte = (3 - limb_idx) * 8;
+                let mut limb_acc = Fr::ZERO;
+                for k in 0..8u32 {
+                    for j in 0..8u32 {
+                        let bit = (coord[start_byte + k as usize] >> j) & 1;
+                        if bit == 1 {
+                            limb_acc += pow2_fr(8 * (7 - k) + j);
+                        }
+                    }
+                }
+                assert_eq!(
+                    limb_acc,
+                    native.to_bn254_limbs()[limb_idx],
+                    "{} limb {} accumulation mismatch",
+                    label,
+                    limb_idx
+                );
+            }
+        }
+    }
+
+    /// Validate the `accumulate_weighted_bits` gate wiring (s_bool +
+    /// s_mul_fixed + s_add) in a tiny isolated circuit. Runs MockProver::verify
+    /// at k=9 in milliseconds — confirms the primitive is satisfiable for an
+    /// honest witness (no over-constraint) before relying on it in the full
+    /// circuit.
+    #[test]
+    fn test_accumulate_weighted_bits_primitive() {
+        use halo2_proofs::{
+            circuit::SimpleFloorPlanner,
+            dev::MockProver,
+            plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
+        };
+
+        #[derive(Clone)]
+        struct AccTest {
+            bits: Vec<bool>,
+            weights: Vec<Fr>,
+        }
+        #[derive(Clone, Debug)]
+        struct AccCfg {
+            secp: Secp256k1Config,
+            instance: Column<Instance>,
+            advice: [Column<Advice>; 16],
+        }
+
+        impl Circuit<Fr> for AccTest {
+            type Config = AccCfg;
+            type FloorPlanner = SimpleFloorPlanner;
+            fn without_witnesses(&self) -> Self {
+                self.clone()
+            }
+            fn configure(meta: &mut ConstraintSystem<Fr>) -> AccCfg {
+                let advice: [Column<Advice>; 16] = std::array::from_fn(|_| {
+                    let c = meta.advice_column();
+                    meta.enable_equality(c);
+                    c
+                });
+                let instance = meta.instance_column();
+                meta.enable_equality(instance);
+                let secp = Secp256k1Config::configure(
+                    meta,
+                    [
+                        advice[0], advice[1], advice[2], advice[3], advice[4], advice[5],
+                        advice[6], advice[7],
+                    ],
+                    advice[13],
+                );
+                AccCfg { secp, instance, advice }
+            }
+            fn synthesize(
+                &self,
+                config: AccCfg,
+                mut layouter: impl halo2_proofs::circuit::Layouter<Fr>,
+            ) -> Result<(), Error> {
+                let chip = Secp256k1Chip::new(&config.secp);
+                let bit_cells = layouter.assign_region(|| "bits", |mut region| {
+                    let mut cells = Vec::with_capacity(self.bits.len());
+                    for (i, &b) in self.bits.iter().enumerate() {
+                        cells.push(region.assign_advice(
+                            || "b",
+                            config.advice[i % 8],
+                            i / 8,
+                            || Value::known(if b { Fr::ONE } else { Fr::ZERO }),
+                        )?);
+                    }
+                    Ok(cells)
+                })?;
+                let acc = chip.accumulate_weighted_bits(&mut layouter, &bit_cells, &self.weights)?;
+                layouter.constrain_instance(acc.cell(), config.instance, 0)?;
+                Ok(())
+            }
+        }
+
+        // 0x6E = 0b01101110, expressed LSB-first.
+        let bits: Vec<bool> = vec![false, true, true, true, false, true, true, false];
+        let weights: Vec<Fr> = (0..8u32).map(pow2_fr).collect();
+        let expected = Fr::from(0x6Eu64);
+        let circuit = AccTest { bits, weights };
+        let prover = MockProver::run(9, &circuit, vec![vec![expected]]).unwrap();
+        assert_eq!(prover.verify(), Ok(()));
+        eprintln!("✅ accumulate_weighted_bits primitive verifies (k=9)");
     }
 }

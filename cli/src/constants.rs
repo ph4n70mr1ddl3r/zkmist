@@ -47,14 +47,21 @@ pub const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD";
 pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 
 /// Proof byte length bounds.
-/// These MUST match the Halo2Verifier.sol expected proof size.
-/// The current verifier (halo2-solidity-verifier) expects exactly 5632 bytes (0x1600).
-/// The bounds are wider to accommodate minor variations from VK regeneration.
-/// The verifier's internal length check is the authoritative validation.
+/// Client-side proof byte-length pre-filter (loose range).
+///
+/// This is a NON-authoritative sanity check on loaded proof files only — it
+/// rejects obvious garbage before submitting. The authoritative check is the
+/// EXACT length `eq(0x1600, ...)` (= 5632 bytes) hardcoded in
+/// `Halo2Verifier.sol`, which rejects any proof whose length differs. The
+/// range below is deliberately wide so it never rejects a legitimate proof;
+/// it only catches truncated/corrupt files. See `PROOF_LENGTH_EXPECTED` for
+/// the real production length.
 pub const PROOF_LENGTH_MIN: usize = 4000;
 pub const PROOF_LENGTH_MAX: usize = 8000;
 
-/// Expected exact proof length from the current Halo2Verifier.sol.
+/// Exact proof byte length enforced by `Halo2Verifier.sol` (`0x1600`).
+/// Single source of truth — keep in lockstep with the contract's
+/// `PROOF_LENGTH` constant and the generated verifier's hardcoded check.
 pub const PROOF_LENGTH_EXPECTED: usize = 5632;
 
 /// Proof format version.

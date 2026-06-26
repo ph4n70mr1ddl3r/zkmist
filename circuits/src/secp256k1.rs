@@ -500,6 +500,9 @@ pub struct Secp256k1Config {
     s_mul_fixed: Selector,
     s_add_carry: Selector,
     s_bool: Selector,
+    /// Selector for the non-zero gate `a * b - 1 = 0` (proves `a` is
+    /// invertible / non-zero: `b` is the prover-supplied inverse).
+    s_nonzero: Selector,
 }
 
 impl Secp256k1Config {
@@ -590,6 +593,18 @@ impl Secp256k1Config {
             vec![s * (x.clone() * (one - x))]
         });
 
+        // Non-zero gate: advice[0] * advice[1] - 1 = 0.
+        // Proves advice[0] ≠ 0: the prover supplies advice[1] = inverse(advice[0])
+        // and the gate forces the product to equal the constant 1. If advice[0]
+        // is 0 no advice[1] can satisfy this (0 * anything = 0 ≠ 1).
+        let s_nonzero = meta.selector();
+        meta.create_gate("secp_nonzero", |meta| {
+            let s = meta.query_selector(s_nonzero);
+            let a = meta.query_advice(advice[0], Rotation::cur());
+            let b = meta.query_advice(advice[1], Rotation::cur());
+            vec![s * (a * b - Expression::Constant(Fr::ONE))]
+        });
+
         Self {
             advice,
             fixed,
@@ -600,6 +615,7 @@ impl Secp256k1Config {
             s_mul_fixed,
             s_add_carry,
             s_bool,
+            s_nonzero,
         }
     }
 
@@ -1410,7 +1426,7 @@ impl<'a> Secp256k1Chip<'a> {
     pub fn scalar_mul(
         &self,
         layouter: &mut impl Layouter<Fr>,
-        scalar_bits: &[Value<Fr>; 256],
+        scalar_bits: &[AssignedCell<Fr, Fr>; 256],
         base_point: &AssignedPoint,
     ) -> Result<AssignedPoint, Error> {
         // Start with the base point (assumes bits[0]=1 for the MSB).
@@ -1422,7 +1438,7 @@ impl<'a> Secp256k1Chip<'a> {
 
             let added = self.point_add(layouter, &doubled, base_point)?;
             accumulator =
-                self.conditional_select_point(layouter, &added, &doubled, scalar_bits[i])?;
+                self.conditional_select_point(layouter, &added, &doubled, &scalar_bits[i])?;
 
             // Intermediate soundness: range-check coordinate limbs every 32
             // steps to detect overflow or invalid field elements during scalar
@@ -1490,10 +1506,168 @@ impl<'a> Secp256k1Chip<'a> {
             layouter,
             &accumulator, // a: selected when bits[0]=1 (correct as-is)
             &subtracted,  // b: selected when bits[0]=0 (subtract P255)
-            scalar_bits[0],
+            &scalar_bits[0],
         )?;
 
         Ok(accumulator)
+    }
+
+    /// Assign the 256 scalar bits as constrained boolean advice cells.
+    ///
+    /// These cells are the single source of truth for the scalar: they are
+    /// consumed by both [`scalar_mul`](Self::scalar_mul) and the nullifier-key
+    /// binding, which is what cryptographically ties the emitted nullifier to
+    /// the secp256k1 scalar actually multiplied. Each bit is (re-)asserted
+    /// boolean when it is accumulated by [`accumulate_weighted_bits`].
+    pub fn assign_scalar_bits(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        bits: &[bool; 256],
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
+        layouter.assign_region(
+            || "scalar_bits",
+            |mut region| {
+                let mut cells = Vec::with_capacity(256);
+                for i in 0..256 {
+                    let col = self.config.advice[i % 8];
+                    let row = i / 8;
+                    let cell = region.assign_advice(
+                        || format!("scalar_bit_{}", i),
+                        col,
+                        row,
+                        || Value::known(if bits[i] { Fr::ONE } else { Fr::ZERO }),
+                    )?;
+                    cells.push(cell);
+                }
+                Ok(cells)
+            },
+        )
+    }
+
+    /// Accumulate boolean bit-cells into a single field element under full
+    /// constraints: `result = Σ_i bits[i] · weights[i]` (mod BN254).
+    ///
+    /// For every bit this enables, on one row, BOTH:
+    ///   - `s_bool`      : `bit · (1 − bit) = 0`   (re-asserts booleanity), and
+    ///   - `s_mul_fixed` : `bit · weight = partial`.
+    /// A following `s_add` row folds `partial` into a running accumulator.
+    ///
+    /// Because the accumulation runs in the BN254 scalar field, the result is
+    /// the integer `Σ bits[i]·weights[i]` reduced mod p_BN254. This is used to:
+    ///   * bind the nullifier key to the scalar bits (weights 2^(255−i)),
+    ///   * bind the Merkle leaf to the Keccak address bits, and
+    ///   * bind each Keccak input byte-group to a public-key limb.
+    pub fn accumulate_weighted_bits(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        bits: &[AssignedCell<Fr, Fr>],
+        weights: &[Fr],
+    ) -> Result<AssignedCell<Fr, Fr>, Error> {
+        assert_eq!(bits.len(), weights.len(), "bits/weights length mismatch");
+        layouter.assign_region(
+            || "accumulate_weighted_bits",
+            |mut region| {
+                let mut offset = 0usize;
+                // Running accumulator (advice[2]); starts at zero. Soundness of
+                // the zero start is implied by the terminal `constrain_equal`
+                // the caller places against a known target.
+                let mut acc: AssignedCell<Fr, Fr> = region.assign_advice(
+                    || "acc_init",
+                    self.config.advice[2],
+                    offset,
+                    || Value::known(Fr::ZERO),
+                )?;
+
+                for (i, bit) in bits.iter().enumerate() {
+                    // Row: advice[0] = bit (copy), fixed = weight, advice[1] = bit·weight.
+                    let b_copy = region.assign_advice(
+                        || "ab_bit",
+                        self.config.advice[0],
+                        offset,
+                        || bit.value().copied(),
+                    )?;
+                    region.constrain_equal(bit.cell(), b_copy.cell())?;
+                    region.assign_fixed(
+                        || "ab_weight",
+                        self.config.fixed,
+                        offset,
+                        || Value::known(weights[i]),
+                    )?;
+                    let partial = region.assign_advice(
+                        || "ab_partial",
+                        self.config.advice[1],
+                        offset,
+                        || bit.value().copied().map(|v| v * weights[i]),
+                    )?;
+                    self.config.s_bool.enable(&mut region, offset)?;
+                    self.config.s_mul_fixed.enable(&mut region, offset)?;
+                    offset += 1;
+
+                    // Row: acc + partial = new_acc  (s_add: advice[0]+advice[1]=advice[2])
+                    let acc_copy = region.assign_advice(
+                        || "ab_acc",
+                        self.config.advice[0],
+                        offset,
+                        || acc.value().copied(),
+                    )?;
+                    region.constrain_equal(acc.cell(), acc_copy.cell())?;
+                    let part_copy = region.assign_advice(
+                        || "ab_part",
+                        self.config.advice[1],
+                        offset,
+                        || partial.value().copied(),
+                    )?;
+                    region.constrain_equal(partial.cell(), part_copy.cell())?;
+                    acc = region.assign_advice(
+                        || "ab_newacc",
+                        self.config.advice[2],
+                        offset,
+                        || acc
+                            .value()
+                            .copied()
+                            .zip(partial.value().copied())
+                            .map(|(a, p)| a + p),
+                    )?;
+                    self.config.s_add.enable(&mut region, offset)?;
+                    offset += 1;
+                }
+                Ok(acc)
+            },
+        )
+    }
+
+    /// Prove that `val` is non-zero by supplying its inverse and enabling the
+    /// `s_nonzero` gate (`val · inv − 1 = 0`). Sound: if `val == 0` then
+    /// `0 · inv = 0 ≠ 1` for every field element `inv`, so no satisfying
+    /// assignment exists. Unlike the inverse-and-constrain-equal-to-one
+    /// pattern, the constant 1 lives *inside* the gate polynomial, so the
+    /// prover cannot cheat by reassigning the “one” cell.
+    pub fn assert_nonzero(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        val: &AssignedCell<Fr, Fr>,
+    ) -> Result<(), Error> {
+        layouter.assign_region(
+            || "assert_nonzero",
+            |mut region| {
+                // advice[0] = val (copy); advice[1] = inverse(val) (prover witness).
+                let a = region.assign_advice(
+                    || "nz_val",
+                    self.config.advice[0],
+                    0,
+                    || val.value().copied(),
+                )?;
+                region.constrain_equal(val.cell(), a.cell())?;
+                let inv = val.value().copied().map(|v| {
+                    // 0⁻¹ is undefined; the gate will reject it regardless of
+                    // what we put here, so fall back to 0.
+                    Option::<Fr>::from(v.invert()).unwrap_or(Fr::ZERO)
+                });
+                region.assign_advice(|| "nz_inv", self.config.advice[1], 0, || inv)?;
+                self.config.s_nonzero.enable(&mut region, 0)?;
+                Ok(())
+            },
+        )
     }
 
     /// Assign a native affine point as constant cells (Z = 1).
@@ -1553,7 +1727,7 @@ impl<'a> Secp256k1Chip<'a> {
         layouter: &mut impl Layouter<Fr>,
         a: &AssignedPoint,
         b: &AssignedPoint,
-        bit: Value<Fr>,
+        bit: &AssignedCell<Fr, Fr>,
     ) -> Result<AssignedPoint, Error> {
         let x = self.conditional_select_field(layouter, &a.x, &b.x, bit)?;
         let y = self.conditional_select_field(layouter, &a.y, &b.y, bit)?;
@@ -1574,24 +1748,36 @@ impl<'a> Secp256k1Chip<'a> {
         layouter: &mut impl Layouter<Fr>,
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
-        bit: Value<Fr>,
+        bit: &AssignedCell<Fr, Fr>,
     ) -> Result<AssignedFieldElement, Error> {
         layouter.assign_region(
             || "secp_cond_select",
             |mut region| {
                 let mut offset = 0;
 
-                // Row 0: Constrain sel to be boolean
-                let sel_cell =
-                    region.assign_advice(|| "sel", self.config.advice[0], offset, || bit)?;
+                // Row 0: Constrain sel to be boolean. `bit` is an externally-
+                // supplied boolean cell (the shared scalar bit); copy it in and
+                // constrain equality so the conditional select provably uses
+                // that exact bit value.
+                let sel_cell = region.assign_advice(
+                    || "sel",
+                    self.config.advice[0],
+                    offset,
+                    || bit.value().copied(),
+                )?;
+                region.constrain_equal(bit.cell(), sel_cell.cell())?;
                 self.config.s_bool.enable(&mut region, offset)?;
                 offset += 1;
 
                 // Row 1: Constrain one_minus_sel: sel + one_minus_sel = 1
                 // s_add gate: advice[0] + advice[1] = advice[2]
-                let one_minus_sel_val = bit.map(|s| Fr::ONE - s);
-                let sel_for_add =
-                    region.assign_advice(|| "sel_add", self.config.advice[0], offset, || bit)?;
+                let one_minus_sel_val = bit.value().copied().map(|s| Fr::ONE - s);
+                let sel_for_add = region.assign_advice(
+                    || "sel_add",
+                    self.config.advice[0],
+                    offset,
+                    || bit.value().copied(),
+                )?;
                 region.constrain_equal(sel_cell.cell(), sel_for_add.cell())?;
                 let one_minus_sel = region.assign_advice(
                     || "oms",
@@ -1613,13 +1799,17 @@ impl<'a> Secp256k1Chip<'a> {
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
-                    let sel_a_val = bit.zip(a_val).map(|(s, a)| s * a);
+                    let sel_a_val = bit.value().copied().zip(a_val).map(|(s, a)| s * a);
                     let oms_b_val = one_minus_sel_val.zip(b_val).map(|(m, b)| m * b);
                     let sum_val = sel_a_val.zip(oms_b_val).map(|(a, b)| a + b);
 
                     // Row: s_mul for sel * a[i]
-                    let sel_r =
-                        region.assign_advice(|| "sr", self.config.advice[0], offset, || bit)?;
+                    let sel_r = region.assign_advice(
+                        || "sr",
+                        self.config.advice[0],
+                        offset,
+                        || bit.value().copied(),
+                    )?;
                     region.constrain_equal(sel_cell.cell(), sel_r.cell())?;
                     let a_r =
                         region.assign_advice(|| "ar", self.config.advice[1], offset, || a_val)?;

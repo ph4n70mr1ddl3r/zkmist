@@ -550,7 +550,7 @@ impl<'a> KeccakChip<'a> {
         offset: &mut usize,
         pub_x: &[u8; 32],
         pub_y: &[u8; 32],
-    ) -> Result<Vec<Vec<AssignedCell<Fr, Fr>>>, Error> {
+    ) -> Result<(Vec<Vec<AssignedCell<Fr, Fr>>>, Vec<Vec<AssignedCell<Fr, Fr>>>), Error> {
         // Build the 200-byte state array
         let mut state_bytes = [0u8; 200];
 
@@ -568,6 +568,9 @@ impl<'a> KeccakChip<'a> {
         // Now decompose all 200 bytes into bits and organize into 25 lanes
         // Each lane is 8 bytes, little-endian: bit[i] = byte[i/8] bit (i%8)
         let mut all_bits: Vec<Vec<AssignedCell<Fr, Fr>>> = vec![vec![]; 25];
+        // Per-byte input bit cells (200 bytes × 8 bits). Returned so the caller
+        // can bind the Keccak input to the secp256k1 public-key coordinates.
+        let mut input_byte_bits: Vec<Vec<AssignedCell<Fr, Fr>>> = Vec::with_capacity(200);
 
         for byte_idx in 0..200 {
             let (x, y, _byte_in_lane) = byte_to_lane_pos(byte_idx);
@@ -578,12 +581,14 @@ impl<'a> KeccakChip<'a> {
             let byte_bits = self.decompose_byte(region, *offset, byte_val)?;
             *offset += 1;
 
+            input_byte_bits.push(byte_bits.clone());
+
             // Append bits to the lane (bits are LSB-first within byte,
             // and bytes are placed in order within the lane)
             all_bits[lane_idx].extend(byte_bits);
         }
 
-        Ok(all_bits)
+        Ok((all_bits, input_byte_bits))
     }
 
     // ── Top-level hash function ─────────────────────────────────────
@@ -600,18 +605,19 @@ impl<'a> KeccakChip<'a> {
         layouter: &mut impl Layouter<Fr>,
         pub_x: &[u8; 32],
         pub_y: &[u8; 32],
-    ) -> Result<(Vec<AssignedCell<Fr, Fr>>, [u8; 20]), Error> {
+    ) -> Result<(Vec<AssignedCell<Fr, Fr>>, Vec<Vec<AssignedCell<Fr, Fr>>>, [u8; 20]), Error> {
         // Compute expected hash natively for witness generation
         let hash = native_hash_pubkey(pub_x, pub_y);
         let address = extract_address(&hash);
 
-        let address_bits_out = layouter.assign_region(
+        let (address_bits_out, input_byte_bits) = layouter.assign_region(
             || "keccak_constrained",
             |mut region| {
                 let mut offset = 0;
 
                 // Step 1: Build initial state from input + padding
-                let mut state = self.build_initial_state(&mut region, &mut offset, pub_x, pub_y)?;
+                let (mut state, input_byte_bits) =
+                    self.build_initial_state(&mut region, &mut offset, pub_x, pub_y)?;
 
                 // Step 2: Apply 24 rounds of Keccak-f
                 for round in 0..ROUNDS {
@@ -665,11 +671,11 @@ impl<'a> KeccakChip<'a> {
                     }
                 }
 
-                Ok(address_bits)
+                Ok((address_bits, input_byte_bits))
             },
         )?;
 
-        Ok((address_bits_out, address))
+        Ok((address_bits_out, input_byte_bits, address))
     }
 
     /// Assign the Keccak-256 output as bytes (range-checked via decomposition).
@@ -680,7 +686,7 @@ impl<'a> KeccakChip<'a> {
         pub_y: &[u8; 32],
     ) -> Result<(Vec<AssignedCell<Fr, Fr>>, [u8; 20]), Error> {
         // Delegate to the constrained implementation
-        let (bits, address) = self.hash_pubkey_to_address(layouter, pub_x, pub_y)?;
+        let (bits, _input_bits, address) = self.hash_pubkey_to_address(layouter, pub_x, pub_y)?;
 
         // Reconstruct byte cells from bits
         // This is a secondary interface for callers that want byte-level cells
@@ -866,8 +872,8 @@ mod tests {
                 mut layouter: impl Layouter<Fr>,
             ) -> Result<(), Error> {
                 let chip = super::KeccakChip::new(&config.keccak);
-                let (_hash_bits, address) =
-                    chip.hash_pubkey_to_address(&mut layouter, &self.pub_x, &self.pub_y)?;
+                let (_hash_bits, _input_bits, address) =
+                    chip.hash_pubkey_to_address(&mut layouter, &self.pub_x, &self.pub_y)?;;
 
                 // Verify the address matches native computation
                 let expected = extract_address(&native_hash_pubkey(&self.pub_x, &self.pub_y));

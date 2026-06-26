@@ -83,7 +83,7 @@ contract ZKMV2Integration is Test {
 
     function test_integration_airdrop_rejects_zero_recipient() public {
         // Zero recipient is rejected by the airdrop contract (not verifier)
-        bytes memory fakeProof = new bytes(5000);
+        bytes memory fakeProof = new bytes(5632);
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), address(0), MERKLE_ROOT);
