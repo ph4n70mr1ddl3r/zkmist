@@ -490,32 +490,46 @@ impl Circuit<Fr> for ZKMistV2Claim {
         let interior_params = PoseidonParams::new_circom(2);
         let interior_hasher = PoseidonChip::new(config.poseidon.clone(), &interior_params);
 
-        let mut sibling_cells = Vec::with_capacity(TREE_DEPTH);
-        let mut path_index_cells = Vec::with_capacity(TREE_DEPTH);
-        layouter.assign_region(
+        // Assign Merkle proof inputs. CRITICAL: the cells MUST be returned from the
+        // closure (not accumulated into an external Vec by side-effect). halo2's
+        // SimpleFloorPlanner invokes each region closure TWICE — once into a
+        // throwaway RegionShape to measure the region's footprint, then again
+        // for the real assignment. Cells captured by side-effect during the
+        // measurement pass hold Value::unknown(); indexing them later yields a
+        // Synthesis error. The floor planner keeps the SECOND pass's return
+        // value, so returning the cells here guarantees synthesize holds the
+        // real, witness-bearing cells.
+        //
+        // Column layout: siblings in advice[0], path indices in advice[1], each
+        // at rows 0..TREE_DEPTH. Distinct columns ⇒ no intra-region cell
+        // collision (the previous (i%8)/((i+8)%16) scheme double-wrote advice[0]
+        // at i=8, a separate latent bug).
+        let (sibling_cells, path_index_cells) = layouter.assign_region(
             || "merkle_inputs",
             |mut region| {
+                let mut siblings = Vec::with_capacity(TREE_DEPTH);
+                let mut paths = Vec::with_capacity(TREE_DEPTH);
                 for i in 0..TREE_DEPTH {
                     let sib_val =
                         ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&self.siblings[i]));
                     let sib = region.assign_advice(
                         || format!("sibling_{}", i),
-                        config.advice[i % 8],
+                        config.advice[0],
                         i,
                         || Value::known(sib_val),
                     )?;
-                    sibling_cells.push(sib);
+                    siblings.push(sib);
 
                     let pi_val = Fr::from(self.path_indices[i] as u64);
                     let pi = region.assign_advice(
                         || format!("path_{}", i),
-                        config.advice[(i + 8) % 16],
+                        config.advice[1],
                         i,
                         || Value::known(pi_val),
                     )?;
-                    path_index_cells.push(pi);
+                    paths.push(pi);
                 }
-                Ok(())
+                Ok((siblings, paths))
             },
         )?;
 
