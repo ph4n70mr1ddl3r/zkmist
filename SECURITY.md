@@ -68,7 +68,7 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
-- [ ] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — now that the honest E2E path verifies, these can be trusted to REJECT for the intended reason (each is `#[ignore]`d, ~30 min at k=24). They confirm the soundness properties (forged Merkle proof / rotated nullifier / zero or out-of-range recipient are rejected).
+- [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **all PASS at k=24** (2026 validation). Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. (Each is `#[ignore]`d, ~30 min at k=24.)
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including new Schwartz–Zippel verification)
 - [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
   ```

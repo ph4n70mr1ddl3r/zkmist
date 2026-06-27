@@ -401,15 +401,13 @@ No special permissions or contract setup is required.
 > cover the constraints that are present.
 >
 > **Known issues (blocking mainnet):**
-> - The four full-circuit negative tests (`*_rejected`) are `#[ignore]`d
->   (~30 min each at k=24); they should be run to confirm forged Merkle proofs /
->   rotated nullifiers / zero or out-of-range recipients are rejected for the
->   right reason now that the honest path verifies.
 > - Production circuit `k` is now **24** (16M rows), up from 23, due to the
 >   secp256k1 soundness rewrite. E2E MockProver at k=24 ≈ 32 min, ~30 GiB RSS.
 >
 > **Already validated (2026):**
 > - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=24 ✅
+> - **Four full-circuit negative tests** (wrong root / wrong nullifier /
+>   zero recipient / >uint160 recipient all correctly rejected) at k=24 ✅
 > - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=24 ✅
 > - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
 >   `tiny_keccak` cross-check on 160 address bits) ✅
@@ -426,7 +424,6 @@ No special permissions or contract setup is required.
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Run the four full-circuit negative tests to confirm rejection semantics (honest E2E path already passes at k=24)
 > - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from the full circuit VK (at k=24) using `halo2-solidity-verifier`
 > - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=24).
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
