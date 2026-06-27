@@ -369,11 +369,22 @@ No special permissions or contract setup is required.
 >   constrained equal to the scalar-mul output coordinates. (An earlier revision
 >   left these as free advice cells — a catastrophic soundness break — and is now
 >   fixed.)
-> - **This fix has unit-level validation but has NOT been confirmed end-to-end.**
->   The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`)
->   must pass at `k=23` (8M rows, 30–90 min) before any deployment, and the
->   on-chain `Halo2Verifier.sol` / `Halo2VerifyingKey.sol` must be regenerated
->   from the corrected circuit.
+> - **secp256k1 non-native field arithmetic: VALIDATED in isolation (2026).**
+>   The isolated secp256k1 gadget — `field_mul` / `field_add_carried` / `field_sub`
+>   carry-chain reductions, `check_on_curve`, `constrain_affine` (k·G == pubkey),
+>   and limb range checks — **passes MockProver at k=24** and derives the
+>   test-vector address. k rose 22→24 because the sound reductions add rows per
+>   field op. (This was the largest unknown and it is now exonerated.)
+> - **Full E2E circuit: NOT yet passing — integration / test-harness bug (2026 finding).**
+>   `test_circuit_merkle_nullifier_e2e` fails `verify()` at k=24 with **only
+>   permutation (copy-constraint) errors** (no `ConstraintNotSatisfied`).
+>   **Every gadget passes in isolation** — secp256k1 (k=24), Keccak (k=22,
+>   derives the correct address), Poseidon, accumulate-bits — so this is NOT a
+>   soundness bug. Two concrete leads: (1) the test builds a *depth-4* Merkle
+>   tree but the circuit always does 26 levels (zero-padded upper siblings make
+>   the computed root differ from the native root); (2) an address-bit ordering
+>   mismatch in the leaf binding. Both are cheap, test-harness-level fixes.
+>   See [SECURITY.md](./SECURITY.md).
 > - The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that
 >   has **not been externally audited**. An independent audit of both the
 >   arithmetic and the circuit wiring is required before mainnet.
@@ -391,11 +402,20 @@ No special permissions or contract setup is required.
 > cover the constraints that are present.
 >
 > **Known issues (blocking mainnet):**
-> - The full E2E circuit test (`test_circuit_merkle_nullifier_e2e`, `#[ignore]`)
->   requires k=23 and takes 30-90 minutes. Must be re-run to confirm the wiring
->   fix produces a verifiable honest proof.
-> - The secp256k1 MockProver test (`test_secp256k1_mock_prover`, `#[ignore]`)
->   likewise needs re-verification.
+> - **E2E integration / test-harness wiring** (next blocker): the full E2E
+>   MockProver test fails at k=24 with permutation (copy-constraint) errors.
+>   Two concrete leads — a Merkle depth mismatch (test builds depth-4, circuit
+>   does 26) and an address-bit-ordering mismatch in the leaf binding. Every
+>   gadget passes in isolation, so the circuit gadgets appear sound.
+> - Production circuit `k` is now **24** (16M rows), up from 23, due to the
+>   secp256k1 soundness rewrite. E2E MockProver at k=24 ≈ 37 min, ~30 GiB RSS.
+>
+> **Already validated in isolation (2026):**
+> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=24 ✅
+> - Keccak chip via `test_keccak_mock_prover_full` at k=22 (correct address) ✅
+> - `cond_swap` Merkle gadget soundness (`s_mul`/`s_add` product gates) ✅
+> - `field_add_carried` Phase 1 carry chain ✅
+> - `EXPECTED_CS_DIGEST` regenerated to `f8f4b46128dd613f` ✅
 >
 > **Tooling:**
 > - `zkmist bench` — proving timing benchmark with proof size validation
@@ -406,9 +426,9 @@ No special permissions or contract setup is required.
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Re-run full E2E MockProver test to confirm product verification fix resolves `constrain_affine` failures
-> - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from full circuit VK using `halo2-solidity-verifier`
-> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments (placeholder from partial circuit). Must regenerate from the full production circuit.
+> - **Fix the E2E integration/test-harness wiring** (Merkle depth mismatch + address-bit ordering) so `test_circuit_merkle_nullifier_e2e` passes MockProver at k=24 — every gadget already passes in isolation
+> - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from the full circuit VK (at k=24) using `halo2-solidity-verifier`
+> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=24).
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >

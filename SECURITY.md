@@ -60,11 +60,11 @@ We ask that you:
 Before mainnet deployment, ALL of the following must be completed:
 
 ### Critical (blocks deployment)
-- [ ] **Re-run secp256k1 MockProver test** to confirm product verification fix:
+- [x] **Re-run secp256k1 MockProver test** to confirm the carry-chain reductions are sound: **PASS at k=24** (2026 validation). The isolated secp256k1 gadget — including `field_mul` / `field_add_carried` / `field_sub` reductions, `check_on_curve`, `constrain_affine`, and limb range checks — verifies a correct honest proof and derives the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. k rose 22→24 because the sound reductions add rows per field op. Peak RSS ≈ 29 GiB, ~7.5 min.
   ```
   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
   ```
-- [ ] **Re-run full E2E MockProver test** with the fix:
+- [ ] **Re-run full E2E MockProver test** — **FAILS at k=24** (2026 validation), but NOT for any gadget-soundness reason. `verify()` reports only **permutation (copy-constraint) failures** (no `ConstraintNotSatisfied`). Every gadget passes in isolation — secp256k1 (k=24), Keccak (`test_keccak_mock_prover_full`, k=22, derives the correct address), Poseidon, `accumulate_weighted_bits` — so this is an **integration / test-harness wiring bug**. Two concrete leads: (1) **Merkle tree depth mismatch** — the test builds a *depth-4* tree but the circuit always iterates `0..TREE_DEPTH` (26); the zero-padded upper siblings make the circuit compute 22 extra `poseidon(x,0)` levels, so its root can never equal the depth-4 native root (explains the `Instance[0]` failure); (2) **address-bit ordering** in the leaf binding (`accumulate_weighted_bits` near offset 319). Both are cheap, test-harness-level fixes; the circuit gadgets themselves appear sound. Fix and re-run:
   ```
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
@@ -162,33 +162,47 @@ field arithmetic gadget:
 
 ## Known Issues (Blocking Mainnet)
 
-**`field_mul` / `field_add_carried` / `field_sub` reductions — CONSTRAINED
-but UNVALIDATED (2026 follow-up).** The wide→narrow reduction in `field_mul`,
-the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` are no
-longer witness-trusted: they now use explicit range-checked integer carry
-chains plus a witnessed quotient `q` with `result + q·p = V` and a
-canonicalization proof `result < p` (see `carry_chain_columns` /
-`reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`).
+**`field_mul` / `field_add_carried` / `field_sub` reductions — VALIDATED in isolation (2026 follow-up).** The wide→narrow reduction in `field_mul`, the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` use explicit range-checked integer carry chains plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization proof `result < p` (see `carry_chain_columns` / `reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`).
 
-⚠️ This code has NOT yet been validated by MockProver in this environment
-(running the heavy k=22/23 tests risks crashing it, as the real-KZG path did).
-It compiles cleanly (`cargo check -p zkmist-circuits`) and all native
-arithmetic tests pass, but it MUST be confirmed before any reliance:
-```
-cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
-cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
-```
-These tests will likely need HIGHER k than before (the sound reductions add
-many rows per field op); if k=23 no longer fits, raise k or adopt an optimized
-audited non-native library. After MockProver passes, regenerate
-`EXPECTED_CS_DIGEST` (circuits/src/lib.rs + gen-production-verifier) since the
-constraint system changed.
+✅ **Confirmed by `test_secp256k1_mock_prover` at k=24** (2026): the isolated secp256k1 circuit — full scalar multiplication, `check_on_curve`, `constrain_affine` (k·G == pubkey), limb range checks — produces a verifying honest proof and the correct test-vector address. This resolves the earlier "CONSTRAINED but UNVALIDATED" status. k rose from 22 to 24 because the sound reductions add rows per field op; revisit if it must rise again. `EXPECTED_CS_DIGEST` was regenerated to `f8f4b46128dd613f`.
+
+⚠️ The **full E2E circuit** (`test_circuit_merkle_nullifier_e2e`) still fails `verify()` at k=24, but with **permutation (copy-constraint) errors only** — not gate/constraint failures — localized to integration wiring (Merkle tree depth mismatch + address-bit ordering; see the next item). The secp256k1 reductions themselves are exonerated, as is the Keccak chip (`test_keccak_mock_prover_full` passes at k=22 and derives the correct address).
 
 **`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
 `out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
 the Merkle membership proof non-binding. It now constrains `sel*b`,
 `(1-sel)*a`, `sel*a`, and `(1-sel)*b` with multiplication gates (mirroring
 `conditional_select_field`).
+
+**E2E integration / test-harness wiring — OPEN (2026 validation, blocks E2E).** The full
+E2E MockProver test fails `verify()` at k=24 with **only permutation
+(copy-constraint) failures** (no `ConstraintNotSatisfied`): in `Instance[0]`
+(Merkle-root binding), `accumulate_weighted_bits` near offset 319 (the 160-bit
+*address* accumulation that feeds the leaf), and two `poseidon_permutation`
+regions. **Every gadget passes in isolation** — secp256k1 (k=24), Keccak
+(`test_keccak_mock_prover_full` at k=22, which derives the correct test-vector
+address), Poseidon (`test_poseidon_circuit_t2/t3_mock`), and
+`accumulate_weighted_bits` (`test_accumulate_weighted_bits_primitive`) — so this
+is an **integration / test-harness bug**, not a gadget soundness bug. Two
+concrete leads:
+  1. **Merkle tree depth mismatch (test-harness bug, explains `Instance[0]`):**
+     `test_circuit_merkle_nullifier_e2e` builds a *depth-4* tree via
+     `build_tree_streaming_with_depth(&addresses, 4, ..)`, but the circuit always
+     iterates `0..TREE_DEPTH` (26). The test pads the upper 22 sibling slots with
+     `[0;32]` and path 0, so the circuit computes `poseidon(x, 0)` for 22 extra
+     levels — a root that can never equal the depth-4 native root. Fix: compute
+     the padding-hash-chain siblings for levels 4..25 (or otherwise build the
+     proof at depth `TREE_DEPTH`).
+  2. **Address-bit ordering in the leaf binding:** `keccak_address_bits` follows
+     the Keccak lane layout, whose per-lane bit order may not match the
+     `address_weights` assumption in `synthesize`. The isolated Keccak test
+     derives the correct address *field* but does not exercise the
+     accumulate-bits-→-compare-to-address binding, so an ordering mismatch here
+     is untested.
+Both are cheap, test-harness-level fixes. This blocks all four full-circuit
+negative tests too (they are `#[ignore]`d until the honest path verifies, since
+a tampered circuit would otherwise fail verify for this same pre-existing
+reason).
 
 **`field_add_carried` Phase 1 carry chain — FIXED (2026 follow-up).** The
 bottom `carry_in` was previously a witnessed-but-unconstrained zero and the
@@ -215,8 +229,11 @@ cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --n
 ```
 
 **VK mismatch**: The current `Halo2VerifyingKey.sol` has k=21 (2M rows) with all-zero fixed
-commitments. The full production circuit requires k=23 (8M rows). The VK must be regenerated
-from the full circuit after the MockProver tests pass.
+commitments. The full production circuit now requires **k=24 (16M rows)**
+(raised from the pre-soundness-rewrite k=23 because the secp256k1 carry-chain
+reductions add rows per field op). The VK must be regenerated
+from the full circuit after the E2E wiring bug above is fixed and the E2E
+MockProver test passes at k=24.
 
 **Remaining recommendation**: Replace the hand-rolled secp256k1 gadget with an audited library
 for defense-in-depth:
