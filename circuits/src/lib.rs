@@ -120,15 +120,26 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// runtime assert guards the other. Update both together when `configure()`
 /// changes (run the test, copy the printed `CS_DIGEST` into both files).
 ///
-/// ⚠️ STALE (2026 review): the value below predates the soundness fix to
-/// `cond_swap` (which replaced the broken single `s_swap` gate with proper
-/// `s_mul`/`s_add` product gates, changing the constraint system). It MUST be
-/// regenerated: run `cargo test -p zkmist-circuits
-/// test_circuit_constraint_system_digest -- --nocapture`, copy the printed
-/// `CS_DIGEST` into BOTH this constant and `gen-production-verifier`, then
-/// commit. (Running that single test is cheap and does not invoke the
-/// expensive k=23 MockProver/KZG paths.)
-pub const EXPECTED_CS_DIGEST: &str = "72e30a6509cad673";
+/// Regenerated (2026 review) after the soundness fixes to `cond_swap`
+/// (sound `s_bool`/`s_mul`/`s_add` product gates, replacing the broken single
+/// `s_swap` gate) and to the secp256k1 non-native field reduction
+/// (`s_add_carry` carry chains). Both changed the constraint system, so the
+/// digest moved from `72e30a6509cad673` to `f8f4b46128dd613f`.
+///
+/// To regenerate after any future `configure()` change: run
+/// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
+/// --nocapture`, copy the printed `CS_DIGEST` into BOTH this constant and
+/// `gen-production-verifier`, then commit. (Running that single test is
+/// cheap; it does not invoke the expensive k=23 MockProver/KZG paths.)
+///
+/// ⚠️ NOTE: `gen-production-verifier/src/main.rs` still carries the OLD
+/// unsound `cond_swap` (`s_swap` gate) and its STALE constant
+/// `72e30a6509cad673`. It MUST be re-synced with this circuit's gate
+/// definitions (and its constant updated to the value above) before it can
+/// emit a correct VK. It is not part of this workspace's test run because it
+/// cannot be built here (depends on an external `halo2-solidity-verifier`
+/// path); port the sound `cond_swap` and re-verify in that environment.
+pub const EXPECTED_CS_DIGEST: &str = "f8f4b46128dd613f";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each
 /// already decomposed into 8 boolean bits by `build_initial_state`) to equal a
@@ -684,9 +695,25 @@ mod tests {
     use ark_ff::BigInteger;
     use light_poseidon::PoseidonHasher;
 
+    /// Process-wide lock that **serializes** the heavy k=22 `MockProver` tests.
+    ///
+    /// `cargo test --lib` runs every `#[test]` as a thread inside one binary,
+    /// so the four k=22 tests (`test_circuit_configures`, plus the three
+    /// `*_rejected` negative tests) launch concurrently by default. Each one
+    /// allocates a full 2^22-row × ~28-column witness (~8 GiB RSS, measured);
+    /// four in parallel peak at ~32–44 GiB, exhaust the host RAM, and
+    /// hard-crash the whole process (and the agent running the suite). Holding
+    /// this mutex for the duration of each heavy test makes them run one at a
+    /// time (peak ≈ 8 GiB) while the ~60 cheap tests keep parallelizing freely.
+    /// Poisoning is tolerated so one failing heavy test doesn't mask the others.
+    static HEAVY_MOCK_PROVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Test that the circuit configuration is valid (no panics during configure).
     #[test]
     fn test_circuit_configures() {
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let circuit = ZKMistV2Claim {
             private_key: [0u8; 32],
             siblings: [[0u8; 32]; TREE_DEPTH],
@@ -1253,6 +1280,9 @@ mod tests {
     /// input. Providing a wrong root should cause MockProver to reject.
     #[test]
     fn test_wrong_merkle_root_rejected() {
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
             0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
@@ -1325,6 +1355,9 @@ mod tests {
     /// Negative test: wrong nullifier should fail.
     #[test]
     fn test_wrong_nullifier_rejected() {
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
             0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
@@ -1392,6 +1425,9 @@ mod tests {
     /// Negative test: zero recipient should fail.
     #[test]
     fn test_zero_recipient_rejected() {
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
             0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
