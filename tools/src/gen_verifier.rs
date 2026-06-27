@@ -25,7 +25,7 @@ use zkmist_circuits::ZKMistV2Claim;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_path = PathBuf::from("../contracts/src/Halo2Verifier.sol");
-    let mut k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
+    let mut k: u32 = 24; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (k=24 after the 2026 secp256k1 soundness rewrite)
 
     let mut i = 1;
     while i < args.len() {
@@ -51,7 +51,7 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage: gen-verifier [OPTIONS]");
                 eprintln!("  --output, -o <path>       Output Solidity file path");
-                eprintln!("  --k <power>               Circuit size parameter (default: 23, must match CIRCUIT_K)");
+                eprintln!("  --k <power>               Circuit size parameter (default: 24, must match CIRCUIT_K)");
                 eprintln!();
                 eprintln!("Generates Halo2Verifier.sol from the ZKMist V2 circuit VK.");
                 eprintln!();

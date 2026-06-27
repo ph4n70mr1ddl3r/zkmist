@@ -77,8 +77,8 @@ Before mainnet deployment, ALL of the following must be completed:
   # See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
   ```
   **IMPORTANT**: The current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments.
-  This is from a partial circuit configuration, NOT the full production circuit (which needs k=23).
-  Must regenerate from the full circuit after MockProver tests pass.
+  This is from a partial circuit configuration, NOT the full production circuit (which now needs **k=24**).
+  Must regenerate from the full circuit — the E2E MockProver test now passes at k=24.
 - [ ] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol`
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```

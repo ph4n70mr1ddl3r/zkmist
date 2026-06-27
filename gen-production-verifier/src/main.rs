@@ -74,26 +74,38 @@ impl PoseidonConfig {
 #[derive(Debug, Clone)]
 struct CondSwapConfig {
     #[allow(dead_code)] advice: [Column<Advice>; 3],
-    s_swap: Selector, s_bool: Selector,
+    s_bool: Selector, s_mul: Selector, s_add: Selector,
 }
 
 impl CondSwapConfig {
     fn configure(meta: &mut ConstraintSystem<Fr>, advice: [Column<Advice>; 3]) -> Self {
-        let s_swap = meta.selector();
         let s_bool = meta.selector();
-        meta.create_gate("bool", |meta| {
+        let s_mul = meta.selector();
+        let s_add = meta.selector();
+        // Boolean: sel * (1 - sel) = 0
+        meta.create_gate("cond_swap_bool", |meta| {
             let s = meta.query_selector(s_bool);
             let sel = meta.query_advice(advice[0], Rotation::cur());
-            vec![s * (sel.clone() * sel.clone() - sel)]
+            let one = Expression::Constant(Fr::ONE);
+            vec![s * (sel.clone() * (one - sel))]
         });
-        meta.create_gate("cond_swap", |meta| {
-            let s = meta.query_selector(s_swap);
-            let out = meta.query_advice(advice[2], Rotation::cur());
-            let t1 = meta.query_advice(advice[0], Rotation::cur());
-            let t2 = meta.query_advice(advice[1], Rotation::cur());
-            vec![s * (t1 + t2 - out)]
+        // Multiply: advice[0] * advice[1] = advice[2]
+        meta.create_gate("cond_swap_mul", |meta| {
+            let s = meta.query_selector(s_mul);
+            let a = meta.query_advice(advice[0], Rotation::cur());
+            let b = meta.query_advice(advice[1], Rotation::cur());
+            let c = meta.query_advice(advice[2], Rotation::cur());
+            vec![s * (a * b - c)]
         });
-        Self { advice, s_swap, s_bool }
+        // Add: advice[0] + advice[1] = advice[2]
+        meta.create_gate("cond_swap_add", |meta| {
+            let s = meta.query_selector(s_add);
+            let a = meta.query_advice(advice[0], Rotation::cur());
+            let b = meta.query_advice(advice[1], Rotation::cur());
+            let c = meta.query_advice(advice[2], Rotation::cur());
+            vec![s * (a + b - c)]
+        });
+        Self { advice, s_bool, s_mul, s_add }
     }
 }
 
@@ -337,7 +349,7 @@ impl Circuit<Fr> for ZKMistV2Claim {
 // captured by `zkmist-circuits`' test `test_circuit_constraint_system_digest`.
 // Update BOTH constants together whenever the circuit's `configure()` changes
 // (run that test, copy the printed `CS_DIGEST`).
-const EXPECTED_CS_DIGEST: &str = "72e30a6509cad673";
+const EXPECTED_CS_DIGEST: &str = "f8f4b46128dd613f";
 
 fn constraint_system_digest(cs: &ConstraintSystem<Fr>) -> String {
     // 1. Normalize: drop every "query_index: <num>, " occurrence.
@@ -373,7 +385,7 @@ fn constraint_system_digest(cs: &ConstraintSystem<Fr>) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_dir = PathBuf::from("../contracts/src");
-    let mut k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
+    let mut k: u32 = 24; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (raised 23→24 by the 2026 secp256k1 soundness rewrite)
 
     let mut i = 1;
     while i < args.len() {
@@ -391,7 +403,7 @@ fn main() {
     eprintln!();
 
     // Validate k consistency with the prover.
-    let expected_k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
+    let expected_k: u32 = 24; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs
     if k != expected_k {
         eprintln!("⚠️  WARNING: k={} does not match expected CIRCUIT_K={}", k, expected_k);
         eprintln!("   The generated verifier will reject proofs created with a different k.");

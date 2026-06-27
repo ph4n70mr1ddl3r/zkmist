@@ -15,16 +15,20 @@ use zkmist_merkle_tree::compute_nullifier;
 use crate::constants::*;
 use crate::types::ProofFile;
 
-/// Default k parameter for the circuit (2^23 = 8M rows).
-/// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle.
-/// k=22 (4M rows) is insufficient — the circuit exceeds 4M rows.
+/// Default k parameter for the circuit (2^24 = 16M rows).
+/// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle
+/// AFTER the 2026 secp256k1 soundness rewrite (carry-chain reductions), which
+/// added rows per field op. k=22 and k=23 are both insufficient
+/// (`NotEnoughRowsAvailable`, confirmed via `test_secp256k1_mock_prover`).
+/// k=24 provides headroom and is validated end-to-end
+/// (`test_circuit_merkle_nullifier_e2e` PASSES at k=24).
 /// ⚠️  This MUST match the k used to generate Halo2VerifyingKey.sol.
-/// Run gen-production-verifier with --k 23 to regenerate the VK.
-const CIRCUIT_K: u32 = 23;
+/// Run gen-production-verifier with --k 24 to regenerate the VK.
+const CIRCUIT_K: u32 = 24;
 
 // ── Params caching ───────────────────────────────────────────────────
 //
-// KZG params generation for k=23 (8M G1 points) takes 10-60 seconds.
+// KZG params generation for k=24 (16M G1 points) takes 20-120 seconds.
 // We cache the serialized params to ~/.zkmist/cache/ to avoid regenerating
 // them on every prove/verify invocation.
 

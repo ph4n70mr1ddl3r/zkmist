@@ -130,15 +130,15 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
 /// --nocapture`, copy the printed `CS_DIGEST` into BOTH this constant and
 /// `gen-production-verifier`, then commit. (Running that single test is
-/// cheap; it does not invoke the expensive k=23 MockProver/KZG paths.)
+/// cheap; it does not invoke the expensive k=24 MockProver/KZG paths.)
 ///
-/// ⚠️ NOTE: `gen-production-verifier/src/main.rs` still carries the OLD
-/// unsound `cond_swap` (`s_swap` gate) and its STALE constant
-/// `72e30a6509cad673`. It MUST be re-synced with this circuit's gate
-/// definitions (and its constant updated to the value above) before it can
-/// emit a correct VK. It is not part of this workspace's test run because it
-/// cannot be built here (depends on an external `halo2-solidity-verifier`
-/// path); port the sound `cond_swap` and re-verify in that environment.
+/// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` now carries the
+/// sound `cond_swap` (`s_bool`/`s_mul`/`s_add` product gates) and this same
+/// digest (`f8f4b46128dd613f`). The port was validated structurally via a
+/// standalone digest harness under crates.io halo2 0.3.0 (the real circuit's
+/// halo2), which reproduced `f8f4b46128dd613f` exactly; the generator's own
+/// runtime parity assert re-validates it under the PSE halo2 git fork when
+/// built in an environment with `halo2-solidity-verifier` present.
 pub const EXPECTED_CS_DIGEST: &str = "f8f4b46128dd613f";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each

@@ -441,10 +441,10 @@ fn main() {
         eprintln!("  Remaining steps before mainnet deployment:");
         eprintln!("    ┌──────────────────────────────────────────────────────────────");
         eprintln!("    │ CRITICAL (blocks deployment):");
-        eprintln!("    │ [ ] Re-run full E2E MockProver test (k=23, ~30-90 min):");
+        eprintln!("    │ [ ] Re-run full E2E MockProver test (k=24, ~30 min):  ✅ 2026 PASS");
         eprintln!("    │     cargo test -p zkmist-circuits -- --ignored --nocapture");
         eprintln!("    │ [ ] Regenerate Halo2Verifier.sol + Halo2VerifyingKey.sol with");
-        eprintln!("    │     gen-production-verifier (now loads range tables, k=23)");
+        eprintln!("    │     gen-production-verifier (now loads range tables, k=24)");
         eprintln!("    │ [ ] Verify VK k-value matches CIRCUIT_K (checked above)");
         eprintln!("    │ [ ] Verify VK has non-zero fixed commitments (checked above)");
         eprintln!("    │ [ ] External security audit of secp256k1 non-native field arithmetic");
