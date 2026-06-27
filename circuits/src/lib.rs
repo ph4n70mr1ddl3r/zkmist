@@ -739,36 +739,32 @@ mod tests {
     /// If any gadget has a soundness bug, the on-curve check or
     /// `constrain_affine` will catch it.
     ///
-    /// STATUS (2026 review): the isolated secp256k1 gadget PASSES MockProver
-    /// at k=24 (`test_secp256k1_mock_prover`), so the secp256k1 non-native
-    /// reductions are sound. The isolated Keccak gadget ALSO passes at k=22
-    /// (`test_keccak_mock_prover_full`), deriving the correct test-vector
-    /// address — so Keccak is exonerated too. This E2E test nonetheless FAILS
-    /// `verify()` at k=24 with **permutation (copy-constraint) failures**
-    /// (no `ConstraintNotSatisfied` errors). Since every gadget passes in
-    /// isolation, this is an **integration / test-harness wiring bug**, not a
-    /// gadget soundness bug. Two concrete leads:
-    ///   1. **Merkle tree depth mismatch (test-harness bug, explains Instance[0]):**
-    ///      this test builds a *depth-4* tree via
-    ///      `build_tree_streaming_with_depth(&addresses, 4, ..)` but the circuit
-    ///      always iterates `0..TREE_DEPTH` (26). For levels 4..25 the test pads
-    ///      siblings with `[0;32]` and path 0, so the circuit applies 22 extra
-    ///      `poseidon(x, 0)` levels and computes a root that can never equal the
-    ///      depth-4 native root. Fix: compute the padding-hash-chain siblings for
-    ///      the upper levels (or build the proof at depth `TREE_DEPTH`).
-    ///   2. **Address-bit ordering in the leaf binding** (explains the
-    ///      `accumulate_weighted_bits` failure near offset 319, i.e. the 160-bit
-    ///      *address* accumulation): `keccak_address_bits` comes out of the
-    ///      Keccak lane layout, whose per-lane bit order may not match the
-    ///      `address_weights` assumption in `synthesize`. The isolated Keccak
-    ///      test derives the correct address *field* but does not exercise the
-    ///      accumulate-bits-→-compare-to-address binding, so an ordering mismatch
-    ///      here is untested.
-    /// Resolving these (cheap, test-harness-level) is the next blocker; the
-    /// circuit gadgets themselves appear sound.
+    /// STATUS (2026 review): ✅ **PASSES at k=24**. This is the top
+    /// deployment blocker cleared. The honest end-to-end proof — real key →
+    /// secp256k1 → Keccak address → Merkle membership → nullifier → recipient —
+    /// verifies, and the binding between the three pillars (secp scalar, Keccak
+    /// address, nullifier) is sound and consistent.
+    ///
+    /// Getting here required fixing three latent bugs that MockProver could not
+    /// catch on its own (gates were satisfiable, but the witness was wrong):
+    ///   1. **Keccak `RC` round-constant table corruption** (from index 5) —
+    ///      shared by the native `keccak_f` and the circuit's `iota_step`; both
+    ///      silently produced a wrong digest. Fixed with the canonical XKCP
+    ///      table, now pinned by `test_keccak_f_matches_tiny_keccak_empty`.
+    ///   2. **`rotate_lane` was a RIGHT rotation** (Keccak needs LEFT) — pure
+    ///      rearrangement with no gate, so it passed MockProver; pinned by
+    ///      `test_rotate_lane_is_left_rotation`.
+    ///   3. **`chi_step` transposed its output** (loop order stored lane (x,y) at
+    ///      `y*5+x` instead of `x*5+y`); per-bit gates stayed satisfied. Fixed;
+    ///      the isolated Keccak test now constrains its 160 address bits against
+    ///      `tiny_keccak` so all three regressions are caught.
+    /// The test harness was also fixed: proofs are now built at the full
+    /// `TREE_DEPTH` via `build_single_leaf_proof` (it previously built a
+    /// depth-4 tree and zero-padded, which could never match the circuit's
+    /// 26-level root).
     ///
     /// NOTE: This test is `#[ignore]` by default because it is very slow
-    /// (full circuit at k=24 is 16M rows; ~37 min, ~30 GiB RSS).
+    /// (full circuit at k=24 is 16M rows; ~32 min, ~30 GiB RSS).
     /// Run with:
     ///   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
     #[test]
@@ -796,16 +792,24 @@ mod tests {
         let nullifier_params = PoseidonParams::new_circom(2);
         let nullifier = crate::nullifier::native_compute_nullifier(&key_field, &nullifier_params);
 
-        // Build a small Merkle tree for testing
-        let addresses = vec![address];
-        let (root_ark, proof) =
-            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
-        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+        // Build a single-leaf Merkle proof at the full production depth
+        // (TREE_DEPTH = 26). The circuit always iterates 0..TREE_DEPTH, so a
+        // proof built at a smaller depth (e.g. the previous depth-4 build)
+        // leaves the upper sibling slots as all-zero — the circuit then
+        // applies 22 extra `poseidon(x, 0)` levels and computes a root that
+        // can never equal the native depth-4 root (the `Instance[0]` failure
+        // documented on this test). `build_single_leaf_proof` is O(depth): for
+        // a lone index-0 leaf every sibling is an all-padding subtree root, so
+        // it yields the correct depth-26 root and 26 (sibling, path) pairs
+        // without materializing the 67M-leaf tree.
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
+        assert_eq!(siblings_ark.len(), TREE_DEPTH);
+        assert_eq!(path_indices_u8.len(), TREE_DEPTH);
 
-        // Pad to TREE_DEPTH
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
+        for i in 0..TREE_DEPTH {
             siblings_arr[i] = siblings_ark[i];
             path_arr[i] = path_indices_u8[i];
         }
@@ -1320,7 +1324,7 @@ mod tests {
     /// The circuit constrains the computed Merkle root to match the public
     /// input. Providing a wrong root should cause MockProver to reject.
     #[test]
-    #[ignore = "blocked on E2E honest-path fix: the full circuit currently fails MockProver verify with permutation (copy-constraint) errors in the Keccak→address→leaf binding (see test_circuit_merkle_nullifier_e2e). A tampered-root circuit would fail verify for that same pre-existing reason, so Merkle-root rejection cannot be validated until the honest path verifies. k bumped 22→24 so it synthesizes when re-enabled."]
+    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). The honest E2E path now passes (test_circuit_merkle_nullifier_e2e), so this negative test can be trusted to reject for the RIGHT reason. Run with --ignored."]
     fn test_wrong_merkle_root_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1396,7 +1400,7 @@ mod tests {
 
     /// Negative test: wrong nullifier should fail.
     #[test]
-    #[ignore = "blocked on E2E honest-path fix (see test_circuit_merkle_nullifier_e2e); tampered nullifier would currently fail verify for the pre-existing Keccak→leaf permutation bug, not the intended rejection. k bumped 22→24 so it synthesizes when re-enabled."]
+    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_wrong_nullifier_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1467,7 +1471,7 @@ mod tests {
 
     /// Negative test: zero recipient should fail.
     #[test]
-    #[ignore = "blocked on E2E honest-path fix (see test_circuit_merkle_nullifier_e2e); zero recipient would currently fail verify for the pre-existing Keccak→leaf permutation bug, not the intended rejection. k bumped 22→24 so it synthesizes when re-enabled."]
+    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_zero_recipient_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1935,7 +1939,7 @@ mod tests {
     /// A recipient > 2^160 would be truncated by Solidity's `uint160()`,
     /// creating a soundness issue. The circuit must reject such recipients.
     #[test]
-    #[ignore = "blocked on E2E honest-path fix (see test_circuit_merkle_nullifier_e2e); an out-of-range recipient would currently fail verify for the pre-existing Keccak→leaf permutation bug, not the intended rejection. k bumped 22→24 so it synthesizes when re-enabled."]
+    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_recipient_exceeding_uint160_rejected() {
         // Construct a recipient > 2^160 by setting byte 20 (LE index) to non-zero.
         // Fr::from(1u64) << 160 is not directly expressible, so we use a large value.

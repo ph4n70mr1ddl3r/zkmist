@@ -64,10 +64,11 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
   ```
-- [ ] **Re-run full E2E MockProver test** — **FAILS at k=24** (2026 validation), but NOT for any gadget-soundness reason. `verify()` reports only **permutation (copy-constraint) failures** (no `ConstraintNotSatisfied`). Every gadget passes in isolation — secp256k1 (k=24), Keccak (`test_keccak_mock_prover_full`, k=22, derives the correct address), Poseidon, `accumulate_weighted_bits` — so this is an **integration / test-harness wiring bug**. Two concrete leads: (1) **Merkle tree depth mismatch** — the test builds a *depth-4* tree but the circuit always iterates `0..TREE_DEPTH` (26); the zero-padded upper siblings make the circuit compute 22 extra `poseidon(x,0)` levels, so its root can never equal the depth-4 native root (explains the `Instance[0]` failure); (2) **address-bit ordering** in the leaf binding (`accumulate_weighted_bits` near offset 319). Both are cheap, test-harness-level fixes; the circuit gadgets themselves appear sound. Fix and re-run:
+- [x] **Re-run full E2E MockProver test** — **PASS at k=24** (2026 validation). The honest end-to-end proof (real key → secp256k1 → Keccak address → Merkle membership → nullifier → recipient) verifies, and the binding between the three pillars is sound. Getting here required fixing **three latent Keccak correctness bugs** that MockProver could not catch on its own (gates were satisfiable but the witness was wrong): a corrupted `RC` round-constant table (from index 5), a backwards `rotate_lane` (right instead of left), and a transposing `chi_step` storage order. The test harness was also fixed to build proofs at the full `TREE_DEPTH`. Each bug is now pinned by an instant native test plus a constrained `tiny_keccak` cross-check in the isolated Keccak test.
   ```
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
+- [ ] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — now that the honest E2E path verifies, these can be trusted to REJECT for the intended reason (each is `#[ignore]`d, ~30 min at k=24). They confirm the soundness properties (forged Merkle proof / rotated nullifier / zero or out-of-range recipient are rejected).
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including new Schwartz–Zippel verification)
 - [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
   ```
@@ -166,7 +167,7 @@ field arithmetic gadget:
 
 ✅ **Confirmed by `test_secp256k1_mock_prover` at k=24** (2026): the isolated secp256k1 circuit — full scalar multiplication, `check_on_curve`, `constrain_affine` (k·G == pubkey), limb range checks — produces a verifying honest proof and the correct test-vector address. This resolves the earlier "CONSTRAINED but UNVALIDATED" status. k rose from 22 to 24 because the sound reductions add rows per field op; revisit if it must rise again. `EXPECTED_CS_DIGEST` was regenerated to `f8f4b46128dd613f`.
 
-⚠️ The **full E2E circuit** (`test_circuit_merkle_nullifier_e2e`) still fails `verify()` at k=24, but with **permutation (copy-constraint) errors only** — not gate/constraint failures — localized to integration wiring (Merkle tree depth mismatch + address-bit ordering; see the next item). The secp256k1 reductions themselves are exonerated, as is the Keccak chip (`test_keccak_mock_prover_full` passes at k=22 and derives the correct address).
+✅ **The full E2E circuit (`test_circuit_merkle_nullifier_e2e`) now PASSES `verify()` at k=24** (2026 validation). The honest end-to-end proof verifies and the three-pillar binding (secp scalar ↔ Keccak address ↔ nullifier) is sound. This required fixing three latent Keccak correctness bugs (see the next item) plus a test-harness Merkle-depth bug.
 
 **`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
 `out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
@@ -174,35 +175,40 @@ the Merkle membership proof non-binding. It now constrains `sel*b`,
 `(1-sel)*a`, `sel*a`, and `(1-sel)*b` with multiplication gates (mirroring
 `conditional_select_field`).
 
-**E2E integration / test-harness wiring — OPEN (2026 validation, blocks E2E).** The full
-E2E MockProver test fails `verify()` at k=24 with **only permutation
-(copy-constraint) failures** (no `ConstraintNotSatisfied`): in `Instance[0]`
-(Merkle-root binding), `accumulate_weighted_bits` near offset 319 (the 160-bit
-*address* accumulation that feeds the leaf), and two `poseidon_permutation`
-regions. **Every gadget passes in isolation** — secp256k1 (k=24), Keccak
-(`test_keccak_mock_prover_full` at k=22, which derives the correct test-vector
-address), Poseidon (`test_poseidon_circuit_t2/t3_mock`), and
-`accumulate_weighted_bits` (`test_accumulate_weighted_bits_primitive`) — so this
-is an **integration / test-harness bug**, not a gadget soundness bug. Two
-concrete leads:
-  1. **Merkle tree depth mismatch (test-harness bug, explains `Instance[0]`):**
-     `test_circuit_merkle_nullifier_e2e` builds a *depth-4* tree via
-     `build_tree_streaming_with_depth(&addresses, 4, ..)`, but the circuit always
-     iterates `0..TREE_DEPTH` (26). The test pads the upper 22 sibling slots with
-     `[0;32]` and path 0, so the circuit computes `poseidon(x, 0)` for 22 extra
-     levels — a root that can never equal the depth-4 native root. Fix: compute
-     the padding-hash-chain siblings for levels 4..25 (or otherwise build the
-     proof at depth `TREE_DEPTH`).
-  2. **Address-bit ordering in the leaf binding:** `keccak_address_bits` follows
-     the Keccak lane layout, whose per-lane bit order may not match the
-     `address_weights` assumption in `synthesize`. The isolated Keccak test
-     derives the correct address *field* but does not exercise the
-     accumulate-bits-→-compare-to-address binding, so an ordering mismatch here
-     is untested.
-Both are cheap, test-harness-level fixes. This blocks all four full-circuit
-negative tests too (they are `#[ignore]`d until the honest path verifies, since
-a tampered circuit would otherwise fail verify for this same pre-existing
-reason).
+**Keccak correctness — FIXED (2026 validation).** The full E2E MockProver
+test now passes at k=24. Getting there required fixing **three latent Keccak
+bugs** that MockProver could not catch on its own — every per-bit gate
+(`s_xor`, `s_andnot`, `s_byte_decomp`) was satisfiable, so the witness was
+internally consistent but computed a *wrong* digest. None was caught before
+because the isolated Keccak test only checked gate satisfiability and never
+compared its constrained output to `tiny_keccak`. All three are now fixed and
+pinned by instant native tests plus a constrained `tiny_keccak` cross-check:
+  1. **Corrupted `RC` round-constant table** (from index 5): a bogus
+     `0x0000000000000080` was inserted, shifting every later constant down by
+     one and dropping `RC[23]`. This single constant is shared by the native
+     `keccak_f` and the circuit's `iota_step`, so both silently produced a
+     wrong digest. Replaced with the canonical XKCP table; pinned by
+     `test_keccak_f_matches_tiny_keccak_empty` (validates `keccak_f` against
+     `Keccak-256("")` and against a clean 2D reference).
+  2. **`rotate_lane` was a RIGHT rotation** (Keccak's ρ and θ-`rot(C,1)` are
+     LEFT rotations). ρ is pure cell rearrangement with no gate, so it passed
+     MockProver. Now matches `u64::rotate_left`; pinned by
+     `test_rotate_lane_is_left_rotation` (all 64 offsets × edge seeds).
+  3. **`chi_step` transposed its output**: it looped `for y { for x }` and
+     `push`ed, storing lane (x,y) at index `y*5+x` instead of the `x*5+y`
+     convention used everywhere else. Per-bit gates stayed satisfied. Now
+     stores at `x*5+y`; pinned via the isolated Keccak test's constrained
+     `tiny_keccak` cross-check (160 address bits).
+
+The test harness was also fixed: `test_circuit_merkle_nullifier_e2e` now
+builds the Merkle proof at the full `TREE_DEPTH` via
+`build_single_leaf_proof` (it previously built a depth-4 tree and zero-padded
+the upper 22 levels, which could never match the circuit's 26-level root).
+
+With the honest path verified, the four full-circuit negative tests are no
+longer blocked (each is `#[ignore]`d, ~30 min at k=24) — they confirm forged
+Merkle proofs / rotated nullifiers / zero or out-of-range recipients are
+rejected.
 
 **`field_add_carried` Phase 1 carry chain — FIXED (2026 follow-up).** The
 bottom `carry_in` was previously a witnessed-but-unconstrained zero and the

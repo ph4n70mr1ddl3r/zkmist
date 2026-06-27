@@ -39,13 +39,21 @@ use tiny_keccak::Hasher as KeccakHasher;
 const ROUNDS: usize = 24;
 
 /// Round constants for the ι step.
+///
+/// These are the canonical Keccak-f[1600] round constants (as in the
+/// Keccak Team's reference, e.g. XKCP `KeccakRoundConstants`). A prior
+/// revision of this table was corrupted from index 5 (a bogus
+/// `0x0000000000000080` was inserted, shifting every later constant down by
+/// one and dropping `RC[23]`), which silently produced a wrong digest — the
+/// native `keccak_f` and the circuit's `iota_step` both read this table, and
+/// neither was cross-checked against `tiny_keccak` until
+/// `test_keccak_f_matches_tiny_keccak_empty` was added.
 const RC: [u64; 24] = [
     0x0000000000000001,
     0x0000000000008082,
     0x800000000000808A,
     0x8000000080008000,
     0x000000000000808B,
-    0x0000000000000080,
     0x0000000080000001,
     0x8000000080008081,
     0x8000000000008009,
@@ -64,6 +72,7 @@ const RC: [u64; 24] = [
     0x8000000080008081,
     0x8000000000008080,
     0x0000000080000001,
+    0x8000000080008008,
 ];
 
 /// Rotation offsets for the ρ step, indexed [x][y].
@@ -368,13 +377,29 @@ impl<'a> KeccakChip<'a> {
         Ok(out)
     }
 
-    /// Rotate a 64-bit lane by `n` positions (left rotation).
+    /// Rotate a 64-bit lane **left** by `n` positions, matching the native
+    /// `u64::rotate_left` used in [`keccak_f`] (the ρ step and θ's
+    /// `rot(C, 1)` are LEFT rotations).
+    ///
+    /// Lanes are stored LSB-first (`lane[0]` = bit 0 = LSB). A left rotation
+    /// by `n` moves bit `i` to position `(i + n) mod 64`, so the output bit at
+    /// position `k` is the input bit at `(k − n) mod 64`:
+    ///   `output[k] = lane[(64 + k − n) % 64]`.
+    ///
     /// No gates needed — just rearranges bit indices.
+    ///
+    /// ⚠️ History: this previously split at `n` (`skip(n).chain(take(n))`),
+    /// yielding `output[k] = lane[(k + n) % 64]` — a RIGHT rotation, which
+    /// silently computed a wrong Keccak digest. Because ρ/θ-rotation are pure
+    /// rearrangement (no gates), the isolated `test_keccak_mock_prover_full`
+    /// passed despite the wrong output (it never cross-checked the constrained
+    /// bits against `tiny_keccak`). The E2E address binding exposed it.
     fn rotate_lane(lane: &[AssignedCell<Fr, Fr>], n: u32) -> Vec<AssignedCell<Fr, Fr>> {
-        let n = n as usize % 64;
+        let n = (n as usize) % 64;
+        let split = (64 - n) % 64;
         lane.iter()
-            .skip(n)
-            .chain(lane.iter().take(n))
+            .skip(split)
+            .chain(lane.iter().take(split))
             .cloned()
             .collect()
     }
@@ -450,9 +475,18 @@ impl<'a> KeccakChip<'a> {
         offset: &mut usize,
         state: &[Vec<AssignedCell<Fr, Fr>>], // B state after ρ+π
     ) -> Result<Vec<Vec<AssignedCell<Fr, Fr>>>, Error> {
-        let mut new_state = Vec::with_capacity(25);
-        for y in 0..5 {
-            for x in 0..5 {
+        // Store results at index `x*5 + y` to match the convention used by
+        // `build_initial_state`, `theta_step`, `rho_pi_step`, and the address
+        // extraction. A prior version looped `for y { for x }` and `push`ed,
+        // which stored the result for lane (x,y) at index `y*5 + x` —
+        // transposing the state between rounds and silently corrupting the
+        // digest (χ is gate-checked per-bit, so MockProver stayed green; only
+        // the now-added tiny_keccak cross-check catches it). Compute the value
+        // per lane as before, but assign by explicit index.
+        let mut new_state: Vec<Vec<AssignedCell<Fr, Fr>>> =
+            (0..25).map(|_| Vec::with_capacity(64)).collect();
+        for x in 0..5 {
+            for y in 0..5 {
                 let b_xy = &state[x * 5 + y];
                 let b_x1 = &state[((x + 1) % 5) * 5 + y];
                 let b_x2 = &state[((x + 2) % 5) * 5 + y];
@@ -460,7 +494,7 @@ impl<'a> KeccakChip<'a> {
                 let temp = self.andnot_lanes(region, offset, b_x1, b_x2)?;
                 // result = b_xy XOR temp
                 let result = self.xor_lanes(region, offset, b_xy, &temp)?;
-                new_state.push(result);
+                new_state[x * 5 + y] = result;
             }
         }
         Ok(new_state)
@@ -781,6 +815,239 @@ mod tests {
     }
 
     #[test]
+    fn test_keccak_f_matches_tiny_keccak_empty() {
+        // Validate the file's standalone `keccak_f` permutation against a clean,
+        // independently-written 2D reference AND `tiny_keccak`, on the
+        // Keccak-256("") digest. If the 2D reference matches tiny_keccak but
+        // `keccak_f` does not, the bug is in `keccak_f`'s flat `[x+5*y]` indexing.
+        // Empty message: rate = 136 bytes; pad10*1 → byte0 ^= 0x01, byte135 ^= 0x80.
+        // byte 135 → lane L=16 → (x=1,y=3), byte_in_lane=7.
+
+        // --- Clean 2D reference ---
+        let mut a = [[0u64; 5]; 5]; // a[x][y]
+        a[0][0] ^= 1;
+        a[1][3] ^= 0x80 << 56;
+        for round in 0..24 {
+            let mut c = [0u64; 5];
+            for x in 0..5 {
+                let mut acc = 0;
+                for y in 0..5 {
+                    acc ^= a[x][y];
+                }
+                c[x] = acc;
+            }
+            let mut d = [0u64; 5];
+            for x in 0..5 {
+                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+            }
+            for x in 0..5 {
+                for y in 0..5 {
+                    a[x][y] ^= d[x];
+                }
+            }
+            let mut b = [[0u64; 5]; 5];
+            for x in 0..5 {
+                for y in 0..5 {
+                    b[y][(2 * x + 3 * y) % 5] = a[x][y].rotate_left(RHO_OFFSETS[x][y]);
+                }
+            }
+            for x in 0..5 {
+                for y in 0..5 {
+                    a[x][y] = b[x][y] ^ ((!b[(x + 1) % 5][y]) & b[(x + 2) % 5][y]);
+                }
+            }
+            a[0][0] ^= RC[round];
+        }
+        // squeeze first 32 bytes: out[i], lane L=i/8 (x=L%5,y=L/5), byte i%8.
+        let mut ref_out = [0u8; 32];
+        for i in 0..32u32 {
+            let lane = i / 8;
+            let x = (lane % 5) as usize;
+            let y = (lane / 5) as usize;
+            ref_out[i as usize] = (a[x][y] >> (8 * (i % 8))) as u8;
+        }
+        // (a) 2D reference must match tiny_keccak (validates the algorithm).
+        assert_eq!(
+            hex::encode(ref_out),
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+            "2D reference disagrees with tiny_keccak — algorithm/constants are wrong"
+        );
+
+        // --- Now run the file's keccak_f and diff lane-by-lane ---
+        let mut state = [0u64; 25];
+        let mut bytes = [0u8; 200];
+        bytes[0] ^= 0x01;
+        bytes[135] ^= 0x80;
+        for b in 0..200 {
+            let lane_flat = b / 8;
+            let x = lane_flat % 5;
+            let y = lane_flat / 5;
+            state[x + 5 * y] |= (bytes[b] as u64) << (8 * (b % 8));
+        }
+        keccak_f(&mut state);
+        for x in 0..5 {
+            for y in 0..5 {
+                assert_eq!(
+                    state[x + 5 * y],
+                    a[x][y],
+                    "keccak_f lane (x={x}, y={y}) differs from the 2D reference ⇒ keccak_f flat-index/logic bug"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_chi_step_loop_order_diagnosis() {
+        // Bit-exact native simulation of the constrained Keccak-f pipeline,
+        // compared against the file's OWN `keccak_f` function (ground truth) and
+        // `tiny_keccak`, to localize structural bugs WITHOUT the ~18-min
+        // MockProver run. The circuit stores lanes at `x*5 + y`; `keccak_f` uses
+        // `x + 5*y`; both refer to the same logical lane (x,y).
+        let pub_x: [u8; 32] = [
+            0x46, 0x46, 0xae, 0x50, 0x47, 0x31, 0x6b, 0x42, 0x30, 0xd0, 0x08, 0x6c, 0x8a, 0xce,
+            0xc6, 0x87, 0xf0, 0x0b, 0x1c, 0xd9, 0xd1, 0xdc, 0x63, 0x4f, 0x6c, 0xb3, 0x58, 0xac,
+            0x0a, 0x9a, 0x8f, 0xff,
+        ];
+        let pub_y: [u8; 32] = [
+            0xfe, 0x77, 0xb4, 0xdd, 0x0a, 0x4b, 0xfb, 0x95, 0x85, 0x1f, 0x3b, 0x73, 0x55, 0xc7,
+            0x81, 0xdd, 0x60, 0xf8, 0x41, 0x8f, 0xc8, 0xa6, 0x5d, 0x14, 0x90, 0x7a, 0xff, 0x47,
+            0xc9, 0x03, 0xa5, 0x59,
+        ];
+
+        let mut sb = [0u8; 200];
+        sb[..32].copy_from_slice(&pub_x);
+        sb[32..64].copy_from_slice(&pub_y);
+        sb[64] ^= 0x01;
+        sb[135] ^= 0x80;
+
+        // Circuit-laid initial state (x*5+y).
+        let mut c_state = [0u64; 25];
+        for byte_idx in 0..200 {
+            let (x, y, _bil) = byte_to_lane_pos(byte_idx);
+            c_state[x * 5 + y] |= (sb[byte_idx] as u64) << (8 * (byte_idx % 8));
+        }
+        // keccak_f-laid initial state (x+5y), same logical lanes.
+        let mut kf_state = [0u64; 25];
+        for x in 0..5 {
+            for y in 0..5 {
+                kf_state[x + 5 * y] = c_state[x * 5 + y];
+            }
+        }
+
+        // --- Run the circuit's step logic (buggy_chi=false) for 24 rounds ---
+        for round in 0..24 {
+            let mut c = [0u64; 5];
+            for x in 0..5 {
+                let mut acc = c_state[x * 5];
+                for y in 1..5 {
+                    acc ^= c_state[x * 5 + y];
+                }
+                c[x] = acc;
+            }
+            let mut d = [0u64; 5];
+            for x in 0..5 {
+                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+            }
+            for x in 0..5 {
+                for y in 0..5 {
+                    c_state[x * 5 + y] ^= d[x];
+                }
+            }
+            let mut b = [0u64; 25];
+            for x in 0..5 {
+                for y in 0..5 {
+                    let nx = y;
+                    let ny = (2 * x + 3 * y) % 5;
+                    b[nx * 5 + ny] = c_state[x * 5 + y].rotate_left(RHO_OFFSETS[x][y]);
+                }
+            }
+            let mut ns = [0u64; 25];
+            for y in 0..5 {
+                for x in 0..5 {
+                    let b_xy = b[x * 5 + y];
+                    let b_x1 = b[((x + 1) % 5) * 5 + y];
+                    let b_x2 = b[((x + 2) % 5) * 5 + y];
+                    ns[x * 5 + y] = b_xy ^ ((!b_x1) & b_x2);
+                }
+            }
+            ns[0] ^= RC[round];
+            c_state = ns;
+        }
+
+        // --- Run the REAL keccak_f on kf_state ---
+        keccak_f(&mut kf_state);
+
+        // Compare circuit-sim lanes (x*5+y) vs real keccak_f lanes (x+5y).
+        for x in 0..5 {
+            for y in 0..5 {
+                assert_eq!(
+                    c_state[x * 5 + y],
+                    kf_state[x + 5 * y],
+                    "circuit sim diverges from real keccak_f at lane (x={x}, y={y})"
+                );
+            }
+        }
+
+        // Extract address (lanes (1,0),(2,0),(3,0) = c_state[5],[10],[15]).
+        let mut sim_addr = [0u8; 20];
+        for k in 0..4 {
+            sim_addr[k] = (c_state[5] >> (8 * (4 + k))) as u8;
+        }
+        for k in 0..8 {
+            sim_addr[4 + k] = (c_state[10] >> (8 * k)) as u8;
+        }
+        for k in 0..8 {
+            sim_addr[12 + k] = (c_state[15] >> (8 * k)) as u8;
+        }
+        let native_addr = extract_address(&native_hash_pubkey(&pub_x, &pub_y));
+        assert_eq!(
+            sim_addr, native_addr,
+            "circuit sim + keccak_f agree, but differ from tiny_keccak ⇒ keccak_f itself is the culprit"
+        );
+    }
+
+    #[test]
+    fn test_rotate_lane_is_left_rotation() {
+        // `rotate_lane` must implement a LEFT rotation matching `u64::rotate_left`
+        // (the ρ step and θ's `rot(C, 1)` are left rotations; the native
+        // `keccak_f` uses `rotate_left`). Lanes are LSB-first (`bits[0]` = LSB).
+        // The in-circuit index map is `output[k] = lane[(64 + k − n) % 64]`.
+        // This instant native test pins that map; a previous version used
+        // `output[k] = lane[(k + n) % 64]` (a RIGHT rotation) and silently
+        // computed a wrong Keccak digest because ρ is pure rearrangement
+        // (no gates).
+        let seeds = [
+            0u64, 1, 2, 3, 0x80, 0x0100_0000_0000_0000, 0x8000_0000_0000_0000,
+            0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF, u64::MAX,
+        ];
+        for n in 0..64u32 {
+            for &seed in &seeds {
+                let bits = u64_to_bits(seed);
+                let n = n as usize;
+                let split = (64 - n) % 64;
+                // Mirror `rotate_lane`: `skip(split).chain(take(split))`.
+                let rot: Vec<bool> = bits
+                    .iter()
+                    .skip(split)
+                    .chain(bits.iter().take(split))
+                    .copied()
+                    .collect();
+                let mut got = 0u64;
+                for (k, &b) in rot.iter().enumerate() {
+                    if b {
+                        got |= 1u64 << k;
+                    }
+                }
+                assert_eq!(
+                    got,
+                    seed.rotate_left(n as u32),
+                    "rotate_lane disagrees with rotate_left(n={n}, seed=0x{seed:016x})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_byte_to_lane_pos() {
         // Byte 0: lane(0,0), byte 0
         assert_eq!(byte_to_lane_pos(0), (0, 0, 0));
@@ -800,8 +1067,11 @@ mod tests {
 
     /// MockProver test for the full Keccak-256 permutation.
     ///
-    /// Verifies that the constrained Keccak gadget produces the same
-    /// output as `tiny_keccak` for a known public key input.
+    /// Validates the constrained Keccak gadget end-to-end: it runs the full
+    /// permutation and **constrains each of the 160 derived address bits equal
+    /// to the `tiny_keccak` reference**, so any correctness bug (not just gate
+    /// satisfiability) is caught. This is what exonerates Keccak after the
+    /// 2026 fixes (`RC` table, `rotate_lane` direction, `chi_step` storage).
     ///
     /// NOTE: This test is `#[ignore]` by default because it is very slow
     /// (the Keccak circuit at k=22 is ~4M rows). Run with:
@@ -871,13 +1141,45 @@ mod tests {
                 config: KeccakTestConfig,
                 mut layouter: impl Layouter<Fr>,
             ) -> Result<(), Error> {
-                let chip = super::KeccakChip::new(&config.keccak);
-                let (_hash_bits, _input_bits, address) =
-                    chip.hash_pubkey_to_address(&mut layouter, &self.pub_x, &self.pub_y)?;;
+                use halo2_proofs::circuit::Value;
 
-                // Verify the address matches native computation
-                let expected = extract_address(&native_hash_pubkey(&self.pub_x, &self.pub_y));
-                assert_eq!(address, expected, "Keccak circuit output must match native");
+                let chip = super::KeccakChip::new(&config.keccak);
+                let (address_bits, _input_bits, address) =
+                    chip.hash_pubkey_to_address(&mut layouter, &self.pub_x, &self.pub_y)?;
+
+                // Native reference (self-consistency only).
+                let native_addr =
+                    super::extract_address(&super::native_hash_pubkey(&self.pub_x, &self.pub_y));
+                assert_eq!(address, native_addr, "Keccak circuit output must match native");
+
+                // REAL constrained cross-check: force each of the 160 constrained
+                // address bits to equal the corresponding bit of the tiny_keccak
+                // output. Without this, the test only verifies gate satisfiability
+                // — a wrong-but-consistent Keccak (e.g. the backwards
+                // `rotate_lane` bug) would pass silently, because ρ/θ-rotation
+                // are pure cell rearrangement with no gates. If any constrained
+                // bit is wrong, MockProver reports a permutation failure here.
+                //
+                // address_bits layout: address_bits[m] for byte_idx=m/8 (0..19
+                // → native_addr index), bit_idx=m%8 (LSB-first).
+                assert_eq!(address_bits.len(), 160);
+                layouter.assign_region(|| "address_crosscheck", |mut region| {
+                    for (i, bit_cell) in address_bits.iter().enumerate() {
+                        let byte_idx = i / 8;
+                        let bit_idx = i % 8;
+                        let native_bit = (native_addr[byte_idx] >> bit_idx) & 1 == 1;
+                        let native_val =
+                            if native_bit { Fr::ONE } else { Fr::ZERO };
+                        let nb = region.assign_advice(
+                            || "native_bit",
+                            config.keccak.advice[0],
+                            i, // distinct row per bit
+                            || Value::known(native_val),
+                        )?;
+                        region.constrain_equal(bit_cell.cell(), nb.cell())?;
+                    }
+                    Ok(())
+                })?;
                 Ok(())
             }
         }

@@ -436,6 +436,50 @@ pub fn build_tree_streaming_with_depth(
     (root, proof)
 }
 
+/// Compute the Merkle root and membership proof for a **single** address placed
+/// at leaf index 0 in a `depth`-level tree where every other leaf is
+/// [`PADDING_SENTINEL`].
+///
+/// This is an O(`depth`) specialization of [`build_tree_streaming_with_depth`]
+/// for the common test case of one address at index 0. Building the full
+/// 2^`depth`-leaf tree is impractical at `depth = TREE_DEPTH` (67M leaves,
+/// ~2–4 GB RAM), but the proof for a lone index-0 leaf is deterministic: at
+/// every level the node is the left child (`path = 0`) and its sibling is the
+/// root of an all-padding subtree, which is obtained by repeatedly hashing
+/// `hash_interior(padding, padding)`.
+///
+/// The returned `(root, siblings, path_indices)` matches what
+/// `build_tree_streaming_with_depth(&[addr], depth, Some(0))` would return for
+/// any `depth` small enough to build the full tree — see
+/// `test_single_leaf_proof_matches_streaming`.
+///
+/// Convention (shared with the circuit's `cond_swap` + interior hash):
+/// `path = 0` → the current node is the **left** child, so the parent is
+/// `hash_interior(node, sibling)`.
+pub fn build_single_leaf_proof(
+    addr: &[u8; 20],
+    depth: usize,
+) -> ([u8; 32], Vec<[u8; 32]>, Vec<u8>) {
+    let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
+    let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
+
+    let mut node = hash_leaf(addr, &mut leaf_hasher);
+    let mut padding = PADDING_SENTINEL;
+    let mut siblings = Vec::with_capacity(depth);
+    let mut path = Vec::with_capacity(depth);
+
+    for _ in 0..depth {
+        // Index 0 is always the left child; the sibling is the all-padding
+        // subtree root at this height.
+        siblings.push(padding);
+        path.push(0);
+        node = hash_interior(&node, &padding, &mut interior_hasher);
+        padding = hash_interior(&padding, &padding, &mut interior_hasher);
+    }
+
+    (node, siblings, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +510,34 @@ mod tests {
             hex::encode(leaf),
             "1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9"
         );
+    }
+
+    #[test]
+    fn test_single_leaf_proof_matches_streaming() {
+        // build_single_leaf_proof must reproduce build_tree_streaming_with_depth
+        // exactly for a lone index-0 leaf, at every depth small enough to build
+        // the full tree. This is what the circuit tests rely on at depth=26.
+        let addr: [u8; 20] = [
+            0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
+            0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+        ];
+        for depth in 1..=10usize {
+            let (root_fast, sibs_fast, path_fast) = build_single_leaf_proof(&addr, depth);
+            let (root_full, proof_full) =
+                build_tree_streaming_with_depth(&[addr], depth, Some(0));
+            let (sibs_full, path_full) = proof_full.expect("streaming proof");
+            assert_eq!(
+                root_fast, root_full,
+                "root mismatch at depth {depth}"
+            );
+            assert_eq!(sibs_fast, sibs_full, "siblings mismatch at depth {depth}");
+            assert_eq!(path_fast, path_full, "path mismatch at depth {depth}");
+        }
+        // And the proof length at production depth is TREE_DEPTH (26).
+        let (_, sibs26, path26) = build_single_leaf_proof(&addr, TREE_DEPTH);
+        assert_eq!(sibs26.len(), TREE_DEPTH);
+        assert_eq!(path26.len(), TREE_DEPTH);
+        assert!(path26.iter().all(|&p| p == 0), "index-0 path must be all-left");
     }
 
     #[test]
