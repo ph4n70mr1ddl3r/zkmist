@@ -142,22 +142,55 @@ field arithmetic gadget:
 5. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
    for the final addition step, ensuring subtraction also propagates carries.
 
-6. **NEW: Schwartz–Zippel product verification on every `field_mul`**: Every
-   non-native field multiplication is now cross-checked using a polynomial
-   evaluation at a fixed point (r = 65537). The check constrains:
-   `eval(a) * eval(b) - eval(result) - eval(q) * eval(p) = 0 (mod BN254)`
-   where `eval(x) = x[0] + x[1]*r + x[2]*r^2 + x[3]*r^3` and `q = (a*b - result) / p`
-   is the reduction quotient (range-checked). This closes the soundness gap from
-   the previously unconstrained wide-to-narrow reduction in `field_mul`. Soundness
-   error is ≤ 6/p_BN254 per multiplication (negligible).
+6. **⚠️ SUPERSEDED — `field_mul` reduction is NOT constrained.**
+   A Schwartz–Zippel product verification was attempted on every `field_mul`
+   call, but it was **mathematically incorrect** for the base-2^64 limb
+   representation (evaluating limb polynomials at r=65537 does not match
+   integer arithmetic in base 2^64, so it failed for honest provers) and was
+   **removed** (the dead `verify_product` helper remains in `secp256k1.rs`).
+   As of the 2026 review the wide→narrow reduction in `field_mul` assigns its
+   result limbs as **free witnesses**, and `field_add_carried`'s reduction is
+   likewise disconnected from its constrained raw sum. Because the secp256k1
+   prime (≈2^256) is close to the BN254 scalar prime (≈2^254), the reduction
+   **cannot** be soundly checked at the BN254 level alone — it requires a full
+   integer carry/borrow chain, as provided by audited non-native field
+   libraries. **The terminal `check_on_curve` / `constrain_affine` checks do
+   NOT compensate, because they are themselves built on `field_mul` and are
+   therefore vacuous.** Until this is fixed (carry-chain rewrite or library
+   swap), the secp256k1 scalar multiplication is non-binding. The `cond_swap`
+   Merkle gadget WAS fixed (see below).
 
 ## Known Issues (Blocking Mainnet)
+
+**`field_mul` / `field_add_carried` reductions are unconstrained (CRITICAL).**
+The wide→narrow reduction in `field_mul` assigns result limbs as free
+witnesses, and `field_add_carried` discards its constrained raw sum before
+returning a witness-guided reduction. The terminal `check_on_curve` and
+`constrain_affine` constraints do NOT compensate because they are themselves
+built on `field_mul` and are therefore vacuous. A constrained integer
+carry-chain reduction (or replacement with an audited non-native field
+library such as `privacy-scaling-explorations/halo2wrong` or
+`scroll-tech/halo2-secp256k1`) is REQUIRED before mainnet. Until then the
+secp256k1 scalar multiplication is non-binding.
+
+**`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
+`out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
+the Merkle membership proof non-binding. It now constrains `sel*b`,
+`(1-sel)*a`, `sel*a`, and `(1-sel)*b` with multiplication gates (mirroring
+`conditional_select_field`). NOTE: the `cond_swap` fix changes the circuit's
+constraint system, so `EXPECTED_CS_DIGEST` (in `circuits/src/lib.rs` and
+`gen-production-verifier/src/main.rs`) must be regenerated.
 
 The secp256k1 MockProver test previously produced 8 permutation failures in `constrain_affine`.
 This was caused by the unconstrained wide-to-narrow reduction in `field_mul`.
 
 **Fix applied**: Schwartz–Zippel product verification has been added to every `field_mul` call.
 This constrains the product correctness with negligible soundness error (≤ 6/p_BN254).
+
+**⚠️ CORRECTION (2026 review)**: the above fix was **reverted** because it was
+mathematically incorrect for base-2^64 limbs (see item 6 above). The `field_mul`
+reduction is currently UNCONSTRAINED. The real fix is an integer carry-chain
+reduction or an audited library swap.
 
 **Resolution**: The `#[ignore]`d MockProver tests need to be re-run to confirm the fix resolves
 all permutation failures:

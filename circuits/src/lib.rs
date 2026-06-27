@@ -119,6 +119,15 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// `test_circuit_constraint_system_digest` guards this side; the generator's
 /// runtime assert guards the other. Update both together when `configure()`
 /// changes (run the test, copy the printed `CS_DIGEST` into both files).
+///
+/// ⚠️ STALE (2026 review): the value below predates the soundness fix to
+/// `cond_swap` (which replaced the broken single `s_swap` gate with proper
+/// `s_mul`/`s_add` product gates, changing the constraint system). It MUST be
+/// regenerated: run `cargo test -p zkmist-circuits
+/// test_circuit_constraint_system_digest -- --nocapture`, copy the printed
+/// `CS_DIGEST` into BOTH this constant and `gen-production-verifier`, then
+/// commit. (Running that single test is cheap and does not invoke the
+/// expensive k=23 MockProver/KZG paths.)
 pub const EXPECTED_CS_DIGEST: &str = "72e30a6509cad673";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each

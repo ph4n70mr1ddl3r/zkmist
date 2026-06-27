@@ -911,8 +911,25 @@ impl<'a> Secp256k1Chip<'a> {
         )?;
 
         // Phase 2: Compute and assign the mod-p reduced result.
-        // The reduction is witness-guided. Full soundness comes from
-        // check_on_curve and constrain_affine at the end of the circuit.
+        //
+        // ⚠️ SOUNDNESS CAVEAT (2026 review) — REDUCTION IS UNCONSTRAINED.
+        // The `reduced` limbs below are assigned as FREE WITNESSES. The raw
+        // limb sums constrained in Phase 1 (the `s_add_carry` rows) are
+        // discarded (`_r_cell`) and NOTHING ties `reduced` to them. Because
+        // the secp256k1 prime p_secp ≈ 2^256 is close to the BN254 scalar
+        // prime p_BN254 ≈ 2^254, the reduction CANNOT be soundly checked at
+        // the BN254 level alone — it requires an integer carry/borrow chain
+        // (a `reduce ∈ {0,1}` bit plus `reduced + reduce·p == raw_sum` over
+        // the integers, with carries range-checked), exactly as audited
+        // non-native field libraries (halo2wrong, scroll-tech/halo2-secp256k1)
+        // do.
+        //
+        // The claim "full soundness comes from check_on_curve and
+        // constrain_affine" is FALSE: both of those are themselves built on
+        // `field_mul`/`field_add_carried`, so they inherit this gap and are
+        // vacuous until the reduction is constrained. Until this is fixed,
+        // every field operation here is witness-trusted and the secp256k1
+        // scalar multiplication is NON-BINDING. See SECURITY.md.
         let reduced = layouter.assign_region(
             || "secp_add_reduced",
             |mut region| {
@@ -1111,16 +1128,35 @@ impl<'a> Secp256k1Chip<'a> {
                     }
                 }
 
-                // ── Constrained reduction: wide limbs → final 4 limbs ─────────
-                // The native computation provides the correctly-reduced result.
-                // The result limbs are assigned as witnesses.
+                // ── UNCONSTRAINED reduction: wide limbs → final 4 limbs ─────────
+                // ⚠️ SOUNDNESS CAVEAT (2026 review) — THIS IS THE CRITICAL GAP.
+                // The native computation provides a correctly-reduced result,
+                // but the `result_limbs` below are assigned as FREE WITNESSES.
+                // The constrained `wide_limbs` (schoolbook coefficients, soundly
+                // accumulated above) are DISCARDED here and NOTHING constrains
+                //   Σ_k wide[k] · 2^(64·k)  ≡  result  (mod p_secp)
+                // over the integers.
                 //
-                // Full soundness is provided by:
-                //   1. The 16 schoolbook products are constrained via s_mul gates
-                //   2. The wide limb accumulation uses s_add gates
-                //   3. The terminal `check_on_curve` and `constrain_affine`
-                //      constraints verify all intermediate operations are
-                //      consistent with the final EC point
+                // Why a naive BN254-level check is also unsound: p_secp ≈ 2^256
+                // is close to p_BN254 ≈ 2^254, so reducing the integer identity
+                // mod p_BN254 leaves ~2^2 of ambiguity and a cheating prover can
+                // satisfy it with a wrong `result`. A sound reduction requires a
+                // full integer carry chain (split each product into 64-bit halves,
+                // propagate carries into 8 base-2^64 limbs of the 512-bit product,
+                // then subtract `q·p_secp` with borrow, all carries range-checked).
+                //
+                // The previous "Schwartz–Zippel" check was removed because it
+                // evaluated limb polynomials at r=65537 while limbs are base 2^64,
+                // so it failed for honest provers (see the dead `verify_product`
+                // below). It cannot simply be re-wired.
+                //
+                // The terminal `check_on_curve` and `constrain_affine` checks
+                // CANNOT compensate: they are built on `field_mul`, so they are
+                // vacuous too. Until a constrained integer carry-chain reduction
+                // (or an audited non-native library: halo2wrong /
+                // scroll-tech/halo2-secp256k1) is wired in, `field_mul` proves
+                // NOTHING about the product and the secp256k1 scalar mul is
+                // non-binding — see SECURITY.md and the top-level review.
                 //
                 // NOTE: A previous version had an incorrect reduction cross-check
                 //   wide[0] + c*wide[4] == result[0]
