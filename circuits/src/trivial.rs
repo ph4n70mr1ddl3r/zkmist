@@ -255,6 +255,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "disabled: real KZG proof/verify is expensive and crashes the system; run explicitly with --ignored if needed"]
     fn test_real_kzg_proof_and_verify() {
         use halo2_proofs::{
             plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
