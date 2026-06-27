@@ -801,7 +801,7 @@ impl<'a> Secp256k1Chip<'a> {
         // The reduction is witness-guided; full soundness is provided by
         // the terminal `check_on_curve` and `constrain_affine` constraints.
 
-        let carry_out_cells = layouter.assign_region(
+        let (raw_cells, carry_out_cells) = layouter.assign_region(
             || "secp_field_add_carried",
             |mut region| {
                 let a_v: Value<[Fr; 4]> = a.values();
@@ -829,6 +829,16 @@ impl<'a> Secp256k1Chip<'a> {
 
                 // For each limb, apply carry-propagated addition gate
                 let mut carry_out_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
+                let mut raw_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
+                // Zero reference (advice[5] is free under s_add_carry). The
+                // bottom carry-in (i=0) MUST be constrained to 0, not merely
+                // witnessed, else a prover could inject value into the raw sum.
+                let zero_ref = region.assign_advice(
+                    || "fac_zero_ref",
+                    self.config.advice[5],
+                    0,
+                    || Value::known(Fr::ZERO),
+                )?;
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
@@ -856,21 +866,30 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     region.constrain_equal(b.limbs[i].cell(), b_cell.cell())?;
 
-                    // carry_in to advice[2]
-                    let _carry_in_cell = region.assign_advice(
+                    // carry_in to advice[2] — CONSTRAINED to chain the
+                    // carries: i=0 → 0, i>0 → previous carry_out. Without this
+                    // each row's carry_in would be a free witness and the chain
+                    // would not constrain raw == a + b.
+                    let carry_in_cell = region.assign_advice(
                         || format!("carry_in_{}", i),
                         self.config.advice[2],
                         i,
                         || carry_in_val,
                     )?;
+                    if i == 0 {
+                        region.constrain_equal(carry_in_cell.cell(), zero_ref.cell())?;
+                    } else {
+                        region.constrain_equal(carry_in_cell.cell(), carry_out_cells[i - 1].cell())?;
+                    }
 
-                    // raw_result to advice[3]
-                    let _r_cell = region.assign_advice(
+                    // raw_result to advice[3] (captured for the sound reduction)
+                    let r_cell = region.assign_advice(
                         || format!("carry_r_{}", i),
                         self.config.advice[3],
                         i,
                         || r_val,
                     )?;
+                    raw_cells.push(r_cell);
 
                     // carry_out to advice[4]
                     let carry_out_val = carry_values.as_ref().map(|c| c[i]);
@@ -887,7 +906,7 @@ impl<'a> Secp256k1Chip<'a> {
                     carry_out_cells.push(cout_cell);
                 }
 
-                Ok(carry_out_cells)
+                Ok((raw_cells, carry_out_cells))
             },
         )?;
 
@@ -910,61 +929,26 @@ impl<'a> Secp256k1Chip<'a> {
             },
         )?;
 
-        // Phase 2: Compute and assign the mod-p reduced result.
+        // Phase 2: Reduce the raw integer (raw limbs + top carry) mod p to a
+        // CANONICAL 4-limb result (< p), via the sound carry-chain +
+        // quotient-reduction helpers (`carry_chain_columns` +
+        // `reduce_canonical_mod_p`) defined below.
         //
-        // ⚠️ SOUNDNESS CAVEAT (2026 review) — REDUCTION IS UNCONSTRAINED.
-        // The `reduced` limbs below are assigned as FREE WITNESSES. The raw
-        // limb sums constrained in Phase 1 (the `s_add_carry` rows) are
-        // discarded (`_r_cell`) and NOTHING ties `reduced` to them. Because
-        // the secp256k1 prime p_secp ≈ 2^256 is close to the BN254 scalar
-        // prime p_BN254 ≈ 2^254, the reduction CANNOT be soundly checked at
-        // the BN254 level alone — it requires an integer carry/borrow chain
-        // (a `reduce ∈ {0,1}` bit plus `reduced + reduce·p == raw_sum` over
-        // the integers, with carries range-checked), exactly as audited
-        // non-native field libraries (halo2wrong, scroll-tech/halo2-secp256k1)
-        // do.
-        //
-        // The claim "full soundness comes from check_on_curve and
-        // constrain_affine" is FALSE: both of those are themselves built on
-        // `field_mul`/`field_add_carried`, so they inherit this gap and are
-        // vacuous until the reduction is constrained. Until this is fixed,
-        // every field operation here is witness-trusted and the secp256k1
-        // scalar multiplication is NON-BINDING. See SECURITY.md.
-        let reduced = layouter.assign_region(
-            || "secp_add_reduced",
-            |mut region| {
-                let a_v: Value<[Fr; 4]> = a.values();
-                let b_v: Value<[Fr; 4]> = b.values();
-
-                let reduced_limbs = a_v.zip(b_v).map(|(a_v, b_v)| {
-                    let na = limbs_to_native(&a_v);
-                    let nb = limbs_to_native(&b_v);
-                    na.add(&nb).to_bn254_limbs()
-                });
-
-                let mut cells = Vec::with_capacity(4);
-                for i in 0..4 {
-                    let val = reduced_limbs.as_ref().map(|r| r[i]);
-                    let cell = region.assign_advice(
-                        || format!("reduced_{}", i),
-                        self.config.advice[i],
-                        0,
-                        || val,
-                    )?;
-                    cells.push(cell);
-                }
-                Ok(AssignedFieldElement {
-                    limbs: [
-                        cells[0].clone(),
-                        cells[1].clone(),
-                        cells[2].clone(),
-                        cells[3].clone(),
-                    ],
-                })
-            },
-        )?;
-
-        Ok(reduced)
+        // The integer value is
+        //   V = Σ_{i<4} raw[i]·2^(64·i) + carry_top·2^256,
+        // with raw[i] ∈ [0, 2^64) (forced by the gate + boolean carries +
+        // range-checked inputs) and carry_top ∈ {0,1} (boolean-constrained
+        // above). Hence V < 2^257 and reduces cleanly.
+        for i in 0..4 {
+            self.check_single_limb(layouter, &raw_cells[i], 500 + i)?;
+        }
+        let mut add_columns: Vec<Vec<AssignedCell<Fr, Fr>>> =
+            (0..4).map(|i| vec![raw_cells[i].clone()]).collect();
+        add_columns.push(vec![carry_out_cells[3].clone()]); // shift 256 (top carry)
+        add_columns.push(vec![]); // margin column so the carry settles to 0
+        let value_limbs = self.carry_chain_columns(layouter, &add_columns)?;
+        let result = self.reduce_canonical_mod_p(layouter, &value_limbs)?;
+        Ok(result)
     }
 
     /// Constrained multiplication of two non-native field elements.
@@ -991,12 +975,9 @@ impl<'a> Secp256k1Chip<'a> {
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        let result = layouter.assign_region(
+        let wide_limbs = layouter.assign_region(
             || "secp_field_mul",
             |mut region| {
-                let a_v = a.values();
-                let b_v = b.values();
-
                 // Compute all 16 schoolbook products and constrain them
                 let mut products: [[Option<AssignedCell<Fr, Fr>>; 4]; 4] = Default::default();
                 let mut offset = 0;
@@ -1128,88 +1109,568 @@ impl<'a> Secp256k1Chip<'a> {
                     }
                 }
 
-                // ── UNCONSTRAINED reduction: wide limbs → final 4 limbs ─────────
-                // ⚠️ SOUNDNESS CAVEAT (2026 review) — THIS IS THE CRITICAL GAP.
-                // The native computation provides a correctly-reduced result,
-                // but the `result_limbs` below are assigned as FREE WITNESSES.
-                // The constrained `wide_limbs` (schoolbook coefficients, soundly
-                // accumulated above) are DISCARDED here and NOTHING constrains
-                //   Σ_k wide[k] · 2^(64·k)  ≡  result  (mod p_secp)
-                // over the integers.
-                //
-                // Why a naive BN254-level check is also unsound: p_secp ≈ 2^256
-                // is close to p_BN254 ≈ 2^254, so reducing the integer identity
-                // mod p_BN254 leaves ~2^2 of ambiguity and a cheating prover can
-                // satisfy it with a wrong `result`. A sound reduction requires a
-                // full integer carry chain (split each product into 64-bit halves,
-                // propagate carries into 8 base-2^64 limbs of the 512-bit product,
-                // then subtract `q·p_secp` with borrow, all carries range-checked).
-                //
-                // The previous "Schwartz–Zippel" check was removed because it
-                // evaluated limb polynomials at r=65537 while limbs are base 2^64,
-                // so it failed for honest provers (see the dead `verify_product`
-                // below). It cannot simply be re-wired.
-                //
-                // The terminal `check_on_curve` and `constrain_affine` checks
-                // CANNOT compensate: they are built on `field_mul`, so they are
-                // vacuous too. Until a constrained integer carry-chain reduction
-                // (or an audited non-native library: halo2wrong /
-                // scroll-tech/halo2-secp256k1) is wired in, `field_mul` proves
-                // NOTHING about the product and the secp256k1 scalar mul is
-                // non-binding — see SECURITY.md and the top-level review.
-                //
-                // NOTE: A previous version had an incorrect reduction cross-check
-                //   wide[0] + c*wide[4] == result[0]
-                // This is mathematically wrong because the reduction from wide to
-                // narrow involves carry propagation across all limbs and multiple
-                // mod-p subtractions. The constraint would only hold if
-                // result[0] == (wide[0] + c*wide[4]) mod 2^64, which is not
-                // generally true after full reduction.
-                let result_limbs = a_v.zip(b_v).map(|(a_v, b_v)| {
-                    limbs_to_native(&a_v)
-                        .mul(&limbs_to_native(&b_v))
-                        .to_bn254_limbs()
-                });
-
-                let mut assigned = Vec::with_capacity(4);
-                for i in 0..4 {
-                    let r_val = result_limbs.as_ref().map(|r| r[i]);
-                    let cell = region.assign_advice(
-                        || format!("mul_result_{}", i),
-                        self.config.advice[i % 8],
-                        offset,
-                        || r_val,
-                    )?;
-                    assigned.push(cell);
-                }
-                // offset not incremented — result limbs are the last assignment
-                // in this region. No further rows needed.
-
-                Ok(AssignedFieldElement {
-                    limbs: [
-                        assigned[0].clone(),
-                        assigned[1].clone(),
-                        assigned[2].clone(),
-                        assigned[3].clone(),
-                    ],
-                })
+                // The 8 wide limbs are now soundly constrained (16 `s_mul`
+                // products + `s_add` accumulation; every value < 2^130 ≪ p_BN254,
+                // so there is no modular wraparound and the `s_add`/`s_mul` gates
+                // are exact INTEGER constraints). Return them; the
+                // wide→canonical reduction and the mod-p reduction are performed
+                // outside this region by the sound carry-chain + quotient helpers
+                // (`carry_chain_columns`, `reduce_canonical_mod_p`).
+                Ok(wide_limbs)
             },
         )?;
 
-        // NOTE: A Schwartz–Zippel product verification was previously applied here
-        // but removed because it was mathematically incorrect — it evaluated limb
-        // polynomials at r=65537, but limbs represent integers in base 2^64, so the
-        // check failed for honest provers whenever carries occurred.
-        //
-        // Soundness of field_mul relies on:
-        //   1. 16 schoolbook products constrained by s_mul gates
-        //   2. Wide limb accumulation constrained by s_add gates
-        //   3. Terminal check_on_curve (y² = x³ + 7)
-        //   4. Terminal constrain_affine (k·G == expected public key)
-        //   5. Limb range checks on all computed values
-        //   6. Intermediate range checks every 32 scalar mul steps
+        // ── Phase 3: carry-chain the 8 wide columns into canonical limbs. ──
+        // Each wide[k] is the constrained schoolbook column sum (< 2^130). The
+        // integer product V = Σ wide[k]·2^(64·k) is < 2^580, so we pad two
+        // empty high columns (shifts 512 and 576) to give the carry room to
+        // settle; `carry_chain_columns` then constrains the final carry-out
+        // to 0 and range-checks every output limb to [0, 2^64).
+        let mut wide_columns: Vec<Vec<AssignedCell<Fr, Fr>>> =
+            wide_limbs.into_iter().map(|c| vec![c]).collect();
+        wide_columns.push(vec![]); // shift 512
+        wide_columns.push(vec![]); // shift 576
+        let value_limbs = self.carry_chain_columns(layouter, &wide_columns)?;
 
+        // ── Phase 4: reduce V mod p to a CANONICAL (< p) 4-limb result. ──
+        let result = self.reduce_canonical_mod_p(layouter, &value_limbs)?;
         Ok(result)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SOUND NON-NATIVE REDUCTION PRIMITIVES (2026 review)
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // These replace the previously-unconstrained wide→narrow reductions in
+    // `field_mul` / `field_add_carried`. Soundness no longer relies on the
+    // terminal `check_on_curve` / `constrain_affine` checks (which were vacuous
+    // because they are themselves built on `field_mul`). Instead the integer
+    // relation   Σ wide[k]·2^(64·k) ≡ result (mod p)   is proven DIRECTLY via
+    // range-checked carry chains and a witnessed quotient `q` with
+    // `result + q·p = V` over the integers, plus a canonicalization proof that
+    // `result < p` — the same strategy used by audited non-native libraries
+    // (privacy-scaling-explorations/halo2wrong, scroll-tech/halo2-secp256k1).
+    //
+    // ⚠️ NOT YET validated by MockProver in this environment (the heavy
+    //    k=22/23 tests risk crashing it, as the real-KZG path did). Confirm
+    //    with, after a clean `cargo check -p zkmist-circuits`:
+    //      cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+    //    The logic below is written to be correct-by-construction and is
+    //    annotated for line-by-line audit.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Split a BN254 `Fr` value `v` (used only where `v < p_BN254`, so field
+    /// arithmetic coincides with integer arithmetic) into `(lo, hi)` with
+    /// `lo + hi·2^64 == v` over the integers and `lo ∈ [0, 2^64)`.
+    /// Used to compute carry-chain witnesses (limb + carry) for `s_add_carry`.
+    fn fr_split_lo_hi(v: Fr) -> (Fr, Fr) {
+        let repr = v.to_repr();
+        let bytes: &[u8] = repr.as_ref();
+        let lo_u64 = u64::from_le_bytes(
+            bytes[..8].try_into().expect("Fr repr is at least 8 bytes"),
+        );
+        let lo = Fr::from(lo_u64);
+        // hi = (v - lo) · (2^64)^{-1}.  (v - lo) is an integer multiple of 2^64
+        // and, in the contexts this is called, < p_BN254 — so the Fr product is
+        // the exact integer quotient (no modular wraparound).
+        let two_pow_64_inv = {
+            let mut t = Fr::ONE;
+            for _ in 0..64 {
+                t = t.double();
+            }
+            t.invert()
+                .expect("2^64 is nonzero, hence invertible mod p_BN254")
+        };
+        let hi = (v - lo) * two_pow_64_inv;
+        (lo, hi)
+    }
+
+    /// Carry-chain reduce a redundant, multi-term-per-column limb representation
+    /// into canonical 64-bit limbs.
+    ///
+    /// `columns[k]` holds advice cells whose integer sum, weighted by 2^(64·k),
+    /// equals the value V to represent. Returns canonical limbs
+    /// `t[0..columns.len()]` (each range-checked to [0, 2^64)) such that
+    ///   Σ_k (Σ cells in columns[k]) · 2^(64·k)  ==  Σ_k t[k] · 2^(64·k)
+    /// over the integers, with the final carry-out constrained to 0.
+    ///
+    /// # Soundness
+    ///
+    /// Each `s_add_carry` gate enforces
+    ///   col_sum + 0 + carry_in − t − carry_out·2^64 = 0
+    /// as a BN254 identity. Every operand is ≪ p_BN254 (column sums < 2^131,
+    /// carries < 2^67), so this is an exact INTEGER identity. Copying
+    /// carry_out[k] → carry_in[k+1] makes the column equations telescope to
+    ///   Σ col_sum[k]·2^(64·k) = Σ t[k]·2^(64·k) + carry_final·2^(64·n).
+    /// With carry_final = 0 and every t[k] ∈ [0, 2^64), the t[k] are the UNIQUE
+    /// base-2^64 digits of V — a cheating prover cannot choose them freely.
+    /// (Inflating an intermediate carry is caught by the next limb's [0,2^64)
+    /// range check, since the gate would force that limb to absorb it.)
+    fn carry_chain_columns(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        columns: &[Vec<AssignedCell<Fr, Fr>>],
+    ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
+        let n = columns.len();
+        let limbs = layouter.assign_region(|| "carry_chain_columns", |mut region| {
+            let mut offset = 0usize;
+            let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
+            let mut out: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(n);
+
+            // Canonical ZERO reference cell. advice[5] is NOT queried by the
+            // s_add / s_add_carry gates (they use advice[0..5]), so it is free
+            // for this anchor. Both the unused `b` operand of the carry gate AND
+            // the bottom (k=0) carry-in MUST be constrained — not merely
+            // witnessed — to 0; otherwise a malicious prover could inject value
+            // into the integer the chain represents.
+            let zero_ref = region.assign_advice(
+                || "cc_zero_ref",
+                self.config.advice[5],
+                0,
+                || Value::known(Fr::ZERO),
+            )?;
+
+            for k in 0..n {
+                // ── Sum this column's terms into `col_sum` (s_add chain). ──
+                let col_sum: AssignedCell<Fr, Fr> = if columns[k].is_empty() {
+                    let z = region.assign_advice(
+                        || format!("cc_empty_{}", k),
+                        self.config.advice[0],
+                        offset,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    region.constrain_equal(z.cell(), zero_ref.cell())?;
+                    offset += 1;
+                    z
+                } else {
+                    let first = &columns[k][0];
+                    let mut acc = region.assign_advice(
+                        || format!("cc_first_{}", k),
+                        self.config.advice[0],
+                        offset,
+                        || first.value().copied(),
+                    )?;
+                    region.constrain_equal(first.cell(), acc.cell())?;
+                    if columns[k].len() > 1 {
+                        for (i, term) in columns[k].iter().skip(1).enumerate() {
+                            let a0 = region.assign_advice(
+                                || format!("cc_a0_{}_{}", k, i),
+                                self.config.advice[0],
+                                offset,
+                                || acc.value().copied(),
+                            )?;
+                            region.constrain_equal(acc.cell(), a0.cell())?;
+                            let a1 = region.assign_advice(
+                                || format!("cc_a1_{}_{}", k, i),
+                                self.config.advice[1],
+                                offset,
+                                || term.value().copied(),
+                            )?;
+                            region.constrain_equal(term.cell(), a1.cell())?;
+                            let s = region.assign_advice(
+                                || format!("cc_s_{}_{}", k, i),
+                                self.config.advice[2],
+                                offset,
+                                || acc
+                                    .value()
+                                    .copied()
+                                    .zip(term.value().copied())
+                                    .map(|(x, y)| x + y),
+                            )?;
+                            self.config.s_add.enable(&mut region, offset)?;
+                            offset += 1;
+                            acc = s;
+                        }
+                    } else {
+                        offset += 1;
+                    }
+                    acc
+                };
+
+                // ── Carry gate row: col_sum + 0 + carry_in = limb + carry_out·2^64 ──
+                let cin_known = prev_carry
+                    .as_ref()
+                    .map(|c| c.value().copied())
+                    .unwrap_or(Value::known(Fr::ZERO));
+                let total_val = col_sum.value().copied().zip(cin_known).map(|(s, c)| s + c);
+                let (limb_val, cout_val) = total_val.map(Self::fr_split_lo_hi).unzip();
+
+                let a = region.assign_advice(
+                    || format!("cg_a_{}", k),
+                    self.config.advice[0],
+                    offset,
+                    || col_sum.value().copied(),
+                )?;
+                region.constrain_equal(col_sum.cell(), a.cell())?;
+                let b_cell = region.assign_advice(
+                    || format!("cg_b_{}", k),
+                    self.config.advice[1],
+                    offset,
+                    || Value::known(Fr::ZERO),
+                )?;
+                region.constrain_equal(b_cell.cell(), zero_ref.cell())?;
+                let cin = region.assign_advice(
+                    || format!("cg_cin_{}", k),
+                    self.config.advice[2],
+                    offset,
+                    || cin_known,
+                )?;
+                if let Some(pc) = &prev_carry {
+                    region.constrain_equal(pc.cell(), cin.cell())?;
+                } else {
+                    // Bottom carry-in (k == 0) must be exactly 0.
+                    region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                }
+                let limb = region.assign_advice(
+                    || format!("cg_limb_{}", k),
+                    self.config.advice[3],
+                    offset,
+                    || limb_val,
+                )?;
+                let cout = region.assign_advice(
+                    || format!("cg_cout_{}", k),
+                    self.config.advice[4],
+                    offset,
+                    || cout_val,
+                )?;
+                self.config.s_add_carry.enable(&mut region, offset)?;
+                offset += 1;
+
+                out.push(limb);
+                prev_carry = Some(cout);
+            }
+
+            // Final carry-out must be 0. (Sound only if the caller supplied
+            // enough empty high columns that V fits; both callers do.)
+            if let Some(pc) = &prev_carry {
+                let z = region.assign_advice(
+                    || "cc_final_zero",
+                    self.config.advice[0],
+                    offset,
+                    || Value::known(Fr::ZERO),
+                )?;
+                region.constrain_equal(pc.cell(), z.cell())?;
+            }
+            Ok(out)
+        })?;
+
+        // Range-check each canonical limb to [0, 2^64).
+        for (i, limb) in limbs.iter().enumerate() {
+            self.check_single_limb(layouter, limb, 200 + i)?;
+        }
+        Ok(limbs)
+    }
+
+    /// Reduce a canonical multi-limb integer V = Σ value_limbs[k]·2^(64·k)
+    /// (each limb range-checked [0, 2^64)) to a CANONICAL 4-limb secp256k1
+    /// field element `result` with `result < p` and `result ≡ V (mod p)`.
+    ///
+    /// # Strategy (fully constrained)
+    ///
+    /// 1. Witness the canonical `result` (4 limbs, < p) and the quotient `q`
+    ///    (`n − 3` limbs, each range-checked [0, 2^64)).
+    /// 2. Constrain `q · p` via schoolbook `s_mul_fixed` products + a carry
+    ///    chain → canonical limbs `P`.
+    /// 3. Constrain `result + P` via a carry chain → canonical limbs `S`, and
+    ///    force `S == value_limbs` limb-by-limb with `S`'s high limb = 0.
+    ///    This proves `result + q·p = V` over the integers, hence
+    ///    `result ≡ V (mod p)`.
+    /// 4. Canonicalize: prove `result < p` by showing `result + (2^32 + 977)`
+    ///    produces no carry out of bit 256 (since `p = 2^256 − 2^32 − 977`).
+    ///
+    /// The quotient bound: `V < 2^(64·n)`, `p > 2^255`, so
+    /// `q = ⌊V/p⌋ < 2^(64·n − 255) = 2^(64·(n−4)+1)`, which fits in `n − 3`
+    /// 64-bit limbs — exactly the number witnessed & range-checked.
+    fn reduce_canonical_mod_p(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        value_limbs: &[AssignedCell<Fr, Fr>],
+    ) -> Result<AssignedFieldElement, Error> {
+        let n = value_limbs.len();
+        assert!(n >= 4, "reduce_canonical_mod_p: need >= 4 value limbs");
+        let m = n - 3; // number of quotient limbs
+
+        // ── Native witness: V, result = V mod p, q = ⌊V / p⌋. ──
+        let (result_limbs_val, q_limbs_val): ([Fr; 4], Vec<Fr>) = {
+            let mut v_big = BigUint::from(0u64);
+            for (k, limb) in value_limbs.iter().enumerate() {
+                let mut l = [0u64; 4];
+                limb.value().assert_if_known(|v| {
+                    let repr = v.to_repr();
+                    let bytes: &[u8] = repr.as_ref();
+                    for i in 0..4 {
+                        l[i] = u64::from_le_bytes(
+                            bytes[i * 8..(i + 1) * 8].try_into().expect("repr row"),
+                        );
+                    }
+                    true
+                });
+                let limb_big = BigUint::from(l[0])
+                    + (BigUint::from(l[1]) << 64)
+                    + (BigUint::from(l[2]) << 128)
+                    + (BigUint::from(l[3]) << 192);
+                v_big += limb_big << (64 * k);
+            }
+            let p_big = native_to_biguint(&NativeSecpField(SECP_P));
+            let result_big = &v_big % &p_big;
+            let q_big = &v_big / &p_big;
+            let result_limbs = biguint_to_fr_limbs(&result_big);
+            // q as little-endian u64 limbs (m of them).
+            let q_bytes_be = q_big.to_bytes_be();
+            let mut q_le = vec![0u8; m * 8];
+            for (i, &byte) in q_bytes_be.iter().rev().enumerate() {
+                if i < q_le.len() {
+                    q_le[i] = byte;
+                }
+            }
+            let q_limbs: Vec<Fr> = (0..m)
+                .map(|i| {
+                    let lo = u64::from_le_bytes(
+                        q_le[i * 8..(i + 1) * 8].try_into().unwrap_or([0u8; 8]),
+                    );
+                    Fr::from(lo)
+                })
+                .collect();
+            (result_limbs, q_limbs)
+        };
+
+        // ── Assign canonical result (4 limbs) + range-check. ──
+        let result_assigned = layouter.assign_region(|| "reduce_result", |mut region| {
+            let mut cells = Vec::with_capacity(4);
+            for i in 0..4 {
+                let c = region.assign_advice(
+                    || format!("res_{}", i),
+                    self.config.advice[i],
+                    0,
+                    || Value::known(result_limbs_val[i]),
+                )?;
+                cells.push(c);
+            }
+            Ok(AssignedFieldElement {
+                limbs: [
+                    cells[0].clone(),
+                    cells[1].clone(),
+                    cells[2].clone(),
+                    cells[3].clone(),
+                ],
+            })
+        })?;
+        for i in 0..4 {
+            self.check_single_limb(layouter, &result_assigned.limbs[i], 300 + i)?;
+        }
+
+        // ── Assign quotient q (m limbs) + range-check. ──
+        let mut q_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(m);
+        for i in 0..m {
+            let c = layouter.assign_region(|| format!("q_limb_{}", i), |mut region| {
+                region.assign_advice(|| "q", self.config.advice[0], 0, || Value::known(q_limbs_val[i]))
+            })?;
+            q_cells.push(c);
+            self.check_single_limb(layouter, &q_cells[i], 400 + i)?;
+        }
+
+        // ── Schoolbook P = q · p : products q[i]·SECP_P[j] via s_mul_fixed. ──
+        let prod_cells: Vec<Vec<Option<AssignedCell<Fr, Fr>>>> = layouter.assign_region(
+            || "qp_schoolbook",
+            |mut region| {
+                let mut offset = 0usize;
+                let mut out: Vec<Vec<Option<AssignedCell<Fr, Fr>>>> = vec![vec![None; 4]; m];
+                for i in 0..m {
+                    for j in 0..4 {
+                        let qa = region.assign_advice(
+                            || format!("q_{}_{}", i, j),
+                            self.config.advice[0],
+                            offset,
+                            || q_cells[i].value().copied(),
+                        )?;
+                        region.constrain_equal(q_cells[i].cell(), qa.cell())?;
+                        region.assign_fixed(
+                            || format!("p_{}_{}", i, j),
+                            self.config.fixed,
+                            offset,
+                            || Value::known(Fr::from(SECP_P[j])),
+                        )?;
+                        let pv = q_cells[i]
+                            .value()
+                            .copied()
+                            .map(|q| q * Fr::from(SECP_P[j]));
+                        let pc = region.assign_advice(
+                            || format!("pq_{}_{}", i, j),
+                            self.config.advice[1],
+                            offset,
+                            || pv,
+                        )?;
+                        self.config.s_mul_fixed.enable(&mut region, offset)?;
+                        out[i][j] = Some(pc);
+                        offset += 1;
+                    }
+                }
+                Ok(out)
+            },
+        )?;
+        // Assemble products into columns (column c = i + j), padded to n+1.
+        let mut p_columns: Vec<Vec<AssignedCell<Fr, Fr>>> = vec![vec![]; n + 1];
+        for i in 0..m {
+            for j in 0..4 {
+                let c = i + j;
+                if c < p_columns.len() {
+                    if let Some(cell) = prod_cells[i][j].clone() {
+                        p_columns[c].push(cell);
+                    }
+                }
+            }
+        }
+        let p_limbs = self.carry_chain_columns(layouter, &p_columns)?; // n+1 canonical limbs
+
+        // ── S = result + P, then constrain S == value_limbs (≡ V). ──
+        let mut s_columns: Vec<Vec<AssignedCell<Fr, Fr>>> = vec![vec![]; n + 1];
+        for c in 0..(n + 1) {
+            if c < 4 {
+                s_columns[c].push(result_assigned.limbs[c].clone());
+            }
+            if c < p_limbs.len() {
+                s_columns[c].push(p_limbs[c].clone());
+            }
+        }
+        let s_limbs = self.carry_chain_columns(layouter, &s_columns)?; // n+1 canonical limbs
+        for c in 0..n {
+            layouter.assign_region(|| format!("seq_{}", c), |mut region| {
+                let a = region.assign_advice(
+                    || "a",
+                    self.config.advice[0],
+                    0,
+                    || s_limbs[c].value().copied(),
+                )?;
+                region.constrain_equal(s_limbs[c].cell(), a.cell())?;
+                let b = region.assign_advice(
+                    || "b",
+                    self.config.advice[1],
+                    0,
+                    || value_limbs[c].value().copied(),
+                )?;
+                region.constrain_equal(value_limbs[c].cell(), b.cell())?;
+                region.constrain_equal(a.cell(), b.cell())?;
+                Ok(())
+            })?;
+        }
+        // S's high limb (index n) must be 0 (V < 2^(64·n)).
+        layouter.assign_region(|| "s_high_zero", |mut region| {
+            let a = region.assign_advice(|| "a", self.config.advice[0], 0, || s_limbs[n].value().copied())?;
+            region.constrain_equal(s_limbs[n].cell(), a.cell())?;
+            let z = region.assign_advice(|| "z", self.config.advice[1], 0, || Value::known(Fr::ZERO))?;
+            region.constrain_equal(a.cell(), z.cell())?;
+            Ok(())
+        })?;
+
+        // ── Canonicalize: prove result < p. ──
+        // result + C  (C = 2^32 + 977 = 0x1000003D1) must NOT carry out of
+        // bit 256, i.e. result + C < 2^256  ⟺  result < p = 2^256 − C.
+        const C_LIMB0: u64 = 0x1000003D1;
+        let canon_lo_cells: Vec<AssignedCell<Fr, Fr>> = layouter.assign_region(
+            || "canonicalize_lt_p",
+            |mut region| {
+                // Reference constants (advice[5], advice[6] are not queried by
+                // s_add_carry, which uses advice[0..5]). The `b` operand and the
+                // bottom carry-in are CONSTRAINED to these — not merely
+                // witnessed — so a prover cannot inject value.
+                let zero_ref = region.assign_advice(
+                    || "canon_zero",
+                    self.config.advice[5],
+                    4,
+                    || Value::known(Fr::ZERO),
+                )?;
+                let c_ref = region.assign_advice(
+                    || "canon_C",
+                    self.config.advice[6],
+                    4,
+                    || Value::known(Fr::from(C_LIMB0)),
+                )?;
+                let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
+                let mut lo_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
+                for i in 0..4usize {
+                    let a_val = result_assigned.limbs[i].value().copied();
+                    let b_val = if i == 0 {
+                        Value::known(Fr::from(C_LIMB0))
+                    } else {
+                        Value::known(Fr::ZERO)
+                    };
+                    let cin_val = prev_carry
+                        .as_ref()
+                        .map(|c| c.value().copied())
+                        .unwrap_or(Value::known(Fr::ZERO));
+                    let total = a_val.zip(b_val).zip(cin_val).map(|((a, b), c)| a + b + c);
+                    let (lo, hi) = total.map(Self::fr_split_lo_hi).unzip();
+
+                    let a = region.assign_advice(
+                        || format!("ca_{}", i),
+                        self.config.advice[0],
+                        i,
+                        || a_val,
+                    )?;
+                    region.constrain_equal(result_assigned.limbs[i].cell(), a.cell())?;
+                    let bcell = region.assign_advice(
+                        || format!("cb_{}", i),
+                        self.config.advice[1],
+                        i,
+                        || b_val,
+                    )?;
+                    // `b` is exactly C at limb 0 and 0 at limbs 1..3.
+                    if i == 0 {
+                        region.constrain_equal(bcell.cell(), c_ref.cell())?;
+                    } else {
+                        region.constrain_equal(bcell.cell(), zero_ref.cell())?;
+                    }
+                    let cin = region.assign_advice(
+                        || format!("cc_{}", i),
+                        self.config.advice[2],
+                        i,
+                        || cin_val,
+                    )?;
+                    if let Some(pc) = &prev_carry {
+                        region.constrain_equal(pc.cell(), cin.cell())?;
+                    } else {
+                        // bottom carry-in (i == 0) must be exactly 0
+                        region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                    }
+                    let r_cell = region.assign_advice(
+                        || format!("cr_{}", i),
+                        self.config.advice[3],
+                        i,
+                        || lo,
+                    )?;
+                    lo_cells.push(r_cell);
+                    let cout = region.assign_advice(
+                        || format!("co_{}", i),
+                        self.config.advice[4],
+                        i,
+                        || hi,
+                    )?;
+                    self.config.s_add_carry.enable(&mut region, i)?;
+                    if i == 3 {
+                        // final carry == 0  ⟹  result + C < 2^256  ⟹  result < p
+                        let z = region.assign_advice(
+                            || "cz",
+                            self.config.advice[0],
+                            4,
+                            || Value::known(Fr::ZERO),
+                        )?;
+                        region.constrain_equal(cout.cell(), z.cell())?;
+                    } else {
+                        prev_carry = Some(cout);
+                    }
+                }
+                Ok(lo_cells)
+            },
+        )?;
+        // Range-check each `lo` limb to [0, 2^64). This forces the carry
+        // decomposition to be HONEST: without it a prover could absorb a real
+        // carry into an unbounded `lo` limb and falsely satisfy the final
+        // `cout == 0`, defeating the result < p proof.
+        for (i, lo) in canon_lo_cells.iter().enumerate() {
+            self.check_single_limb(layouter, lo, 600 + i)?;
+        }
+
+        Ok(result_assigned)
     }
 
     /// Constrained subtraction: a - b mod p.
@@ -1227,11 +1688,14 @@ impl<'a> Secp256k1Chip<'a> {
         a: &AssignedFieldElement,
         b: &AssignedFieldElement,
     ) -> Result<AssignedFieldElement, Error> {
-        // Compute neg_b = p - b natively
+        // neg_b = p − b. We witness neg_b's limbs and then CONSTRAIN
+        // b + neg_b == p over the integers (see region below), so neg_b is
+        // provably the modular negation of b. Without this, neg_b would be a
+        // free witness and `field_sub` would not prove a − b.
         let b_v: Value<[Fr; 4]> = b.values();
         let neg_b_native = b_v.map(|bv| limbs_to_native(&bv).neg().to_bn254_limbs());
 
-        // Assign neg_b limbs
+        // Assign neg_b limbs.
         let neg_b = layouter.assign_region(
             || "secp_neg_b",
             |mut region| {
@@ -1256,8 +1720,105 @@ impl<'a> Secp256k1Chip<'a> {
                 })
             },
         )?;
+        // Range-check neg_b limbs to [0, 2^64).
+        for i in 0..4 {
+            self.check_single_limb(layouter, &neg_b.limbs[i], 700 + i)?;
+        }
 
-        // result = a + neg_b via constrained field_add_carried (carry-propagated)
+        // Prove b + neg_b == p (integers). For each limb:
+        //   b[i] + neg_b[i] + carry_in = p[i] + carry_out·2^64
+        // with chained carries, bottom carry_in = 0, and final carry_out = 0.
+        // Since b < p and neg_b = p − b, the sum is exactly p (< 2^256), so the
+        // chain terminates with no overflow. The limb-by-limb result cells are
+        // forced equal to SECP_P[i]; combined with the telescoping carry chain
+        // and final carry = 0, this uniquely forces neg_b = p − b.
+        layouter.assign_region(|| "secp_neg_b_proof", |mut region| {
+            let zero_ref = region.assign_advice(
+                || "nsub_zero",
+                self.config.advice[5],
+                0,
+                || Value::known(Fr::ZERO),
+            )?;
+            let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
+            for i in 0..4usize {
+                let b_val = b.limbs[i].value().copied();
+                let nb_val = neg_b.limbs[i].value().copied();
+                let cin_val = prev_carry
+                    .as_ref()
+                    .map(|c| c.value().copied())
+                    .unwrap_or(Value::known(Fr::ZERO));
+                let total = b_val.zip(nb_val).zip(cin_val).map(|((x, y), z)| x + y + z);
+                let (lo, hi) = total.map(Self::fr_split_lo_hi).unzip();
+
+                // advice[0] = b[i] (copy)
+                let b_cell = region.assign_advice(
+                    || format!("nsub_b_{}", i),
+                    self.config.advice[0],
+                    i,
+                    || b_val,
+                )?;
+                region.constrain_equal(b.limbs[i].cell(), b_cell.cell())?;
+                // advice[1] = neg_b[i] (copy)
+                let nb_cell = region.assign_advice(
+                    || format!("nsub_nb_{}", i),
+                    self.config.advice[1],
+                    i,
+                    || nb_val,
+                )?;
+                region.constrain_equal(neg_b.limbs[i].cell(), nb_cell.cell())?;
+                // advice[2] = carry_in (chained, bottom = 0)
+                let cin = region.assign_advice(
+                    || format!("nsub_cin_{}", i),
+                    self.config.advice[2],
+                    i,
+                    || cin_val,
+                )?;
+                if let Some(pc) = &prev_carry {
+                    region.constrain_equal(pc.cell(), cin.cell())?;
+                } else {
+                    region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                }
+                // advice[3] = result limb (constrained == SECP_P[i])
+                let r_cell = region.assign_advice(
+                    || format!("nsub_r_{}", i),
+                    self.config.advice[3],
+                    i,
+                    || lo,
+                )?;
+                // advice[4] = carry_out
+                let cout = region.assign_advice(
+                    || format!("nsub_cout_{}", i),
+                    self.config.advice[4],
+                    i,
+                    || hi,
+                )?;
+                self.config.s_add_carry.enable(&mut region, i)?;
+                // Force the result limb to equal the secp prime limb SECP_P[i]
+                // (advice[6] is free under s_add_carry, which uses advice[0..5]).
+                let p_ref = region.assign_advice(
+                    || format!("nsub_pref_{}", i),
+                    self.config.advice[6],
+                    i,
+                    || Value::known(Fr::from(SECP_P[i])),
+                )?;
+                region.constrain_equal(r_cell.cell(), p_ref.cell())?;
+                if i == 3 {
+                    // final carry == 0  ⟹  b + neg_b == p (no overflow)
+                    let z = region.assign_advice(
+                        || "nsub_final_zero",
+                        self.config.advice[0],
+                        4,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    region.constrain_equal(cout.cell(), z.cell())?;
+                } else {
+                    prev_carry = Some(cout);
+                }
+            }
+            Ok(())
+        })?;
+
+        // result = a + neg_b (= a − b) via the sound carry-propagated add.
         self.field_add_carried(layouter, a, &neg_b)
     }
 

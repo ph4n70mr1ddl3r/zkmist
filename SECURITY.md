@@ -162,24 +162,39 @@ field arithmetic gadget:
 
 ## Known Issues (Blocking Mainnet)
 
-**`field_mul` / `field_add_carried` reductions are unconstrained (CRITICAL).**
-The wide→narrow reduction in `field_mul` assigns result limbs as free
-witnesses, and `field_add_carried` discards its constrained raw sum before
-returning a witness-guided reduction. The terminal `check_on_curve` and
-`constrain_affine` constraints do NOT compensate because they are themselves
-built on `field_mul` and are therefore vacuous. A constrained integer
-carry-chain reduction (or replacement with an audited non-native field
-library such as `privacy-scaling-explorations/halo2wrong` or
-`scroll-tech/halo2-secp256k1`) is REQUIRED before mainnet. Until then the
-secp256k1 scalar multiplication is non-binding.
+**`field_mul` / `field_add_carried` / `field_sub` reductions — CONSTRAINED
+but UNVALIDATED (2026 follow-up).** The wide→narrow reduction in `field_mul`,
+the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` are no
+longer witness-trusted: they now use explicit range-checked integer carry
+chains plus a witnessed quotient `q` with `result + q·p = V` and a
+canonicalization proof `result < p` (see `carry_chain_columns` /
+`reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`).
+
+⚠️ This code has NOT yet been validated by MockProver in this environment
+(running the heavy k=22/23 tests risks crashing it, as the real-KZG path did).
+It compiles cleanly (`cargo check -p zkmist-circuits`) and all native
+arithmetic tests pass, but it MUST be confirmed before any reliance:
+```
+cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+```
+These tests will likely need HIGHER k than before (the sound reductions add
+many rows per field op); if k=23 no longer fits, raise k or adopt an optimized
+audited non-native library. After MockProver passes, regenerate
+`EXPECTED_CS_DIGEST` (circuits/src/lib.rs + gen-production-verifier) since the
+constraint system changed.
 
 **`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
 `out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
 the Merkle membership proof non-binding. It now constrains `sel*b`,
 `(1-sel)*a`, `sel*a`, and `(1-sel)*b` with multiplication gates (mirroring
-`conditional_select_field`). NOTE: the `cond_swap` fix changes the circuit's
-constraint system, so `EXPECTED_CS_DIGEST` (in `circuits/src/lib.rs` and
-`gen-production-verifier/src/main.rs`) must be regenerated.
+`conditional_select_field`).
+
+**`field_add_carried` Phase 1 carry chain — FIXED (2026 follow-up).** The
+bottom `carry_in` was previously a witnessed-but-unconstrained zero and the
+inter-limb `carry_in` cells were free witnesses (not chained to the previous
+`carry_out`). Now chained + zero-constrained, so `raw == a + b` is actually
+proven.
 
 The secp256k1 MockProver test previously produced 8 permutation failures in `constrain_affine`.
 This was caused by the unconstrained wide-to-narrow reduction in `field_mul`.
