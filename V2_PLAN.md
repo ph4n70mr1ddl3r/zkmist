@@ -228,7 +228,8 @@ ZKMist V2 does **not** require its own per-circuit trusted setup ceremony. It re
 > **2¹² BN254 G1 points**. That is **incorrect for this circuit**. The
 > EIP-4844 ceremony produced only 2¹² = 4,096 G1 points (sized for blob
 > verification), but the 2026 secp256k1 soundness rewrite grew the circuit to
-> **k=24 = 2²⁴ = 16,777,216 rows**, requiring an SRS of at least 2²⁴ points —
+> **k=24 = 2²⁴ = 16,777,216 rows** (later optimized back to k=23 by
+> `point_add_mixed`), requiring an SRS of at least 2²⁴ points —
 > **~4,000× larger than EIP-4844 provides**. The EIP-4844 SRS **cannot be
 > used**. The correct source is the PSE perpetual powers-of-tau ceremony
 > (universal, updatable, sized well beyond 2²⁴, reused by Scroll/Taiko/Polygon
@@ -240,7 +241,7 @@ ZKMist V2 does **not** require its own per-circuit trusted setup ceremony. It re
 | Ceremony | **PSE perpetual powers-of-tau** (universal, updatable) |
 | Participants | many (public, auditable transcript; continuously accrued) |
 | Security assumption | At least 1 participant was honest (1-of-N) |
-| SRS size needed | **2²⁴** BN254 G1 points (circuit is k=24 after the 2026 soundness rewrite) |
+| SRS size needed | **2²³** BN254 G1 points (circuit is k=23 after the secp256k1 `point_add_mixed` optimization) |
 | SRS format | halo2_proofs 0.3.0 binary params (`Params::read`/`Params::write`) |
 | Trust root in code | `KZG_SRS_URL` + `KZG_SRS_SHA256` in `cli/src/constants.rs` |
 | Claimant UX | one-time streaming download + SHA-256 verify (cached, re-verified) |

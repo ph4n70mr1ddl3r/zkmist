@@ -1100,6 +1100,13 @@ mod tests {
     #[test]
     #[ignore]
     fn test_keccak_mock_prover_full() {
+        // Serialize against the other k>=22 MockProver tests (the k=23 ones
+        // use ~15 GiB each; this one ~7 GiB). Without this guard a bare
+        // `--ignored` launches them all in parallel and OOMs the host. Shares
+        // the single process-wide lock defined at crate root in lib.rs.
+        let _heavy_guard = crate::HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         use halo2_proofs::{
             circuit::{Layouter, SimpleFloorPlanner},
             dev::MockProver,

@@ -1,5 +1,13 @@
 # GLV acceleration for the secp256k1 gadget — design sketch
 
+> **Outcome (2026):** ✅ **IMPLEMENTED & SHIPPED.** The `point_add_mixed`
+> optimization (Tier 1 of this sketch) halved the secp256k1 witness and dropped
+> the full circuit from `k=24` (which OOM-killed 32 GiB hosts at ~30 GiB RSS)
+> back to **`k=23`** (~15 GiB RSS → fits comfortably). The E2E MockProver and
+> all four negative tests now pass at k=23. The GLV endomorphism shortcut
+> (Tier 2/3) was NOT needed; Tier 1 alone closed the gap. The text below is
+> preserved as the original design sketch.
+
 > **Status:** DESIGN SKETCH, not implemented. The goal is to drop the full
 > circuit from `k=24` (2²⁴ ≈ 16.7 M rows, ~30 GiB RSS → OOM-kills a 32 GiB host)
 > to `k=23` (2²³ ≈ 8.4 M rows, ~15 GiB RSS → fits comfortably). The row budget

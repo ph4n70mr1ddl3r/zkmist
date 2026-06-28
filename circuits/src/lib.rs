@@ -44,6 +44,40 @@ use crate::secp256k1::{
 };
 
 // ──────────────────────────────────────────────────────────────────────
+// Process-wide serialization lock for the heavy MockProver tests.
+//
+// `cargo test ... -- --ignored` launches *every* `#[ignore]`d test in the
+// crate in parallel (default = one thread per CPU). Seven of them each
+// allocate a multi-GiB witness via `MockProver::run(k >= 22, ...)`:
+//
+//   - test_circuit_merkle_nullifier_e2e         (k=23, ~15 GiB RSS)
+//   - test_secp256k1_mock_prover                (k=23, ~15 GiB RSS)
+//   - test_keccak_mock_prover_full              (k=22,  ~7 GiB RSS)
+//   - test_wrong_merkle_root_rejected           (k=23, ~15 GiB RSS)
+//   - test_wrong_nullifier_rejected             (k=23, ~15 GiB RSS)
+//   - test_zero_recipient_rejected              (k=23, ~15 GiB RSS)
+//   - test_recipient_exceeding_uint160_rejected (k=23, ~15 GiB RSS)
+//
+// Two concurrent k=23 runs (~30 GiB) already saturate a 31 GiB host; three or
+// more OOM-kill the process and destabilize the host -- exactly what crashed
+// the previous bare `--ignored` run on this machine. EACH of these tests
+// acquires THIS lock for its entire body, so they execute strictly one at a
+// time even when cargo spawns them all at once. Poisoning is tolerated
+// (`unwrap_or_else(|p| p.into_inner())`) so a panic in one heavy test does not
+// deadlock the others. The ~60 cheap tests never touch the lock and keep
+// parallelizing freely.
+//
+// Defense in depth: prefer `--test-threads=1` when running the whole ignored
+// suite (cleaner output, no blocked threads), but the LOCK is the real
+// guarantee -- it makes a bare `--ignored` memory-safe.
+//
+// This is `pub(crate)` + `#[cfg(test)]` so both `lib.rs::tests` and
+// `keccak.rs::tests` (which live in the same test binary) share the one lock.
+// ──────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+pub(crate) static HEAVY_MOCK_PROVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// ──────────────────────────────────────────────────────────────────────
 // Soundness-binding helpers (Findings 1–3)
 //
 // These helpers weld together the three otherwise-independent pillars of the
@@ -696,23 +730,11 @@ mod tests {
     use ark_ff::BigInteger;
     use light_poseidon::PoseidonHasher;
 
-    /// Process-wide lock that **serializes** the heavy k=24 `MockProver` tests.
+    /// NOTE: the process-wide serialization lock `HEAVY_MOCK_PROVER_LOCK` now
+    /// lives at crate scope (see top of file) and is acquired by EVERY heavy
+    /// k>=22 MockProver test, not just the `*_rejected` ones -- see its doc
+    /// comment for the OOM analysis.
     ///
-    /// `cargo test --lib` runs every `#[test]` as a thread inside one binary.
-    /// The four `*_rejected` negative tests are `#[ignore]`d and each allocates
-    /// a full 2^23-row × ~28-column witness (~15 GiB RSS, measured) — a single
-    /// run is fine on a 32 GiB host, but several in parallel can still
-    /// hard-crash the whole process (and the agent running the suite). Holding
-    /// this mutex for the duration of each heavy test makes them run one at a
-    /// time when invoked via `--ignored`, while the ~60 cheap tests keep
-    /// parallelizing freely. Poisoning is tolerated so one failing heavy test
-    /// doesn't mask the others.
-    ///
-    /// (`test_circuit_configures` used to hold this lock too when it ran at
-    /// k=24, but it is now a cheap configure-only smoke test and needs no
-    /// serialization — see its doc comment.)
-    static HEAVY_MOCK_PROVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Test that the circuit configuration is valid (no panics during configure).
     #[test]
     fn test_circuit_configures() {
@@ -897,7 +919,10 @@ mod tests {
 
         let mut counter = RowCountingAssignment { max_row: 0 };
         <ZKMistV2Claim as Circuit<Fr>>::FloorPlanner::synthesize(
-            &mut counter, circuit, config, constants,
+            &mut counter,
+            circuit,
+            config,
+            constants,
         )
         .expect("measurement synthesis failed");
         (counter.max_row, blinding)
@@ -950,9 +975,7 @@ mod tests {
         let total = rows_used + blinding + 1; // rows that must fit in 2^k
 
         // Smallest k with 2^k >= total.
-        let min_k = (total as u64)
-            .next_power_of_two()
-            .trailing_zeros() as u32;
+        let min_k = (total as u64).next_power_of_two().trailing_zeros() as u32;
 
         let fits_k23 = total <= (1usize << 23);
         let fits_k24 = total <= (1usize << 24);
@@ -961,17 +984,32 @@ mod tests {
         eprintln!("  rows used (layout height): {:>14}", rows_used);
         eprintln!("  blinding factors:          {:>14}", blinding);
         eprintln!("  total (rows + blinding +1): {:>14}", total);
-        eprintln!("  2^23 = {:>14}   2^24 = {:>14}", 1usize << 23, 1usize << 24);
+        eprintln!(
+            "  2^23 = {:>14}   2^24 = {:>14}",
+            1usize << 23,
+            1usize << 24
+        );
         eprintln!("  minimum viable k:          {:>14}", min_k);
-        eprintln!("  fits k=23 (8.4M rows)?     {:>14}", if fits_k23 { "YES ✅" } else { "NO  ❌" });
-        eprintln!("  fits k=24 (16.8M rows)?    {:>14}", if fits_k24 { "YES ✅" } else { "NO  ❌" });
+        eprintln!(
+            "  fits k=23 (8.4M rows)?     {:>14}",
+            if fits_k23 { "YES ✅" } else { "NO  ❌" }
+        );
+        eprintln!(
+            "  fits k=24 (16.8M rows)?    {:>14}",
+            if fits_k24 { "YES ✅" } else { "NO  ❌" }
+        );
         if !fits_k23 {
             let over_23 = total.saturating_sub(1usize << 23);
             let reduction_needed = over_23 as f64 / rows_used as f64;
-            eprintln!("  over 2^23 by:              {:>14} rows ({:.1}% of current)",
-                      over_23, reduction_needed * 100.0);
-            eprintln!("  → GLV (mixed-add already landed) must shave ~{:.0}% of rows.",
-                      reduction_needed * 100.0);
+            eprintln!(
+                "  over 2^23 by:              {:>14} rows ({:.1}% of current)",
+                over_23,
+                reduction_needed * 100.0
+            );
+            eprintln!(
+                "  → GLV (mixed-add already landed) must shave ~{:.0}% of rows.",
+                reduction_needed * 100.0
+            );
         }
         eprintln!("───────────────────────────────────────────────────────────");
 
@@ -982,7 +1020,10 @@ mod tests {
         // adds >360K rows would silently push us back to k=24 / ~30 GiB), and
         // we MUST still fit k=24 (harness-correctness guard).
         assert!(fits_k23, "circuit no longer fits k=23 — a gadget grew; either optimize or bump CIRCUIT_K back to 24");
-        assert!(fits_k24, "circuit no longer fits k=24 — measurement harness is broken");
+        assert!(
+            fits_k24,
+            "circuit no longer fits k=24 — measurement harness is broken"
+        );
     }
 
     /// Full end-to-end MockProver test with a real key, Merkle proof, and nullifier.
@@ -1028,6 +1069,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_circuit_merkle_nullifier_e2e() {
+        // Serialize against the other k>=22 MockProver tests (~15 GiB each):
+        // without this guard a bare `--ignored` OOMs the host.
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Use a test key that's valid (non-zero, below secp256k1 order)
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
@@ -1170,6 +1216,11 @@ mod tests {
     #[test]
     #[ignore]
     fn test_secp256k1_mock_prover() {
+        // Serialize against the other k>=22 MockProver tests (~15 GiB each):
+        // without this guard a bare `--ignored` OOMs the host.
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         use halo2_proofs::{
             circuit::{Layouter, SimpleFloorPlanner},
             dev::MockProver,
@@ -2199,6 +2250,11 @@ mod tests {
     #[test]
     #[ignore = "slow: full circuit at k=23 (~15 min, ~15 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_recipient_exceeding_uint160_rejected() {
+        // Serialize against the other k>=22 MockProver tests (~15 GiB each):
+        // without this guard a bare `--ignored` OOMs the host.
+        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Construct a recipient > 2^160 by setting byte 20 (LE index) to non-zero.
         // Fr::from(1u64) << 160 is not directly expressible, so we use a large value.
         // 2^160 + 1 in hex is 1 followed by 40 hex digits of zeros + 1.

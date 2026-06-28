@@ -372,10 +372,12 @@ No special permissions or contract setup is required.
 > - **secp256k1 non-native field arithmetic: VALIDATED in isolation (2026).**
 >   The isolated secp256k1 gadget — `field_mul` / `field_add_carried` / `field_sub`
 >   carry-chain reductions, `check_on_curve`, `constrain_affine` (k·G == pubkey),
->   and limb range checks — **passes MockProver at k=24** and derives the
->   test-vector address. k rose 22→24 because the sound reductions add rows per
->   field op. (This was the largest unknown and it is now exonerated.)
-> - **Full E2E circuit: ✅ PASSES at k=24 (2026).** The honest end-to-end proof —
+>   and limb range checks — **passes MockProver at k=23** and derives the
+>   test-vector address. The sound reductions first pushed k from 22 to 24, but
+>   a subsequent secp256k1 `point_add_mixed` optimization halved the witness and
+>   brought it back down to k=23. (This was the largest unknown and it is now
+>   exonerated.)
+> - **Full E2E circuit: ✅ PASSES at k=23 (2026).** The honest end-to-end proof —
 >   real key → secp256k1 → Keccak address → Merkle membership → nullifier →
 >   recipient — verifies, and the binding between the three pillars is sound.
 >   Getting here required fixing three latent Keccak correctness bugs that
@@ -401,14 +403,16 @@ No special permissions or contract setup is required.
 > cover the constraints that are present.
 >
 > **Known issues (blocking mainnet):**
-> - Production circuit `k` is now **24** (16M rows), up from 23, due to the
->   secp256k1 soundness rewrite. E2E MockProver at k=24 ≈ 32 min, ~30 GiB RSS.
+> - Production circuit `k` is **23** (8.4M rows). The soundness rewrite raised
+>   it to 24, but the secp256k1 `point_add_mixed` optimization halved the witness
+>   and brought it back to k=23. E2E MockProver at k=23 ≈ 2 min (release),
+>   ~15 GiB RSS.
 >
 > **Already validated (2026):**
-> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=24 ✅
+> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=23 ✅
 > - **Four full-circuit negative tests** (wrong root / wrong nullifier /
->   zero recipient / >uint160 recipient all correctly rejected) at k=24 ✅
-> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=24 ✅
+>   zero recipient / >uint160 recipient all correctly rejected) at k=23 ✅
+> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=23 ✅
 > - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
 >   `tiny_keccak` cross-check on 160 address bits) ✅
 > - `cond_swap` Merkle gadget soundness (`s_mul`/`s_add` product gates) ✅
@@ -424,8 +428,8 @@ No special permissions or contract setup is required.
 > - `scripts/e2e-test.sh` — full local E2E test suite
 >
 > **Remaining blockers before deployment:**
-> - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from the full circuit VK (at k=24) using `halo2-solidity-verifier`
-> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=24).
+> - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from the full circuit VK (at k=23) using `halo2-solidity-verifier`
+> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 (0x15) with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=23). The `gen-production-verifier` tool exists for this but its `synthesize()` is a stub (see that crate's docs) — porting the full synthesize (or eliminating the halo2 version split) is the open task.
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >

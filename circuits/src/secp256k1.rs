@@ -2041,6 +2041,7 @@ impl<'a> Secp256k1Chip<'a> {
     ///   - `Z2² = 1` ⇒ `U1 = X1`      (clone `p.x`)
     ///   - `Z2³ = 1` ⇒ `S1 = Y1`      (clone `p.y`)
     ///   - `Z1·Z2 = Z1`               (so `Z3 = H · Z1`)
+    ///
     /// so the `z2_sq`, `u1`, `z2_cu`, `s1`, and `z1z2` products collapse to
     /// clones of already-canonical cells. Since `field_mul(·, 1)` would yield
     /// exactly those same canonical values, this is **soundness-neutral**:
@@ -3549,9 +3550,9 @@ fn jacobian_add_mixed(
 #[test]
 fn test_jacobian_add_mixed_matches_jacobian_add() {
     let key: [u8; 32] = [
-        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
-        0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
-        0x89, 0xab, 0xcd, 0xef,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
     ];
     let bits = decompose_key_to_bits(&key);
     let g = NativePoint::GENERATOR;
@@ -3571,8 +3572,7 @@ fn test_jacobian_add_mixed_matches_jacobian_add() {
         let (msx, msy, msz) = jacobian_add_mixed(mdx, mdy, mdz, g.x, g.y);
         // full path with z2 = 1
         let (fdx, fdy, fdz) = jacobian_double(fx, fy, fz);
-        let (fsx, fsy, fsz) =
-            jacobian_add(fdx, fdy, fdz, g.x, g.y, NativeSecpField::ONE);
+        let (fsx, fsy, fsz) = jacobian_add(fdx, fdy, fdz, g.x, g.y, NativeSecpField::ONE);
 
         // Both branches must agree before the conditional select.
         assert_eq!(mdx.0, fdx.0, "double x mismatch at step {}", i);
@@ -3604,8 +3604,7 @@ fn test_jacobian_add_mixed_matches_jacobian_add() {
     let p255 = NativePoint::scalar_mul(&p255_scalar);
     let neg_p255_y = p255.y.neg();
     let (mrx, mry, mrz) = jacobian_add_mixed(mx, my, mz, p255.x, neg_p255_y);
-    let (frx, fry, frz) =
-        jacobian_add(fx, fy, fz, p255.x, neg_p255_y, NativeSecpField::ONE);
+    let (frx, fry, frz) = jacobian_add(fx, fy, fz, p255.x, neg_p255_y, NativeSecpField::ONE);
     assert_eq!(mrx.0, frx.0, "correction add x mismatch");
     assert_eq!(mry.0, fry.0, "correction add y mismatch");
     assert_eq!(mrz.0, frz.0, "correction add z mismatch");

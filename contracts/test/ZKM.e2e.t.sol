@@ -194,8 +194,8 @@ contract ZKMV2E2ETest is Test {
 
         // Claim 5 times to verify the flow works
         for (uint256 i = 0; i < 5; i++) {
-        // Make one claim
-        bytes memory fakeProof = new bytes(5632);
+            // Make one claim
+            bytes memory fakeProof = new bytes(5632);
             bytes32 nullifier = bytes32(uint256(i + 1));
             address recipient = address(uint160(i + 1));
             a.claim(fakeProof, nullifier, recipient);

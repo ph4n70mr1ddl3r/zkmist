@@ -565,14 +565,188 @@ mod tests {
         let params = Params::<G1Affine>::new(10); // file claims k=10
         let err = ensure_params_k(&params, 8).expect_err("mismatch must reject");
         // Message must surface both k values and the memory blowup factor.
-        assert!(err.contains("k=10"), "error should name the file's k: {}", err);
-        assert!(err.contains("k=8"), "error should name the expected k: {}", err);
+        assert!(
+            err.contains("k=10"),
+            "error should name the file's k: {}",
+            err
+        );
+        assert!(
+            err.contains("k=8"),
+            "error should name the expected k: {}",
+            err
+        );
         assert!(
             err.contains("4x") || err.contains("4×"),
             "error should state the memory multiplier (2^(10-8)=4): {}",
             err
         );
-        assert!(err.contains("kzg-srs.md"), "error should point to the doc: {}", err);
+        assert!(
+            err.contains("kzg-srs.md"),
+            "error should point to the doc: {}",
+            err
+        );
+    }
+
+    /// REAL end-to-end Halo2-KZG proof round-trip on the FULL ZKMist circuit.
+    ///
+    /// Unlike `test_circuit_merkle_nullifier_e2e` in zkmist-circuits (which uses
+    /// `MockProver` — it checks only that the gates are satisfiable), this test
+    /// generates a REAL KZG proof through the production `generate_v2_proof`
+    /// path: `keygen_vk` → `keygen_pk` → `create_proof` (polynomial commitment +
+    /// opening proofs) → `verify_proof` (pairing-based `SingleVerifier`). This is
+    /// the exact cryptographic code path claimants hit, and the part MockProver
+    /// cannot exercise — it is what was previously COMPLETELY untested.
+    ///
+    /// The flow: generate a proof for a known-good claim, confirm it verifies
+    /// with the correct public inputs, then confirm a TAMPERED Merkle root is
+    /// REJECTED by the pairing check (the real soundness guarantee — a forged
+    /// public input must fail verification, not just fail a gate check).
+    ///
+    /// ⚠️ Uses a RANDOM dev SRS (`ZKMIST_DEV_SRS=1` → `Params::new`). Proofs
+    /// from a dev SRS are forgeable by whoever generated the SRS — fine for a
+    /// test, NEVER for mainnet. The pinned PSE SRS (`docs/kzg-srs.md`) is what
+    /// makes production proofs unforgeable; this test validates only the
+    /// proving/verifying CODE PATH, not the trust root.
+    ///
+    /// Heavy: ~15–25 GiB RSS at k=23 (keygen + prove + re-keygen + 2 verifies).
+    /// Run ALONE:
+    ///   ZKMIST_DEV_SRS=1 cargo test --release -p zkmist-cli \
+    ///     test_real_kzg_proof_round_trip -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore = "heavy: real KZG proof at k=23 (~min, ~15-25 GiB). Run with --ignored --test-threads=1 and ZKMIST_DEV_SRS=1."]
+    fn test_real_kzg_proof_round_trip() {
+        use zkmist_circuits::secp256k1::native_derive_address;
+        use zkmist_merkle_tree::build_single_leaf_proof;
+
+        // Dev SRS — random, forgeable, test-only. Must be set before params load.
+        // Safe: this test is `#[ignore]`d, so it only runs when invoked explicitly
+        // (and --test-threads=1 keeps it the only test in the process).
+        std::env::set_var("ZKMIST_DEV_SRS", "1");
+
+        // Same key + derivation as the E2E MockProver test in zkmist-circuits,
+        // so the two tests validate the SAME claim via two different mechanisms.
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+        let (address, _, _) = native_derive_address(&key);
+        // Sanity: same address the secp256k1 MockProver test pins.
+        assert_eq!(
+            hex::encode(address),
+            "fcad0b19bb29d4674531d6f115237e16afce377c"
+        );
+
+        let (root, siblings_ark, path_u8) = build_single_leaf_proof(&address, TREE_DEPTH);
+        assert_eq!(siblings_ark.len(), TREE_DEPTH);
+        let mut siblings = [[0u8; 32]; TREE_DEPTH];
+        let mut path_indices = [0u8; TREE_DEPTH];
+        siblings.copy_from_slice(&siblings_ark);
+        path_indices.copy_from_slice(&path_u8);
+
+        let recipient: [u8; 20] = [0xB0; 20]; // non-zero recipient
+
+        // Use a temp dir so the proof file outlives generation + re-verify.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let proof_path = dir.path().join("proof.json");
+
+        // ── [1] Generate the real proof via the PRODUCTION entry point. ──
+        // generate_v2_proof internally does keygen_vk → keygen_pk →
+        // create_proof → verify_proof and returns Err if any step fails, so a
+        // successful return already proves the full round trip works.
+        eprintln!("   [1/3] generate_v2_proof (real keygen + create_proof + verify)...");
+        let t0 = std::time::Instant::now();
+        let nullifier = generate_v2_proof(
+            &key,
+            &siblings,
+            &path_indices,
+            &root,
+            &recipient,
+            &proof_path,
+        )
+        .expect("real KZG proof generation failed");
+        eprintln!("   [1/3] ✅ proof generated ({:.1}s)", t0.elapsed().as_secs_f64());
+
+        // ── Load the emitted proof bytes + public inputs. ──
+        let proof_file: crate::types::ProofFile =
+            serde_json::from_str(&std::fs::read_to_string(&proof_path).unwrap())
+                .expect("parse proof file");
+        let proof_bytes = hex::decode(&proof_file.proof).expect("decode proof hex");
+        eprintln!(
+            "        proof bytes: {} (production expects {} = 0x1600)",
+            proof_bytes.len(),
+            PROOF_LENGTH_EXPECTED
+        );
+        // The on-chain verifier hardcodes an EXACT length (0x1600 = 5632); a
+        // proof whose length differs is rejected. Confirm we land in range.
+        assert!(
+            proof_bytes.len() >= PROOF_LENGTH_MIN && proof_bytes.len() <= PROOF_LENGTH_MAX,
+            "proof length {} outside [{}, {}]",
+            proof_bytes.len(),
+            PROOF_LENGTH_MIN,
+            PROOF_LENGTH_MAX
+        );
+
+        // Reconstruct the SAME public inputs the prover committed against.
+        let nullifier_fr =
+            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier));
+        let mut recip_padded = [0u8; 32];
+        recip_padded[12..32].copy_from_slice(&recipient);
+        let recipient_fr =
+            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&recip_padded));
+        let root_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root));
+        let public_inputs = [root_fr, nullifier_fr, recipient_fr];
+
+        // Load the (now-cached) dev SRS + regenerate the VK for direct verify.
+        let k = CIRCUIT_K;
+        let params = load_or_download_params(k).expect("load params");
+        let dummy = ZKMistV2Claim {
+            private_key: [0u8; 32],
+            siblings: [[0u8; 32]; TREE_DEPTH],
+            path_indices: [0u8; TREE_DEPTH],
+            merkle_root: halo2curves::bn256::Fr::from(0u64),
+            nullifier: halo2curves::bn256::Fr::from(0u64),
+            recipient: halo2curves::bn256::Fr::from(1u64), // non-zero
+        };
+        let vk = halo2_proofs::plonk::keygen_vk(&params, &dummy).expect("keygen_vk");
+
+        // Helper: verify the proof bytes against given public inputs.
+        let verify = |inputs: &[halo2curves::bn256::Fr]| -> Result<(), halo2_proofs::plonk::Error> {
+            use halo2_proofs::{
+                plonk::{verify_proof, SingleVerifier},
+                transcript::{Blake2bRead, Challenge255},
+            };
+            use halo2curves::bn256::G1Affine;
+            let strategy = SingleVerifier::new(&params);
+            let mut rt =
+                Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
+            verify_proof(&params, &vk, strategy, &[&[inputs]], &mut rt)
+        };
+
+        // ── [2] Positive: correct public inputs MUST verify. ──
+        eprintln!("   [2/3] verify with correct public inputs...");
+        verify(&public_inputs).expect("honest proof must verify via the real pairing check");
+        eprintln!("   [2/3] ✅ REAL KZG proof verified (pairing check passed)");
+
+        // ── [3] Negative: a tampered Merkle root MUST be rejected. ──
+        // This is the soundness guarantee MockProver cannot test: a proof
+        // generated for root R must NOT verify against root R'. The pairing
+        // equation depends on the public inputs, so any change fails it.
+        eprintln!("   [3/3] verify with TAMPERED Merkle root (must reject)...");
+        let mut tampered_root = root;
+        tampered_root[0] ^= 0x01; // ≠ root, still a valid field element
+        let tampered_root_fr =
+            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&tampered_root));
+        let mut tampered = public_inputs;
+        tampered[0] = tampered_root_fr;
+        let neg = verify(&tampered);
+        assert!(
+            neg.is_err(),
+            "tampered Merkle root must be REJECTED by the pairing check — \
+             a proof for one root must not verify against another"
+        );
+        eprintln!("   [3/3] ✅ tampered root correctly rejected");
+        eprintln!("✅ Real KZG proof round-trip PASS (k={}, {} proof bytes)",
+            k, proof_bytes.len());
     }
 }
-
