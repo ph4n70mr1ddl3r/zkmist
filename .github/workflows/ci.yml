@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:  # Allow manual trigger for slow tests
   schedule:
     - cron: '0 3 * * 0'  # Weekly on Sunday at 03:00 UTC
@@ -72,6 +72,41 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace -- -D warnings
+
+  # ── gen-production-verifier build-check ─────────────────────────────────
+  # gen-production-verifier regenerates Halo2VerifyingKey.sol / Halo2Verifier.sol
+  # from the full circuit VK at k=24 (the deployment blocker tracked in
+  # SECURITY.md and flagged by the readiness checker). It lives in its OWN
+  # Cargo workspace, separate from the root workspace, because it depends on
+  # the PSE halo2 git fork while the root workspace uses crates.io halo2. This
+  # job keeps the regen tool buildable so it can be invoked the moment we
+  # regenerate the VK — bit-rot here would silently break deployment recovery.
+  gen-verifier-build:
+    name: gen-production-verifier – Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The crate depends on the public PSE halo2-solidity-verifier via a path
+      # that points one level above this repo (../../halo2-solidity-verifier,
+      # resolved from gen-production-verifier/Cargo.toml). Clone it there at
+      # the commit that matches local development. The sibling's own
+      # rust-toolchain.toml pin does NOT apply to a path dependency, so CI
+      # `stable` builds it fine.
+      # TODO: vendor this dependency into the repo (git submodule) so the
+      # out-of-repo path and this clone step can both be removed.
+      - name: Provide sibling halo2-solidity-verifier (path dependency)
+        run: |
+          git clone https://github.com/privacy-scaling-explorations/halo2-solidity-verifier.git \
+            "$GITHUB_WORKSPACE/../halo2-solidity-verifier"
+          cd "$GITHUB_WORKSPACE/../halo2-solidity-verifier"
+          git checkout 9e99730
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "gen-production-verifier"
+      - name: Build gen-production-verifier (release)
+        working-directory: gen-production-verifier
+        run: cargo build --release
 
   # ── Pre-deployment readiness check ──────────────────────────────────────
   readiness:

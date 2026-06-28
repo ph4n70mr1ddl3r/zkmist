@@ -548,27 +548,49 @@ fn find_test_merkle_root(test_dir: &Path) -> Option<String> {
     None
 }
 
-/// Extract the k-value from Halo2VerifyingKey.sol.
-/// Looks for the line: `mstore(0x0040, 0x...0015) // k`
+/// Extract the k-value from `Halo2VerifyingKey.sol`.
+///
+/// Matches the line `mstore(0x0040, 0x...0015) // k` and returns the **value**
+/// (the second hex literal, after the comma) — *not* the memory **offset**.
+///
+/// Earlier versions grabbed the FIRST `0x` on the line, which is the `mstore`
+/// offset (`0x0040` = 64), and so reported `k=64` instead of the value
+/// (`0x15` = 21). That offset/value mix-up made the k-consistency check report
+/// nonsense; the regression is pinned by the `extract_vk_k_*` unit tests below.
 fn extract_vk_k(vk_content: &str) -> Option<u32> {
     for line in vk_content.lines() {
-        if line.contains("// k") || line.trim().ends_with("// k") {
-            // Extract hex value from mstore
-            if let Some(start) = line.find("0x") {
-                let hex = &line[start + 2..];
-                let hex_clean: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
-                if let Ok(val) = u32::from_str_radix(&hex_clean, 16) {
-                    return Some(val);
-                }
-            }
+        let trimmed = line.trim();
+        if !trimmed.contains("// k") {
+            continue;
+        }
+        // `mstore(0xOFFSET, 0xVALUE)` — the value is everything after the first
+        // comma. Taking the first `0x` on the line would return the offset.
+        let after_comma = match trimmed.split_once(',') {
+            Some((_, rest)) => rest,
+            None => continue,
+        };
+        let start = match after_comma.find("0x") {
+            Some(s) => s,
+            None => continue,
+        };
+        let hex = &after_comma[start + 2..];
+        let hex_clean: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        if let Ok(val) = u32::from_str_radix(&hex_clean, 16) {
+            return Some(val);
         }
     }
     None
 }
 
-/// Extract CIRCUIT_K from the prover source.
+/// Extract `CIRCUIT_K` from the prover source.
 fn extract_prover_k(prover_path: &Path) -> Option<u32> {
     let content = std::fs::read_to_string(prover_path).ok()?;
+    extract_prover_k_from_str(&content)
+}
+
+/// String-parsing core of [`extract_prover_k`], split out so it can be unit
+/// tested without writing a temporary file.
+fn extract_prover_k_from_str(content: &str) -> Option<u32> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.contains("CIRCUIT_K") && trimmed.contains('=') && !trimmed.starts_with("//") {
@@ -581,4 +603,136 @@ fn extract_prover_k(prover_path: &Path) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        // tools/ is one level below the workspace root.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("tools/ should have a parent dir")
+            .to_path_buf()
+    }
+
+    // ── extract_vk_k: must read the VALUE, not the OFFSET ───────────────
+
+    #[test]
+    fn test_extract_vk_k_real_k21_line() {
+        // Real line from the currently-committed Halo2VerifyingKey.sol.
+        let line = "            mstore(0x0040, 0x0000000000000000000000000000000000000000000000000000000000000015) // k\n";
+        assert_eq!(extract_vk_k(line), Some(21));
+    }
+
+    #[test]
+    fn test_extract_vk_k_regenerated_k24_line() {
+        // The form gen-production-verifier emits once the real VK lands at k=24.
+        let line = "            mstore(0x0040, 0x0000000000000000000000000000000000000000000000000000000000000018) // k\n";
+        assert_eq!(extract_vk_k(line), Some(24));
+    }
+
+    #[test]
+    fn test_extract_vk_k_does_not_return_the_offset() {
+        // The bug reported 0x0040 (= 64, the offset) instead of the value.
+        // Here the value is 0x18 = 24; it must NOT return 0x40 = 64.
+        let line = "            mstore(0x0040, 0x18) // k\n";
+        let got = extract_vk_k(line);
+        assert_eq!(got, Some(24));
+        assert_ne!(got, Some(0x40));
+    }
+
+    #[test]
+    fn test_extract_vk_k_ignores_non_k_mstore_lines() {
+        // Every VK constant uses mstore(...) with a trailing comment; only the
+        // `// k` line must match.
+        let vk = "\
+            mstore(0x0000, 0x07d6cec294b3ee601635fc1b2bfa4b13c3c277629cacf756a13aec10ec7cf917) // vk_digest\n\
+            mstore(0x0020, 0x3) // num_instances\n\
+            mstore(0x0040, 0x15) // k\n\
+            mstore(0x0060, 0x30644cefbebe09202b4ef7f3ff53a4511d70ff06da772cc3785d6b74e0536081) // n_inv\n";
+        assert_eq!(extract_vk_k(vk), Some(21));
+    }
+
+    #[test]
+    fn test_extract_vk_k_returns_none_without_k_marker() {
+        let vk = "mstore(0x0000, 0x07d6) // vk_digest\nmstore(0x0060, 0x3064) // n_inv\n";
+        assert_eq!(extract_vk_k(vk), None);
+    }
+
+    // ── extract_prover_k_from_str ───────────────────────────────────────
+
+    #[test]
+    fn test_extract_prover_k_real_definition() {
+        let src = "// header\nconst CIRCUIT_K: u32 = 24;\nfn main() {}\n";
+        assert_eq!(extract_prover_k_from_str(src), Some(24));
+    }
+
+    #[test]
+    fn test_extract_prover_k_skips_comment_lines_mentioning_circuit_k() {
+        // halo2_prover.rs has comment lines mentioning CIRCUIT_K before the
+        // real const; those start with `//` and must be skipped.
+        let src = "\
+            // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (k=24 after the rewrite)\n\
+            const CIRCUIT_K: u32 = 24;\n";
+        assert_eq!(extract_prover_k_from_str(src), Some(24));
+    }
+
+    #[test]
+    fn test_extract_prover_k_skips_local_let_lines_mentioning_circuit_k() {
+        // `let mut k: u32 = 24; // ... CIRCUIT_K` mentions CIRCUIT_K and has an
+        // '=', but the value token is `24;` — which fails to parse, so the
+        // search must continue to the real `const CIRCUIT_K: u32 = 24;` line.
+        let src = "\
+            let mut k: u32 = 24; // MUST match CIRCUIT_K\n\
+            const CIRCUIT_K: u32 = 24;\n";
+        assert_eq!(extract_prover_k_from_str(src), Some(24));
+    }
+
+    #[test]
+    fn test_extract_prover_k_returns_none_when_absent() {
+        assert_eq!(extract_prover_k_from_str("fn main() {}\n"), None);
+    }
+
+    // ── Parser guard against the real committed files ───────────────────
+    //
+    // Reads the actual Halo2VerifyingKey.sol and cli/src/halo2_prover.rs so the
+    // parsers are validated against the real file format (not just fixtures).
+    // It also pins the CURRENT deployment blocker: the placeholder VK says
+    // k=21 while the prover pins k=24. When the VK is regenerated for real,
+    // flip the vk_k expectation to Some(24) and the final assert to equality.
+    #[test]
+    fn test_real_committed_files_k_values() {
+        let vk_path = repo_root().join("contracts/src/Halo2VerifyingKey.sol");
+        let prover_path = repo_root().join("cli/src/halo2_prover.rs");
+        let vk_content = std::fs::read_to_string(&vk_path)
+            .unwrap_or_else(|e| panic!("read {}: {}", vk_path.display(), e));
+        let prover_content = std::fs::read_to_string(&prover_path)
+            .unwrap_or_else(|e| panic!("read {}: {}", prover_path.display(), e));
+
+        let vk_k = extract_vk_k(&vk_content);
+        let prover_k = extract_prover_k_from_str(&prover_content);
+
+        // Parser sanity: both real files must be parsed, not return None.
+        let vk_k = vk_k.expect("VK k line should parse");
+        let prover_k = prover_k.expect("prover CIRCUIT_K should parse");
+
+        // Documented current state: placeholder VK at k=21, prover at k=24.
+        // (When the VK is regenerated at k=24, update vk_k to 24 and assert
+        // equality instead of the mismatch below.)
+        assert_eq!(
+            prover_k, 24,
+            "prover CIRCUIT_K moved — update CIRCUIT_K doc/CI"
+        );
+        assert_eq!(
+            vk_k, 21,
+            "VK k changed — if regenerated to 24, flip this test to assert equality"
+        );
+        assert_ne!(
+            vk_k, prover_k,
+            "still mismatched until Halo2VerifyingKey.sol is regenerated at k=24"
+        );
+    }
 }
