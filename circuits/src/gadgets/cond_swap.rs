@@ -136,8 +136,12 @@ pub fn cond_swap(
         offset + 1,
         || one_minus_sel_val,
     )?;
-    let _one =
-        region.assign_advice(|| "one", config.advice[2], offset + 1, || Value::known(Fr::ONE))?;
+    let _one = region.assign_advice(
+        || "one",
+        config.advice[2],
+        offset + 1,
+        || Value::known(Fr::ONE),
+    )?;
     config.s_add.enable(region, offset + 1)?;
 
     // Row 2: sel * b = sel_b
@@ -150,8 +154,12 @@ pub fn cond_swap(
     config.s_mul.enable(region, offset + 2)?;
 
     // Row 3: one_minus_sel * a = oms_a
-    let oms_r3 =
-        region.assign_advice(|| "oms_r3", config.advice[0], offset + 3, || one_minus_sel_val)?;
+    let oms_r3 = region.assign_advice(
+        || "oms_r3",
+        config.advice[0],
+        offset + 3,
+        || one_minus_sel_val,
+    )?;
     region.constrain_equal(one_minus_sel.cell(), oms_r3.cell())?;
     let a_r3 = region.assign_advice(|| "a_r3", config.advice[1], offset + 3, || a_val)?;
     region.constrain_equal(a.cell(), a_r3.cell())?;
@@ -179,8 +187,12 @@ pub fn cond_swap(
     config.s_mul.enable(region, offset + 5)?;
 
     // Row 6: one_minus_sel * b = oms_b
-    let oms_r6 =
-        region.assign_advice(|| "oms_r6", config.advice[0], offset + 6, || one_minus_sel_val)?;
+    let oms_r6 = region.assign_advice(
+        || "oms_r6",
+        config.advice[0],
+        offset + 6,
+        || one_minus_sel_val,
+    )?;
     region.constrain_equal(one_minus_sel.cell(), oms_r6.cell())?;
     let b_r6 = region.assign_advice(|| "b_r6", config.advice[1], offset + 6, || b_val)?;
     region.constrain_equal(b.cell(), b_r6.cell())?;
@@ -194,8 +206,12 @@ pub fn cond_swap(
     let omsb_r7 = region.assign_advice(|| "omsb_r7", config.advice[1], offset + 7, || oms_b_val)?;
     region.constrain_equal(oms_b.cell(), omsb_r7.cell())?;
     let out_right_val = sel_a_val.zip(oms_b_val).map(|(x, y)| x + y);
-    let out_right =
-        region.assign_advice(|| "out_right", config.advice[2], offset + 7, || out_right_val)?;
+    let out_right = region.assign_advice(
+        || "out_right",
+        config.advice[2],
+        offset + 7,
+        || out_right_val,
+    )?;
     config.s_add.enable(region, offset + 7)?;
 
     Ok((out_left, out_right))

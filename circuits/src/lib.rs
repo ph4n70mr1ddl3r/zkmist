@@ -166,9 +166,10 @@ fn bind_limb_to_inputs(
         }
     }
     let acc = secp.accumulate_weighted_bits(layouter, &bits, &weights)?;
-    layouter.assign_region(|| "bind_limb_eq", |mut region| {
-        region.constrain_equal(acc.cell(), limb.cell())
-    })?;
+    layouter.assign_region(
+        || "bind_limb_eq",
+        |mut region| region.constrain_equal(acc.cell(), limb.cell()),
+    )?;
     Ok(())
 }
 
@@ -501,9 +502,10 @@ impl Circuit<Fr> for ZKMistV2Claim {
             },
         )?;
         // Cryptographic binding: leaf_input == accumulated Keccak address.
-        layouter.assign_region(|| "leaf_address_bind", |mut region| {
-            region.constrain_equal(leaf_input.cell(), address_acc.cell())
-        })?;
+        layouter.assign_region(
+            || "leaf_address_bind",
+            |mut region| region.constrain_equal(leaf_input.cell(), address_acc.cell()),
+        )?;
         let leaf = leaf_hasher.hash(&mut layouter, &[leaf_input])?;
 
         // ── Step 3: Merkle proof ──────────────────────────────────────
@@ -581,11 +583,8 @@ impl Circuit<Fr> for ZKMistV2Claim {
         // verified above, preventing nullifier rotation (and thus double /
         // unlimited claims with fresh nullifiers).
         let nullifier_weights: Vec<Fr> = (0..256u32).map(|i| pow2_fr(255 - i)).collect();
-        let key_acc = secp_chip.accumulate_weighted_bits(
-            &mut layouter,
-            &scalar_bits,
-            &nullifier_weights,
-        )?;
+        let key_acc =
+            secp_chip.accumulate_weighted_bits(&mut layouter, &scalar_bits, &nullifier_weights)?;
 
         let key_field = {
             let ark_key = ark_bn254::Fr::from_be_bytes_mod_order(&self.private_key);
@@ -598,9 +597,10 @@ impl Circuit<Fr> for ZKMistV2Claim {
             },
         )?;
         // Cryptographic binding: key_cell == accumulated scalar bits.
-        layouter.assign_region(|| "nullifier_key_bind", |mut region| {
-            region.constrain_equal(key_cell.cell(), key_acc.cell())
-        })?;
+        layouter.assign_region(
+            || "nullifier_key_bind",
+            |mut region| region.constrain_equal(key_cell.cell(), key_acc.cell()),
+        )?;
         let domain = domain_field_element();
         let domain_cell = layouter.assign_region(
             || "null_domain",
@@ -672,9 +672,10 @@ impl Circuit<Fr> for ZKMistV2Claim {
             let weights: Vec<Fr> = (0..160u32).map(pow2_fr).collect();
             let rec_acc =
                 secp_chip.accumulate_weighted_bits(&mut layouter, &bit_cells, &weights)?;
-            layouter.assign_region(|| "recipient_uint160_bind", |mut region| {
-                region.constrain_equal(rec_acc.cell(), recipient_cell.cell())
-            })?;
+            layouter.assign_region(
+                || "recipient_uint160_bind",
+                |mut region| region.constrain_equal(rec_acc.cell(), recipient_cell.cell()),
+            )?;
         }
 
         // (b) non-zero recipient.
@@ -747,17 +748,21 @@ mod tests {
     ///
     /// Getting here required fixing three latent bugs that MockProver could not
     /// catch on its own (gates were satisfiable, but the witness was wrong):
-    ///   1. **Keccak `RC` round-constant table corruption** (from index 5) —
-    ///      shared by the native `keccak_f` and the circuit's `iota_step`; both
-    ///      silently produced a wrong digest. Fixed with the canonical XKCP
-    ///      table, now pinned by `test_keccak_f_matches_tiny_keccak_empty`.
-    ///   2. **`rotate_lane` was a RIGHT rotation** (Keccak needs LEFT) — pure
-    ///      rearrangement with no gate, so it passed MockProver; pinned by
-    ///      `test_rotate_lane_is_left_rotation`.
-    ///   3. **`chi_step` transposed its output** (loop order stored lane (x,y) at
-    ///      `y*5+x` instead of `x*5+y`); per-bit gates stayed satisfied. Fixed;
-    ///      the isolated Keccak test now constrains its 160 address bits against
-    ///      `tiny_keccak` so all three regressions are caught.
+    ///
+    /// (1) **Keccak `RC` round-constant table corruption** (from index 5) —
+    /// shared by the native `keccak_f` and the circuit's `iota_step`; both
+    /// silently produced a wrong digest. Fixed with the canonical XKCP table,
+    /// now pinned by `test_keccak_f_matches_tiny_keccak_empty`.
+    ///
+    /// (2) **`rotate_lane` was a RIGHT rotation** (Keccak needs LEFT) — pure
+    /// rearrangement with no gate, so it passed MockProver; pinned by
+    /// `test_rotate_lane_is_left_rotation`.
+    ///
+    /// (3) **`chi_step` transposed its output** (loop order stored lane (x,y)
+    /// at `y*5+x` instead of `x*5+y`); per-bit gates stayed satisfied. Fixed;
+    /// the isolated Keccak test now constrains its 160 address bits against
+    /// `tiny_keccak` so all three regressions are caught.
+    ///
     /// The test harness was also fixed: proofs are now built at the full
     /// `TREE_DEPTH` via `build_single_leaf_proof` (it previously built a
     /// depth-4 tree and zero-padded, which could never match the circuit's
@@ -809,10 +814,8 @@ mod tests {
 
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..TREE_DEPTH {
-            siblings_arr[i] = siblings_ark[i];
-            path_arr[i] = path_indices_u8[i];
-        }
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
 
         let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
 
@@ -1106,7 +1109,8 @@ mod tests {
                 // Scalar multiplication (bits assigned as constrained boolean
                 // cells, matching the production circuit's scalar/nullifier binding).
                 let scalar_bits_bool = crate::secp256k1::decompose_key_to_bits(&self.private_key);
-                let scalar_bit_cells = secp_chip.assign_scalar_bits(&mut layouter, &scalar_bits_bool)?;
+                let scalar_bit_cells =
+                    secp_chip.assign_scalar_bits(&mut layouter, &scalar_bits_bool)?;
                 let scalar_bits: [AssignedCell<Fr, Fr>; 256] = scalar_bit_cells
                     .try_into()
                     .expect("assign_scalar_bits returns exactly 256 cells");
@@ -1347,17 +1351,17 @@ mod tests {
         let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
         let nullifier = crate::nullifier::native_compute_nullifier(&key_field, &interior_params);
 
-        let addresses = vec![address];
-        let (root_ark, proof) =
-            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
-        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+        // Sound depth-TREE_DEPTH proof (matches the circuit's 0..TREE_DEPTH
+        // iteration). The previous depth-4 build + zero-pad left the honest
+        // baseline failing the Merkle-root binding, making this negative test
+        // vacuous (it rejected for the depth mismatch, not the tampered input).
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
 
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
-            siblings_arr[i] = siblings_ark[i];
-            path_arr[i] = path_indices_u8[i];
-        }
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
 
         // Use a WRONG root (flip one bit)
         let mut wrong_root_bytes = root_ark;
@@ -1419,17 +1423,17 @@ mod tests {
         let leaf_params = PoseidonParams::new_circom(1);
         let _leaf = native_poseidon(&leaf_params, &[address_field]);
 
-        let addresses = vec![address];
-        let (root_ark, proof) =
-            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
-        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+        // Sound depth-TREE_DEPTH proof (matches the circuit's 0..TREE_DEPTH
+        // iteration). The previous depth-4 build + zero-pad left the honest
+        // baseline failing the Merkle-root binding, making this negative test
+        // vacuous (it rejected for the depth mismatch, not the tampered input).
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
 
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
-            siblings_arr[i] = siblings_ark[i];
-            path_arr[i] = path_indices_u8[i];
-        }
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
 
         let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
 
@@ -1494,17 +1498,17 @@ mod tests {
         let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
         let nullifier = crate::nullifier::native_compute_nullifier(&key_field, &interior_params);
 
-        let addresses = vec![address];
-        let (root_ark, proof) =
-            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
-        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+        // Sound depth-TREE_DEPTH proof (matches the circuit's 0..TREE_DEPTH
+        // iteration). The previous depth-4 build + zero-pad left the honest
+        // baseline failing the Merkle-root binding, making this negative test
+        // vacuous (it rejected for the depth mismatch, not the tampered input).
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
 
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
-            siblings_arr[i] = siblings_ark[i];
-            path_arr[i] = path_indices_u8[i];
-        }
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
 
         let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
 
@@ -1981,17 +1985,17 @@ mod tests {
         let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
         let nullifier = crate::nullifier::native_compute_nullifier(&key_field, &interior_params);
 
-        let addresses = vec![address];
-        let (root_ark, proof) =
-            zkmist_merkle_tree::build_tree_streaming_with_depth(&addresses, 4, Some(0));
-        let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
+        // Sound depth-TREE_DEPTH proof (matches the circuit's 0..TREE_DEPTH
+        // iteration). The previous depth-4 build + zero-pad left the honest
+        // baseline failing the Merkle-root binding, making this negative test
+        // vacuous (it rejected for the depth mismatch, not the tampered input).
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
 
         let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
         let mut path_arr = [0u8; TREE_DEPTH];
-        for i in 0..siblings_ark.len().min(TREE_DEPTH) {
-            siblings_arr[i] = siblings_ark[i];
-            path_arr[i] = path_indices_u8[i];
-        }
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
 
         let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
 
@@ -2043,13 +2047,16 @@ mod tests {
         // ── Finding 2: nullifier-key accumulation, weights 2^(255−i) ──
         let bits = decompose_key_to_bits(&key);
         let mut key_acc = Fr::ZERO;
-        for i in 0..256usize {
-            if bits[i] {
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit {
                 key_acc += pow2_fr(255 - i as u32);
             }
         }
         let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
-        assert_eq!(key_acc, key_field, "nullifier accumulation must equal key mod p");
+        assert_eq!(
+            key_acc, key_field,
+            "nullifier accumulation must equal key mod p"
+        );
 
         // ── Finding 1: Merkle-leaf address accumulation ──
         let (_addr, pub_x, pub_y) = native_derive_address(&key);
@@ -2066,7 +2073,10 @@ mod tests {
                 addr_acc += pow2_fr(8 * (19 - k) + j);
             }
         }
-        assert_eq!(addr_acc, address_field, "leaf accumulation must equal address field");
+        assert_eq!(
+            addr_acc, address_field,
+            "leaf accumulation must equal address field"
+        );
 
         // ── Finding 3: public-key limb accumulations ──
         for (coord, label) in [(&pub_x, "pub_x"), (&pub_y, "pub_y")] {
@@ -2140,7 +2150,11 @@ mod tests {
                     ],
                     advice[13],
                 );
-                AccCfg { secp, instance, advice }
+                AccCfg {
+                    secp,
+                    instance,
+                    advice,
+                }
             }
             fn synthesize(
                 &self,
@@ -2148,19 +2162,23 @@ mod tests {
                 mut layouter: impl halo2_proofs::circuit::Layouter<Fr>,
             ) -> Result<(), Error> {
                 let chip = Secp256k1Chip::new(&config.secp);
-                let bit_cells = layouter.assign_region(|| "bits", |mut region| {
-                    let mut cells = Vec::with_capacity(self.bits.len());
-                    for (i, &b) in self.bits.iter().enumerate() {
-                        cells.push(region.assign_advice(
-                            || "b",
-                            config.advice[i % 8],
-                            i / 8,
-                            || Value::known(if b { Fr::ONE } else { Fr::ZERO }),
-                        )?);
-                    }
-                    Ok(cells)
-                })?;
-                let acc = chip.accumulate_weighted_bits(&mut layouter, &bit_cells, &self.weights)?;
+                let bit_cells = layouter.assign_region(
+                    || "bits",
+                    |mut region| {
+                        let mut cells = Vec::with_capacity(self.bits.len());
+                        for (i, &b) in self.bits.iter().enumerate() {
+                            cells.push(region.assign_advice(
+                                || "b",
+                                config.advice[i % 8],
+                                i / 8,
+                                || Value::known(if b { Fr::ONE } else { Fr::ZERO }),
+                            )?);
+                        }
+                        Ok(cells)
+                    },
+                )?;
+                let acc =
+                    chip.accumulate_weighted_bits(&mut layouter, &bit_cells, &self.weights)?;
                 layouter.constrain_instance(acc.cell(), config.instance, 0)?;
                 Ok(())
             }

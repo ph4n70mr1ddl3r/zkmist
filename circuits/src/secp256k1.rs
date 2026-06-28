@@ -879,7 +879,8 @@ impl<'a> Secp256k1Chip<'a> {
                     if i == 0 {
                         region.constrain_equal(carry_in_cell.cell(), zero_ref.cell())?;
                     } else {
-                        region.constrain_equal(carry_in_cell.cell(), carry_out_cells[i - 1].cell())?;
+                        region
+                            .constrain_equal(carry_in_cell.cell(), carry_out_cells[i - 1].cell())?;
                     }
 
                     // raw_result to advice[3] (captured for the sound reduction)
@@ -1166,9 +1167,8 @@ impl<'a> Secp256k1Chip<'a> {
     fn fr_split_lo_hi(v: Fr) -> (Fr, Fr) {
         let repr = v.to_repr();
         let bytes: &[u8] = repr.as_ref();
-        let lo_u64 = u64::from_le_bytes(
-            bytes[..8].try_into().expect("Fr repr is at least 8 bytes"),
-        );
+        let lo_u64 =
+            u64::from_le_bytes(bytes[..8].try_into().expect("Fr repr is at least 8 bytes"));
         let lo = Fr::from(lo_u64);
         // hi = (v - lo) · (2^64)^{-1}.  (v - lo) is an integer multiple of 2^64
         // and, in the contexts this is called, < p_BN254 — so the Fr product is
@@ -1212,147 +1212,151 @@ impl<'a> Secp256k1Chip<'a> {
         columns: &[Vec<AssignedCell<Fr, Fr>>],
     ) -> Result<Vec<AssignedCell<Fr, Fr>>, Error> {
         let n = columns.len();
-        let limbs = layouter.assign_region(|| "carry_chain_columns", |mut region| {
-            let mut offset = 0usize;
-            let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
-            let mut out: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(n);
+        let limbs = layouter.assign_region(
+            || "carry_chain_columns",
+            |mut region| {
+                let mut offset = 0usize;
+                let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
+                let mut out: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(n);
 
-            // Canonical ZERO reference cell. advice[5] is NOT queried by the
-            // s_add / s_add_carry gates (they use advice[0..5]), so it is free
-            // for this anchor. Both the unused `b` operand of the carry gate AND
-            // the bottom (k=0) carry-in MUST be constrained — not merely
-            // witnessed — to 0; otherwise a malicious prover could inject value
-            // into the integer the chain represents.
-            let zero_ref = region.assign_advice(
-                || "cc_zero_ref",
-                self.config.advice[5],
-                0,
-                || Value::known(Fr::ZERO),
-            )?;
+                // Canonical ZERO reference cell. advice[5] is NOT queried by the
+                // s_add / s_add_carry gates (they use advice[0..5]), so it is free
+                // for this anchor. Both the unused `b` operand of the carry gate AND
+                // the bottom (k=0) carry-in MUST be constrained — not merely
+                // witnessed — to 0; otherwise a malicious prover could inject value
+                // into the integer the chain represents.
+                let zero_ref = region.assign_advice(
+                    || "cc_zero_ref",
+                    self.config.advice[5],
+                    0,
+                    || Value::known(Fr::ZERO),
+                )?;
 
-            for k in 0..n {
-                // ── Sum this column's terms into `col_sum` (s_add chain). ──
-                let col_sum: AssignedCell<Fr, Fr> = if columns[k].is_empty() {
+                for k in 0..n {
+                    // ── Sum this column's terms into `col_sum` (s_add chain). ──
+                    let col_sum: AssignedCell<Fr, Fr> = if columns[k].is_empty() {
+                        let z = region.assign_advice(
+                            || format!("cc_empty_{}", k),
+                            self.config.advice[0],
+                            offset,
+                            || Value::known(Fr::ZERO),
+                        )?;
+                        region.constrain_equal(z.cell(), zero_ref.cell())?;
+                        offset += 1;
+                        z
+                    } else {
+                        let first = &columns[k][0];
+                        let mut acc = region.assign_advice(
+                            || format!("cc_first_{}", k),
+                            self.config.advice[0],
+                            offset,
+                            || first.value().copied(),
+                        )?;
+                        region.constrain_equal(first.cell(), acc.cell())?;
+                        if columns[k].len() > 1 {
+                            for (i, term) in columns[k].iter().skip(1).enumerate() {
+                                let a0 = region.assign_advice(
+                                    || format!("cc_a0_{}_{}", k, i),
+                                    self.config.advice[0],
+                                    offset,
+                                    || acc.value().copied(),
+                                )?;
+                                region.constrain_equal(acc.cell(), a0.cell())?;
+                                let a1 = region.assign_advice(
+                                    || format!("cc_a1_{}_{}", k, i),
+                                    self.config.advice[1],
+                                    offset,
+                                    || term.value().copied(),
+                                )?;
+                                region.constrain_equal(term.cell(), a1.cell())?;
+                                let s = region.assign_advice(
+                                    || format!("cc_s_{}_{}", k, i),
+                                    self.config.advice[2],
+                                    offset,
+                                    || {
+                                        acc.value()
+                                            .copied()
+                                            .zip(term.value().copied())
+                                            .map(|(x, y)| x + y)
+                                    },
+                                )?;
+                                self.config.s_add.enable(&mut region, offset)?;
+                                offset += 1;
+                                acc = s;
+                            }
+                        } else {
+                            offset += 1;
+                        }
+                        acc
+                    };
+
+                    // ── Carry gate row: col_sum + 0 + carry_in = limb + carry_out·2^64 ──
+                    let cin_known = prev_carry
+                        .as_ref()
+                        .map(|c| c.value().copied())
+                        .unwrap_or(Value::known(Fr::ZERO));
+                    let total_val = col_sum.value().copied().zip(cin_known).map(|(s, c)| s + c);
+                    let (limb_val, cout_val) = total_val.map(Self::fr_split_lo_hi).unzip();
+
+                    let a = region.assign_advice(
+                        || format!("cg_a_{}", k),
+                        self.config.advice[0],
+                        offset,
+                        || col_sum.value().copied(),
+                    )?;
+                    region.constrain_equal(col_sum.cell(), a.cell())?;
+                    let b_cell = region.assign_advice(
+                        || format!("cg_b_{}", k),
+                        self.config.advice[1],
+                        offset,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    region.constrain_equal(b_cell.cell(), zero_ref.cell())?;
+                    let cin = region.assign_advice(
+                        || format!("cg_cin_{}", k),
+                        self.config.advice[2],
+                        offset,
+                        || cin_known,
+                    )?;
+                    if let Some(pc) = &prev_carry {
+                        region.constrain_equal(pc.cell(), cin.cell())?;
+                    } else {
+                        // Bottom carry-in (k == 0) must be exactly 0.
+                        region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                    }
+                    let limb = region.assign_advice(
+                        || format!("cg_limb_{}", k),
+                        self.config.advice[3],
+                        offset,
+                        || limb_val,
+                    )?;
+                    let cout = region.assign_advice(
+                        || format!("cg_cout_{}", k),
+                        self.config.advice[4],
+                        offset,
+                        || cout_val,
+                    )?;
+                    self.config.s_add_carry.enable(&mut region, offset)?;
+                    offset += 1;
+
+                    out.push(limb);
+                    prev_carry = Some(cout);
+                }
+
+                // Final carry-out must be 0. (Sound only if the caller supplied
+                // enough empty high columns that V fits; both callers do.)
+                if let Some(pc) = &prev_carry {
                     let z = region.assign_advice(
-                        || format!("cc_empty_{}", k),
+                        || "cc_final_zero",
                         self.config.advice[0],
                         offset,
                         || Value::known(Fr::ZERO),
                     )?;
-                    region.constrain_equal(z.cell(), zero_ref.cell())?;
-                    offset += 1;
-                    z
-                } else {
-                    let first = &columns[k][0];
-                    let mut acc = region.assign_advice(
-                        || format!("cc_first_{}", k),
-                        self.config.advice[0],
-                        offset,
-                        || first.value().copied(),
-                    )?;
-                    region.constrain_equal(first.cell(), acc.cell())?;
-                    if columns[k].len() > 1 {
-                        for (i, term) in columns[k].iter().skip(1).enumerate() {
-                            let a0 = region.assign_advice(
-                                || format!("cc_a0_{}_{}", k, i),
-                                self.config.advice[0],
-                                offset,
-                                || acc.value().copied(),
-                            )?;
-                            region.constrain_equal(acc.cell(), a0.cell())?;
-                            let a1 = region.assign_advice(
-                                || format!("cc_a1_{}_{}", k, i),
-                                self.config.advice[1],
-                                offset,
-                                || term.value().copied(),
-                            )?;
-                            region.constrain_equal(term.cell(), a1.cell())?;
-                            let s = region.assign_advice(
-                                || format!("cc_s_{}_{}", k, i),
-                                self.config.advice[2],
-                                offset,
-                                || acc
-                                    .value()
-                                    .copied()
-                                    .zip(term.value().copied())
-                                    .map(|(x, y)| x + y),
-                            )?;
-                            self.config.s_add.enable(&mut region, offset)?;
-                            offset += 1;
-                            acc = s;
-                        }
-                    } else {
-                        offset += 1;
-                    }
-                    acc
-                };
-
-                // ── Carry gate row: col_sum + 0 + carry_in = limb + carry_out·2^64 ──
-                let cin_known = prev_carry
-                    .as_ref()
-                    .map(|c| c.value().copied())
-                    .unwrap_or(Value::known(Fr::ZERO));
-                let total_val = col_sum.value().copied().zip(cin_known).map(|(s, c)| s + c);
-                let (limb_val, cout_val) = total_val.map(Self::fr_split_lo_hi).unzip();
-
-                let a = region.assign_advice(
-                    || format!("cg_a_{}", k),
-                    self.config.advice[0],
-                    offset,
-                    || col_sum.value().copied(),
-                )?;
-                region.constrain_equal(col_sum.cell(), a.cell())?;
-                let b_cell = region.assign_advice(
-                    || format!("cg_b_{}", k),
-                    self.config.advice[1],
-                    offset,
-                    || Value::known(Fr::ZERO),
-                )?;
-                region.constrain_equal(b_cell.cell(), zero_ref.cell())?;
-                let cin = region.assign_advice(
-                    || format!("cg_cin_{}", k),
-                    self.config.advice[2],
-                    offset,
-                    || cin_known,
-                )?;
-                if let Some(pc) = &prev_carry {
-                    region.constrain_equal(pc.cell(), cin.cell())?;
-                } else {
-                    // Bottom carry-in (k == 0) must be exactly 0.
-                    region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                    region.constrain_equal(pc.cell(), z.cell())?;
                 }
-                let limb = region.assign_advice(
-                    || format!("cg_limb_{}", k),
-                    self.config.advice[3],
-                    offset,
-                    || limb_val,
-                )?;
-                let cout = region.assign_advice(
-                    || format!("cg_cout_{}", k),
-                    self.config.advice[4],
-                    offset,
-                    || cout_val,
-                )?;
-                self.config.s_add_carry.enable(&mut region, offset)?;
-                offset += 1;
-
-                out.push(limb);
-                prev_carry = Some(cout);
-            }
-
-            // Final carry-out must be 0. (Sound only if the caller supplied
-            // enough empty high columns that V fits; both callers do.)
-            if let Some(pc) = &prev_carry {
-                let z = region.assign_advice(
-                    || "cc_final_zero",
-                    self.config.advice[0],
-                    offset,
-                    || Value::known(Fr::ZERO),
-                )?;
-                region.constrain_equal(pc.cell(), z.cell())?;
-            }
-            Ok(out)
-        })?;
+                Ok(out)
+            },
+        )?;
 
         // Range-check each canonical limb to [0, 2^64).
         for (i, limb) in limbs.iter().enumerate() {
@@ -1425,9 +1429,8 @@ impl<'a> Secp256k1Chip<'a> {
             }
             let q_limbs: Vec<Fr> = (0..m)
                 .map(|i| {
-                    let lo = u64::from_le_bytes(
-                        q_le[i * 8..(i + 1) * 8].try_into().unwrap_or([0u8; 8]),
-                    );
+                    let lo =
+                        u64::from_le_bytes(q_le[i * 8..(i + 1) * 8].try_into().unwrap_or([0u8; 8]));
                     Fr::from(lo)
                 })
                 .collect();
@@ -1435,26 +1438,29 @@ impl<'a> Secp256k1Chip<'a> {
         };
 
         // ── Assign canonical result (4 limbs) + range-check. ──
-        let result_assigned = layouter.assign_region(|| "reduce_result", |mut region| {
-            let mut cells = Vec::with_capacity(4);
-            for i in 0..4 {
-                let c = region.assign_advice(
-                    || format!("res_{}", i),
-                    self.config.advice[i],
-                    0,
-                    || Value::known(result_limbs_val[i]),
-                )?;
-                cells.push(c);
-            }
-            Ok(AssignedFieldElement {
-                limbs: [
-                    cells[0].clone(),
-                    cells[1].clone(),
-                    cells[2].clone(),
-                    cells[3].clone(),
-                ],
-            })
-        })?;
+        let result_assigned = layouter.assign_region(
+            || "reduce_result",
+            |mut region| {
+                let mut cells = Vec::with_capacity(4);
+                for i in 0..4 {
+                    let c = region.assign_advice(
+                        || format!("res_{}", i),
+                        self.config.advice[i],
+                        0,
+                        || Value::known(result_limbs_val[i]),
+                    )?;
+                    cells.push(c);
+                }
+                Ok(AssignedFieldElement {
+                    limbs: [
+                        cells[0].clone(),
+                        cells[1].clone(),
+                        cells[2].clone(),
+                        cells[3].clone(),
+                    ],
+                })
+            },
+        )?;
         for i in 0..4 {
             self.check_single_limb(layouter, &result_assigned.limbs[i], 300 + i)?;
         }
@@ -1462,9 +1468,17 @@ impl<'a> Secp256k1Chip<'a> {
         // ── Assign quotient q (m limbs) + range-check. ──
         let mut q_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(m);
         for i in 0..m {
-            let c = layouter.assign_region(|| format!("q_limb_{}", i), |mut region| {
-                region.assign_advice(|| "q", self.config.advice[0], 0, || Value::known(q_limbs_val[i]))
-            })?;
+            let c = layouter.assign_region(
+                || format!("q_limb_{}", i),
+                |mut region| {
+                    region.assign_advice(
+                        || "q",
+                        self.config.advice[0],
+                        0,
+                        || Value::known(q_limbs_val[i]),
+                    )
+                },
+            )?;
             q_cells.push(c);
             self.check_single_limb(layouter, &q_cells[i], 400 + i)?;
         }
@@ -1490,10 +1504,7 @@ impl<'a> Secp256k1Chip<'a> {
                             offset,
                             || Value::known(Fr::from(SECP_P[j])),
                         )?;
-                        let pv = q_cells[i]
-                            .value()
-                            .copied()
-                            .map(|q| q * Fr::from(SECP_P[j]));
+                        let pv = q_cells[i].value().copied().map(|q| q * Fr::from(SECP_P[j]));
                         let pc = region.assign_advice(
                             || format!("pq_{}_{}", i, j),
                             self.config.advice[1],
@@ -1534,33 +1545,49 @@ impl<'a> Secp256k1Chip<'a> {
         }
         let s_limbs = self.carry_chain_columns(layouter, &s_columns)?; // n+1 canonical limbs
         for c in 0..n {
-            layouter.assign_region(|| format!("seq_{}", c), |mut region| {
+            layouter.assign_region(
+                || format!("seq_{}", c),
+                |mut region| {
+                    let a = region.assign_advice(
+                        || "a",
+                        self.config.advice[0],
+                        0,
+                        || s_limbs[c].value().copied(),
+                    )?;
+                    region.constrain_equal(s_limbs[c].cell(), a.cell())?;
+                    let b = region.assign_advice(
+                        || "b",
+                        self.config.advice[1],
+                        0,
+                        || value_limbs[c].value().copied(),
+                    )?;
+                    region.constrain_equal(value_limbs[c].cell(), b.cell())?;
+                    region.constrain_equal(a.cell(), b.cell())?;
+                    Ok(())
+                },
+            )?;
+        }
+        // S's high limb (index n) must be 0 (V < 2^(64·n)).
+        layouter.assign_region(
+            || "s_high_zero",
+            |mut region| {
                 let a = region.assign_advice(
                     || "a",
                     self.config.advice[0],
                     0,
-                    || s_limbs[c].value().copied(),
+                    || s_limbs[n].value().copied(),
                 )?;
-                region.constrain_equal(s_limbs[c].cell(), a.cell())?;
-                let b = region.assign_advice(
-                    || "b",
+                region.constrain_equal(s_limbs[n].cell(), a.cell())?;
+                let z = region.assign_advice(
+                    || "z",
                     self.config.advice[1],
                     0,
-                    || value_limbs[c].value().copied(),
+                    || Value::known(Fr::ZERO),
                 )?;
-                region.constrain_equal(value_limbs[c].cell(), b.cell())?;
-                region.constrain_equal(a.cell(), b.cell())?;
+                region.constrain_equal(a.cell(), z.cell())?;
                 Ok(())
-            })?;
-        }
-        // S's high limb (index n) must be 0 (V < 2^(64·n)).
-        layouter.assign_region(|| "s_high_zero", |mut region| {
-            let a = region.assign_advice(|| "a", self.config.advice[0], 0, || s_limbs[n].value().copied())?;
-            region.constrain_equal(s_limbs[n].cell(), a.cell())?;
-            let z = region.assign_advice(|| "z", self.config.advice[1], 0, || Value::known(Fr::ZERO))?;
-            region.constrain_equal(a.cell(), z.cell())?;
-            Ok(())
-        })?;
+            },
+        )?;
 
         // ── Canonicalize: prove result < p. ──
         // result + C  (C = 2^32 + 977 = 0x1000003D1) must NOT carry out of
@@ -1732,91 +1759,94 @@ impl<'a> Secp256k1Chip<'a> {
         // chain terminates with no overflow. The limb-by-limb result cells are
         // forced equal to SECP_P[i]; combined with the telescoping carry chain
         // and final carry = 0, this uniquely forces neg_b = p − b.
-        layouter.assign_region(|| "secp_neg_b_proof", |mut region| {
-            let zero_ref = region.assign_advice(
-                || "nsub_zero",
-                self.config.advice[5],
-                0,
-                || Value::known(Fr::ZERO),
-            )?;
-            let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
-            for i in 0..4usize {
-                let b_val = b.limbs[i].value().copied();
-                let nb_val = neg_b.limbs[i].value().copied();
-                let cin_val = prev_carry
-                    .as_ref()
-                    .map(|c| c.value().copied())
-                    .unwrap_or(Value::known(Fr::ZERO));
-                let total = b_val.zip(nb_val).zip(cin_val).map(|((x, y), z)| x + y + z);
-                let (lo, hi) = total.map(Self::fr_split_lo_hi).unzip();
+        layouter.assign_region(
+            || "secp_neg_b_proof",
+            |mut region| {
+                let zero_ref = region.assign_advice(
+                    || "nsub_zero",
+                    self.config.advice[5],
+                    0,
+                    || Value::known(Fr::ZERO),
+                )?;
+                let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
+                for i in 0..4usize {
+                    let b_val = b.limbs[i].value().copied();
+                    let nb_val = neg_b.limbs[i].value().copied();
+                    let cin_val = prev_carry
+                        .as_ref()
+                        .map(|c| c.value().copied())
+                        .unwrap_or(Value::known(Fr::ZERO));
+                    let total = b_val.zip(nb_val).zip(cin_val).map(|((x, y), z)| x + y + z);
+                    let (lo, hi) = total.map(Self::fr_split_lo_hi).unzip();
 
-                // advice[0] = b[i] (copy)
-                let b_cell = region.assign_advice(
-                    || format!("nsub_b_{}", i),
-                    self.config.advice[0],
-                    i,
-                    || b_val,
-                )?;
-                region.constrain_equal(b.limbs[i].cell(), b_cell.cell())?;
-                // advice[1] = neg_b[i] (copy)
-                let nb_cell = region.assign_advice(
-                    || format!("nsub_nb_{}", i),
-                    self.config.advice[1],
-                    i,
-                    || nb_val,
-                )?;
-                region.constrain_equal(neg_b.limbs[i].cell(), nb_cell.cell())?;
-                // advice[2] = carry_in (chained, bottom = 0)
-                let cin = region.assign_advice(
-                    || format!("nsub_cin_{}", i),
-                    self.config.advice[2],
-                    i,
-                    || cin_val,
-                )?;
-                if let Some(pc) = &prev_carry {
-                    region.constrain_equal(pc.cell(), cin.cell())?;
-                } else {
-                    region.constrain_equal(cin.cell(), zero_ref.cell())?;
-                }
-                // advice[3] = result limb (constrained == SECP_P[i])
-                let r_cell = region.assign_advice(
-                    || format!("nsub_r_{}", i),
-                    self.config.advice[3],
-                    i,
-                    || lo,
-                )?;
-                // advice[4] = carry_out
-                let cout = region.assign_advice(
-                    || format!("nsub_cout_{}", i),
-                    self.config.advice[4],
-                    i,
-                    || hi,
-                )?;
-                self.config.s_add_carry.enable(&mut region, i)?;
-                // Force the result limb to equal the secp prime limb SECP_P[i]
-                // (advice[6] is free under s_add_carry, which uses advice[0..5]).
-                let p_ref = region.assign_advice(
-                    || format!("nsub_pref_{}", i),
-                    self.config.advice[6],
-                    i,
-                    || Value::known(Fr::from(SECP_P[i])),
-                )?;
-                region.constrain_equal(r_cell.cell(), p_ref.cell())?;
-                if i == 3 {
-                    // final carry == 0  ⟹  b + neg_b == p (no overflow)
-                    let z = region.assign_advice(
-                        || "nsub_final_zero",
+                    // advice[0] = b[i] (copy)
+                    let b_cell = region.assign_advice(
+                        || format!("nsub_b_{}", i),
                         self.config.advice[0],
-                        4,
-                        || Value::known(Fr::ZERO),
+                        i,
+                        || b_val,
                     )?;
-                    region.constrain_equal(cout.cell(), z.cell())?;
-                } else {
-                    prev_carry = Some(cout);
+                    region.constrain_equal(b.limbs[i].cell(), b_cell.cell())?;
+                    // advice[1] = neg_b[i] (copy)
+                    let nb_cell = region.assign_advice(
+                        || format!("nsub_nb_{}", i),
+                        self.config.advice[1],
+                        i,
+                        || nb_val,
+                    )?;
+                    region.constrain_equal(neg_b.limbs[i].cell(), nb_cell.cell())?;
+                    // advice[2] = carry_in (chained, bottom = 0)
+                    let cin = region.assign_advice(
+                        || format!("nsub_cin_{}", i),
+                        self.config.advice[2],
+                        i,
+                        || cin_val,
+                    )?;
+                    if let Some(pc) = &prev_carry {
+                        region.constrain_equal(pc.cell(), cin.cell())?;
+                    } else {
+                        region.constrain_equal(cin.cell(), zero_ref.cell())?;
+                    }
+                    // advice[3] = result limb (constrained == SECP_P[i])
+                    let r_cell = region.assign_advice(
+                        || format!("nsub_r_{}", i),
+                        self.config.advice[3],
+                        i,
+                        || lo,
+                    )?;
+                    // advice[4] = carry_out
+                    let cout = region.assign_advice(
+                        || format!("nsub_cout_{}", i),
+                        self.config.advice[4],
+                        i,
+                        || hi,
+                    )?;
+                    self.config.s_add_carry.enable(&mut region, i)?;
+                    // Force the result limb to equal the secp prime limb SECP_P[i]
+                    // (advice[6] is free under s_add_carry, which uses advice[0..5]).
+                    let p_ref = region.assign_advice(
+                        || format!("nsub_pref_{}", i),
+                        self.config.advice[6],
+                        i,
+                        || Value::known(Fr::from(SECP_P[i])),
+                    )?;
+                    region.constrain_equal(r_cell.cell(), p_ref.cell())?;
+                    if i == 3 {
+                        // final carry == 0  ⟹  b + neg_b == p (no overflow)
+                        let z = region.assign_advice(
+                            || "nsub_final_zero",
+                            self.config.advice[0],
+                            4,
+                            || Value::known(Fr::ZERO),
+                        )?;
+                        region.constrain_equal(cout.cell(), z.cell())?;
+                    } else {
+                        prev_carry = Some(cout);
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
 
         // result = a + neg_b (= a − b) via the sound carry-propagated add.
         self.field_add_carried(layouter, a, &neg_b)
@@ -2147,6 +2177,7 @@ impl<'a> Secp256k1Chip<'a> {
     /// For every bit this enables, on one row, BOTH:
     ///   - `s_bool`      : `bit · (1 − bit) = 0`   (re-asserts booleanity), and
     ///   - `s_mul_fixed` : `bit · weight = partial`.
+    ///
     /// A following `s_add` row folds `partial` into a running accumulator.
     ///
     /// Because the accumulation runs in the BN254 scalar field, the result is
@@ -2219,11 +2250,12 @@ impl<'a> Secp256k1Chip<'a> {
                         || "ab_newacc",
                         self.config.advice[2],
                         offset,
-                        || acc
-                            .value()
-                            .copied()
-                            .zip(partial.value().copied())
-                            .map(|(a, p)| a + p),
+                        || {
+                            acc.value()
+                                .copied()
+                                .zip(partial.value().copied())
+                                .map(|(a, p)| a + p)
+                        },
                     )?;
                     self.config.s_add.enable(&mut region, offset)?;
                     offset += 1;

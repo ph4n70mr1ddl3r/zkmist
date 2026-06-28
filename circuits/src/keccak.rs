@@ -584,7 +584,13 @@ impl<'a> KeccakChip<'a> {
         offset: &mut usize,
         pub_x: &[u8; 32],
         pub_y: &[u8; 32],
-    ) -> Result<(Vec<Vec<AssignedCell<Fr, Fr>>>, Vec<Vec<AssignedCell<Fr, Fr>>>), Error> {
+    ) -> Result<
+        (
+            Vec<Vec<AssignedCell<Fr, Fr>>>,
+            Vec<Vec<AssignedCell<Fr, Fr>>>,
+        ),
+        Error,
+    > {
         // Build the 200-byte state array
         let mut state_bytes = [0u8; 200];
 
@@ -639,7 +645,14 @@ impl<'a> KeccakChip<'a> {
         layouter: &mut impl Layouter<Fr>,
         pub_x: &[u8; 32],
         pub_y: &[u8; 32],
-    ) -> Result<(Vec<AssignedCell<Fr, Fr>>, Vec<Vec<AssignedCell<Fr, Fr>>>, [u8; 20]), Error> {
+    ) -> Result<
+        (
+            Vec<AssignedCell<Fr, Fr>>,
+            Vec<Vec<AssignedCell<Fr, Fr>>>,
+            [u8; 20],
+        ),
+        Error,
+    > {
         // Compute expected hash natively for witness generation
         let hash = native_hash_pubkey(pub_x, pub_y);
         let address = extract_address(&hash);
@@ -1017,8 +1030,16 @@ mod tests {
         // computed a wrong Keccak digest because ρ is pure rearrangement
         // (no gates).
         let seeds = [
-            0u64, 1, 2, 3, 0x80, 0x0100_0000_0000_0000, 0x8000_0000_0000_0000,
-            0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF, u64::MAX,
+            0u64,
+            1,
+            2,
+            3,
+            0x80,
+            0x0100_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0xDEAD_BEEF_CAFE_BABE,
+            0x0123_4567_89AB_CDEF,
+            u64::MAX,
         ];
         for n in 0..64u32 {
             for &seed in &seeds {
@@ -1150,7 +1171,10 @@ mod tests {
                 // Native reference (self-consistency only).
                 let native_addr =
                     super::extract_address(&super::native_hash_pubkey(&self.pub_x, &self.pub_y));
-                assert_eq!(address, native_addr, "Keccak circuit output must match native");
+                assert_eq!(
+                    address, native_addr,
+                    "Keccak circuit output must match native"
+                );
 
                 // REAL constrained cross-check: force each of the 160 constrained
                 // address bits to equal the corresponding bit of the tiny_keccak
@@ -1163,23 +1187,25 @@ mod tests {
                 // address_bits layout: address_bits[m] for byte_idx=m/8 (0..19
                 // → native_addr index), bit_idx=m%8 (LSB-first).
                 assert_eq!(address_bits.len(), 160);
-                layouter.assign_region(|| "address_crosscheck", |mut region| {
-                    for (i, bit_cell) in address_bits.iter().enumerate() {
-                        let byte_idx = i / 8;
-                        let bit_idx = i % 8;
-                        let native_bit = (native_addr[byte_idx] >> bit_idx) & 1 == 1;
-                        let native_val =
-                            if native_bit { Fr::ONE } else { Fr::ZERO };
-                        let nb = region.assign_advice(
-                            || "native_bit",
-                            config.keccak.advice[0],
-                            i, // distinct row per bit
-                            || Value::known(native_val),
-                        )?;
-                        region.constrain_equal(bit_cell.cell(), nb.cell())?;
-                    }
-                    Ok(())
-                })?;
+                layouter.assign_region(
+                    || "address_crosscheck",
+                    |mut region| {
+                        for (i, bit_cell) in address_bits.iter().enumerate() {
+                            let byte_idx = i / 8;
+                            let bit_idx = i % 8;
+                            let native_bit = (native_addr[byte_idx] >> bit_idx) & 1 == 1;
+                            let native_val = if native_bit { Fr::ONE } else { Fr::ZERO };
+                            let nb = region.assign_advice(
+                                || "native_bit",
+                                config.keccak.advice[0],
+                                i, // distinct row per bit
+                                || Value::known(native_val),
+                            )?;
+                            region.constrain_equal(bit_cell.cell(), nb.cell())?;
+                        }
+                        Ok(())
+                    },
+                )?;
                 Ok(())
             }
         }

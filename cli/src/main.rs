@@ -581,7 +581,7 @@ mod tests {
     fn test_is_claimed_return_decoding() {
         let encoded_return = alloy::sol_types::SolValue::abi_encode(&true);
         let decoded = IZKMAirdrop::isClaimedCall::abi_decode_returns(&encoded_return).unwrap();
-        assert_eq!(decoded, true);
+        assert!(decoded);
     }
 
     #[test]

@@ -523,13 +523,9 @@ mod tests {
         ];
         for depth in 1..=10usize {
             let (root_fast, sibs_fast, path_fast) = build_single_leaf_proof(&addr, depth);
-            let (root_full, proof_full) =
-                build_tree_streaming_with_depth(&[addr], depth, Some(0));
+            let (root_full, proof_full) = build_tree_streaming_with_depth(&[addr], depth, Some(0));
             let (sibs_full, path_full) = proof_full.expect("streaming proof");
-            assert_eq!(
-                root_fast, root_full,
-                "root mismatch at depth {depth}"
-            );
+            assert_eq!(root_fast, root_full, "root mismatch at depth {depth}");
             assert_eq!(sibs_fast, sibs_full, "siblings mismatch at depth {depth}");
             assert_eq!(path_fast, path_full, "path mismatch at depth {depth}");
         }
@@ -537,7 +533,10 @@ mod tests {
         let (_, sibs26, path26) = build_single_leaf_proof(&addr, TREE_DEPTH);
         assert_eq!(sibs26.len(), TREE_DEPTH);
         assert_eq!(path26.len(), TREE_DEPTH);
-        assert!(path26.iter().all(|&p| p == 0), "index-0 path must be all-left");
+        assert!(
+            path26.iter().all(|&p| p == 0),
+            "index-0 path must be all-left"
+        );
     }
 
     #[test]
