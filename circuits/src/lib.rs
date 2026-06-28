@@ -696,40 +696,40 @@ mod tests {
     use ark_ff::BigInteger;
     use light_poseidon::PoseidonHasher;
 
-    /// Process-wide lock that **serializes** the heavy k=22 `MockProver` tests.
+    /// Process-wide lock that **serializes** the heavy k=24 `MockProver` tests.
     ///
-    /// `cargo test --lib` runs every `#[test]` as a thread inside one binary,
-    /// so the four k=22 tests (`test_circuit_configures`, plus the three
-    /// `*_rejected` negative tests) launch concurrently by default. Each one
-    /// allocates a full 2^22-row × ~28-column witness (~8 GiB RSS, measured);
-    /// four in parallel peak at ~32–44 GiB, exhaust the host RAM, and
-    /// hard-crash the whole process (and the agent running the suite). Holding
-    /// this mutex for the duration of each heavy test makes them run one at a
-    /// time (peak ≈ 8 GiB) while the ~60 cheap tests keep parallelizing freely.
+    /// `cargo test --lib` runs every `#[test]` as a thread inside one binary.
+    /// The four `*_rejected` negative tests are `#[ignore]`d and each allocates
+    /// a full 2^24-row × ~28-column witness (~30 GiB RSS, measured) — even one
+    /// such run saturates a 32 GiB host, and several in parallel hard-crash the
+    /// whole process (and the agent running the suite). Holding this mutex for
+    /// the duration of each heavy test makes them run one at a time when invoked
+    /// via `--ignored`, while the ~60 cheap tests keep parallelizing freely.
     /// Poisoning is tolerated so one failing heavy test doesn't mask the others.
+    ///
+    /// (`test_circuit_configures` used to hold this lock too when it ran at
+    /// k=24, but it is now a cheap configure-only smoke test and needs no
+    /// serialization — see its doc comment.)
     static HEAVY_MOCK_PROVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Test that the circuit configuration is valid (no panics during configure).
     #[test]
     fn test_circuit_configures() {
-        let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let circuit = ZKMistV2Claim {
-            private_key: [0u8; 32],
-            siblings: [[0u8; 32]; TREE_DEPTH],
-            path_indices: [0u8; TREE_DEPTH],
-            merkle_root: Fr::ZERO,
-            nullifier: Fr::ZERO,
-            recipient: Fr::ONE,
-        };
-        let public_inputs = vec![Fr::ZERO, Fr::ZERO, Fr::ONE];
-        // k=24: the full circuit (secp256k1 + Keccak + Poseidon + Merkle) no
-        // longer fits in 2^22 rows after the 2026 secp256k1 soundness rewrite
-        // (see `test_secp256k1_mock_prover`). This is a configure-only smoke
-        // test; it does not call `verify()`.
-        let _ = halo2_proofs::dev::MockProver::run(24, &circuit, vec![public_inputs]);
-        eprintln!("✅ ZKMistV2Claim circuit configuration valid (k=24)");
+        // Configure-only smoke test: invoke `Circuit::configure` directly to
+        // confirm the circuit wires without panicking. This deliberately does
+        // NOT call `MockProver::run`, which synthesizes the full 2^24-row
+        // witness and needs ~30 GiB RSS — enough to hard-crash a 32 GiB host
+        // (the WSL OOM that motivated this change). The real k=24 path is
+        // covered by `test_circuit_merkle_nullifier_e2e`, which is `#[ignore]`d.
+        //
+        // `test_circuit_constraint_system_digest` already runs this same
+        // `configure()` cheaply and additionally pins the resulting constraint
+        // system digest, so a wiring or configure-level regression is still
+        // caught here without synthesizing any witness.
+        use halo2_proofs::plonk::ConstraintSystem;
+        let mut cs = ConstraintSystem::<Fr>::default();
+        let _cfg = <ZKMistV2Claim as Circuit<Fr>>::configure(&mut cs);
+        eprintln!("✅ ZKMistV2Claim circuit configuration valid (configure-only)");
     }
 
     /// Full end-to-end MockProver test with a real key, Merkle proof, and nullifier.
