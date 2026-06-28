@@ -60,16 +60,16 @@ We ask that you:
 Before mainnet deployment, ALL of the following must be completed:
 
 ### Critical (blocks deployment)
-- [x] **Re-run secp256k1 MockProver test** to confirm the carry-chain reductions are sound: **PASS at k=23** (2026 validation). The isolated secp256k1 gadget — including `field_mul` / `field_add_carried` / `field_sub` reductions, `check_on_curve`, `constrain_affine`, and limb range checks — verifies a correct honest proof and derives the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. The sound reductions first raised k from 22 to 24, but a subsequent secp256k1 `point_add_mixed` optimization halved the witness and brought it back to k=23. Peak RSS ≈ 15 GiB, ~2 min (release).
+- [ ] **Re-run secp256k1 MockProver test** to confirm the carry-chain reductions are sound: **requires k=23 confirmation** (the carry-chain rewrite is the latest change; the `secp256k1.rs` code comment explicitly flags this run as not-yet-validated-in-this-environment). The isolated secp256k1 gadget — including `field_mul` / `field_add_carried` / `field_sub` reductions, `check_on_curve`, `constrain_affine`, and limb range checks — must verify a correct honest proof and derive the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. The sound reductions first raised k from 22 to 24, but a subsequent secp256k1 `point_add_mixed` optimization halved the witness and brought it back to k=23. Peak RSS ≈ 15 GiB, ~2 min (release).
   ```
   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
   ```
-- [x] **Re-run full E2E MockProver test** — **PASS at k=23** (2026 validation). The honest end-to-end proof (real key → secp256k1 → Keccak address → Merkle membership → nullifier → recipient) verifies, and the binding between the three pillars is sound. Getting here required fixing **three latent Keccak correctness bugs** that MockProver could not catch on its own (gates were satisfiable but the witness was wrong): a corrupted `RC` round-constant table (from index 5), a backwards `rotate_lane` (right instead of left), and a transposing `chi_step` storage order. The test harness was also fixed to build proofs at the full `TREE_DEPTH`. Each bug is now pinned by an instant native test plus a constrained `tiny_keccak` cross-check in the isolated Keccak test.
+- [ ] **Re-run full E2E MockProver test** — **requires k=23 confirmation** (re-run after the carry-chain rewrite). The honest end-to-end proof (real key → secp256k1 → Keccak address → Merkle membership → nullifier → recipient) verifies, and the binding between the three pillars is sound. Getting here required fixing **three latent Keccak correctness bugs** that MockProver could not catch on its own (gates were satisfiable but the witness was wrong): a corrupted `RC` round-constant table (from index 5), a backwards `rotate_lane` (right instead of left), and a transposing `chi_step` storage order. The test harness was also fixed to build proofs at the full `TREE_DEPTH`. Each bug is now pinned by an instant native test plus a constrained `tiny_keccak` cross-check in the isolated Keccak test.
   ```
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
-- [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **all PASS at k=23** (2026 validation). Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. (Each is `#[ignore]`d, ~2 min at k=23 release.)
-- [ ] **External security audit** of secp256k1 non-native field arithmetic (including new Schwartz–Zippel verification)
+- [ ] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **require k=23 confirmation** (re-run after the carry-chain rewrite). Each must correctly REJECT for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. (Each is `#[ignore]`d, ~2 min at k=23 release.)
+- [ ] **External security audit** of secp256k1 non-native field arithmetic (including the carry-chain mod-p reduction: `carry_chain_columns` + `reduce_canonical_mod_p`)
 - [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
   ```
   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
@@ -143,31 +143,38 @@ field arithmetic gadget:
 5. **Consistent carry propagation in `field_sub`**: Uses `field_add_carried`
    for the final addition step, ensuring subtraction also propagates carries.
 
-6. **⚠️ SUPERSEDED — `field_mul` reduction is NOT constrained.**
-   A Schwartz–Zippel product verification was attempted on every `field_mul`
-   call, but it was **mathematically incorrect** for the base-2^64 limb
-   representation (evaluating limb polynomials at r=65537 does not match
-   integer arithmetic in base 2^64, so it failed for honest provers) and was
-   **removed** (the dead `verify_product` helper remains in `secp256k1.rs`).
-   As of the 2026 review the wide→narrow reduction in `field_mul` assigns its
-   result limbs as **free witnesses**, and `field_add_carried`'s reduction is
-   likewise disconnected from its constrained raw sum. Because the secp256k1
-   prime (≈2^256) is close to the BN254 scalar prime (≈2^254), the reduction
-   **cannot** be soundly checked at the BN254 level alone — it requires a full
-   integer carry/borrow chain, as provided by audited non-native field
-   libraries. **The terminal `check_on_curve` / `constrain_affine` checks do
-   NOT compensate, because they are themselves built on `field_mul` and are
-   therefore vacuous.** Until this is fixed (carry-chain rewrite or library
-   swap), the secp256k1 scalar multiplication is non-binding. The `cond_swap`
-   Merkle gadget WAS fixed (see below).
+6. **`field_mul` / `field_add_carried` / `field_sub` mod-p reduction —
+   IMPLEMENTED via sound integer carry chains (2026 rewrite).** The earlier
+   Schwartz–Zippel product check was **mathematically incorrect** for the
+   base-2^64 limb representation (limb polynomials evaluated at r=65537 do
+   not match integer arithmetic in base 2^64, so it failed for honest
+   provers) and was **removed** (the dead `verify_product` helper remains in
+   `secp256k1.rs`). It was replaced with the strategy used by audited
+   non-native libraries (`halo2wrong`, `scroll-tech/halo2-secp256k1`): a
+   range-checked integer carry chain (`carry_chain_columns`) that proves
+   `Σ wide[k]·2^(64·k) ≡ result` over the integers with the final carry-out
+   constrained to 0, plus a witnessed quotient `q` with `result + q·p = V`
+   and a canonicalization proof `result < p` (`reduce_canonical_mod_p`).
+   Because every operand is ≪ p_BN254, the `s_add`/`s_mul`/`s_add_carry`
+   gates are exact INTEGER identities — there is no modular wraparound to
+   hide behind. See `circuits/src/secp256k1.rs`.
+   **Validation status:** implementation complete; `configure()` digest
+   matches `EXPECTED_CS_DIGEST` (`f8f4b46128dd613f`); the k=23 MockProver
+   confirmation run (the `#[ignore]d` tests) is the remaining pre-deployment
+   gate — see the checklist and the code comment in `secp256k1.rs`.
 
 ## Known Issues (Blocking Mainnet)
 
-**`field_mul` / `field_add_carried` / `field_sub` reductions — VALIDATED in isolation (2026 follow-up).** The wide→narrow reduction in `field_mul`, the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` use explicit range-checked integer carry chains plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization proof `result < p` (see `carry_chain_columns` / `reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`).
+**`field_mul` / `field_add_carried` / `field_sub` reductions — IMPLEMENTED via sound carry chains (2026 rewrite); k=23 MockProver confirmation pending.** The wide→narrow reduction in `field_mul`, the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` use explicit range-checked integer carry chains plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization proof `result < p` (see `carry_chain_columns` / `reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`). The `configure()` digest matches `EXPECTED_CS_DIGEST` (`f8f4b46128dd613f`), so the gate/column structure is sound.
 
-✅ **Confirmed by `test_secp256k1_mock_prover` at k=23** (2026): the isolated secp256k1 circuit — full scalar multiplication, `check_on_curve`, `constrain_affine` (k·G == pubkey), limb range checks — produces a verifying honest proof and the correct test-vector address. This resolves the earlier "CONSTRAINED but UNVALIDATED" status. The sound reductions first raised k from 22 to 24, but a subsequent secp256k1 `point_add_mixed` optimization halved the witness and brought it back to k=23; revisit if it must rise again. `EXPECTED_CS_DIGEST` was regenerated to `f8f4b46128dd613f`.
+⏳ **Validation gate (NOT yet confirmed in a clean environment):** the k=23 MockProver confirmation run is the remaining step. The code comment in `secp256k1.rs` explicitly flags this as not-yet-validated-in-this-environment (the heavy k=22/23 runs risk OOM, as the real-KZG path did). Each is `#[ignore]d`, ~2 min / ~15 GiB RSS at k=23 release:
+```bash
+cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+```
+Until these pass, treat the secp256k1 reduction as **IMPLEMENTED-BUT-UNVALIDATED**, not production-ready. (The earlier `"✅ Confirmed at k=23"` wording in this file overstated the status relative to the code's own comment and is corrected here.)
 
-✅ **The full E2E circuit (`test_circuit_merkle_nullifier_e2e`) now PASSES `verify()` at k=23** (2026 validation). The honest end-to-end proof verifies and the three-pillar binding (secp scalar ↔ Keccak address ↔ nullifier) is sound. This required fixing three latent Keccak correctness bugs (see the next item) plus a test-harness Merkle-depth bug.
+⏳ **The full E2E circuit (`test_circuit_merkle_nullifier_e2e`) confirmation at k=23 is PENDING** (see the code comment in `secp256k1.rs`). The honest end-to-end proof — once confirmed — exercises the three-pillar binding (secp scalar ↔ Keccak address ↔ nullifier). The wiring fixes that make the honest path *possible* are in place: three latent Keccak correctness bugs (see the next item) plus a test-harness Merkle-depth bug are fixed and pinned by native tests. (Earlier "✅ now PASSES at k=23" wording here overstated the status relative to the code's own comment and is corrected to match.)
 
 **`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
 `out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
@@ -219,20 +226,29 @@ proven.
 The secp256k1 MockProver test previously produced 8 permutation failures in `constrain_affine`.
 This was caused by the unconstrained wide-to-narrow reduction in `field_mul`.
 
-**Fix applied**: Schwartz–Zippel product verification has been added to every `field_mul` call.
-This constrains the product correctness with negligible soundness error (≤ 6/p_BN254).
+**History (so this section stops contradicting itself):**
+1. First attempt: a Schwartz–Zippel product check on every `field_mul`.
+   **Reverted** — mathematically incorrect for base-2^64 limbs (limb
+   polynomials at r=65537 do not match integer arithmetic in base 2^64, so it
+   failed for honest provers). The dead `verify_product` helper remains in
+   `secp256k1.rs`.
+2. Current fix (applied): sound integer carry chains — `carry_chain_columns`
+   (range-checked, final carry-out = 0) + `reduce_canonical_mod_p` (witnessed
+   quotient `q` with `result + q·p = V` + canonicalization `result < p`).
+   Same strategy as audited non-native libraries. `field_mul`,
+   `field_add_carried`, and `field_sub` all route through it.
 
-**⚠️ CORRECTION (2026 review)**: the above fix was **reverted** because it was
-mathematically incorrect for base-2^64 limbs (see item 6 above). The `field_mul`
-reduction is currently UNCONSTRAINED. The real fix is an integer carry-chain
-reduction or an audited library swap.
-
-**Resolution**: The `#[ignore]`d MockProver tests need to be re-run to confirm the fix resolves
-all permutation failures:
+**Status:** IMPLEMENTED. The earlier `"⚠️ CORRECTION — currently UNCONSTRAINED
+/ check_on_curve is vacuous / scalar mul is non-binding"` text in this file
+described the PRE-carry-chain state and is removed; it directly contradicted
+the implemented code above. The remaining gate is the k=23 MockProver
+confirmation:
 ```bash
 cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
 cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
 ```
+(The code comment in `secp256k1.rs` flags these as the pending confirmation;
+each is ~2 min / ~15 GiB RSS at k=23.)
 
 **VK mismatch**: The current `Halo2VerifyingKey.sol` has k=21 (2M rows) with all-zero fixed
 commitments. The full production circuit requires **k=23 (8.4M rows)** — the

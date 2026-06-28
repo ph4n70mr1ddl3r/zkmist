@@ -665,7 +665,10 @@ mod tests {
             &proof_path,
         )
         .expect("real KZG proof generation failed");
-        eprintln!("   [1/3] ✅ proof generated ({:.1}s)", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "   [1/3] ✅ proof generated ({:.1}s)",
+            t0.elapsed().as_secs_f64()
+        );
 
         // ── Load the emitted proof bytes + public inputs. ──
         let proof_file: crate::types::ProofFile =
@@ -688,12 +691,10 @@ mod tests {
         );
 
         // Reconstruct the SAME public inputs the prover committed against.
-        let nullifier_fr =
-            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier));
+        let nullifier_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier));
         let mut recip_padded = [0u8; 32];
         recip_padded[12..32].copy_from_slice(&recipient);
-        let recipient_fr =
-            ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&recip_padded));
+        let recipient_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&recip_padded));
         let root_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root));
         let public_inputs = [root_fr, nullifier_fr, recipient_fr];
 
@@ -746,7 +747,10 @@ mod tests {
              a proof for one root must not verify against another"
         );
         eprintln!("   [3/3] ✅ tampered root correctly rejected");
-        eprintln!("✅ Real KZG proof round-trip PASS (k={}, {} proof bytes)",
-            k, proof_bytes.len());
+        eprintln!(
+            "✅ Real KZG proof round-trip PASS (k={}, {} proof bytes)",
+            k,
+            proof_bytes.len()
+        );
     }
 }

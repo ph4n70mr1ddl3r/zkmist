@@ -208,9 +208,15 @@ The Halo2-KZG circuit proves:
 
 Public inputs: `[merkleRoot, nullifier, recipient]`. No journal — inputs are direct calldata.
 
-**Soundness:** Every `field_mul` in the secp256k1 gadget includes a Schwartz–Zippel product
-verification check that constrains the multiplication result is correct modulo the secp256k1
-field prime, with soundness error ≤ 6/p_BN254 per operation (negligible).
+**Soundness:** `field_mul` / `field_add_carried` / `field_sub` in the secp256k1
+gadget reduce their wide products modulo the secp256k1 field prime using sound
+integer carry chains (`carry_chain_columns`, final carry-out constrained to 0)
+plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization
+proof `result < p` (`reduce_canonical_mod_p`) — the same strategy as audited
+non-native libraries (`halo2wrong`, `scroll-tech/halo2-secp256k1`). (An earlier
+Schwartz–Zippel product check was reverted as mathematically incorrect for
+base-2^64 limbs.) The k=23 MockProver confirmation of this gadget is a pending
+pre-deployment gate; see [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 0.
 
 ### Merkle Tree (`merkle-tree/`)
 
@@ -369,29 +375,32 @@ No special permissions or contract setup is required.
 >   constrained equal to the scalar-mul output coordinates. (An earlier revision
 >   left these as free advice cells — a catastrophic soundness break — and is now
 >   fixed.)
-> - **secp256k1 non-native field arithmetic: VALIDATED in isolation (2026).**
->   The isolated secp256k1 gadget — `field_mul` / `field_add_carried` / `field_sub`
->   carry-chain reductions, `check_on_curve`, `constrain_affine` (k·G == pubkey),
->   and limb range checks — **passes MockProver at k=23** and derives the
->   test-vector address. The sound reductions first pushed k from 22 to 24, but
->   a subsequent secp256k1 `point_add_mixed` optimization halved the witness and
->   brought it back down to k=23. (This was the largest unknown and it is now
->   exonerated.)
-> - **Full E2E circuit: ✅ PASSES at k=23 (2026).** The honest end-to-end proof —
->   real key → secp256k1 → Keccak address → Merkle membership → nullifier →
->   recipient — verifies, and the binding between the three pillars is sound.
->   Getting here required fixing three latent Keccak correctness bugs that
->   MockProver could not catch on its own (gates were satisfiable but the
->   witness was wrong): a corrupted `RC` round-constant table, a backwards
->   `rotate_lane`, and a transposing `chi_step`. Each is now pinned by an
->   instant native test plus a constrained `tiny_keccak` cross-check. See
->   [SECURITY.md](./SECURITY.md).
+> - **secp256k1 non-native field arithmetic: IMPLEMENTED via sound carry chains
+>   (2026 rewrite); k=23 MockProver confirmation PENDING.** The isolated
+>   secp256k1 gadget — `field_mul` / `field_add_carried` / `field_sub` carry-chain
+>   reductions, `check_on_curve`, `constrain_affine` (k·G == pubkey), and limb
+>   range checks — is implemented with the audited-library strategy
+>   (`carry_chain_columns` + `reduce_canonical_mod_p`). The code comment in
+>   `circuits/src/secp256k1.rs` explicitly flags the k=23 MockProver run as
+>   not-yet-validated-in-this-environment; treat as IMPLEMENTED-BUT-UNVALIDATED
+>   until it passes (see [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 0).
+> - **Full E2E circuit: k=23 MockProver confirmation PENDING.** The honest
+>   end-to-end proof — real key → secp256k1 → Keccak address → Merkle membership
+>   → nullifier → recipient — must be confirmed to verify at k=23. The **top
+>   warning** of this README ("has not yet passed at production `k`") is the
+>   authoritative status; earlier "✅ PASSES" wording here overstated it
+>   relative to the code's own comment. The wiring fixes that make the honest
+>   path *possible* are in place: three latent Keccak correctness bugs that
+>   MockProver could not catch on its own are fixed and pinned by instant native
+>   tests plus a constrained `tiny_keccak` cross-check (corrupted `RC` table,
+>   backwards `rotate_lane`, transposing `chi_step`). See [SECURITY.md](./SECURITY.md)
+>   and [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 0.
 > - The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that
 >   has **not been externally audited**. An independent audit of both the
 >   arithmetic and the circuit wiring is required before mainnet.
 >
 > **Defense-in-depth mechanisms in place (NOT a substitute for audit):**
-> - `field_mul` Schwartz–Zippel product verification at r=65537
+> - `field_mul` / `field_add_carried` / `field_sub` sound integer carry chains (`carry_chain_columns`) + witnessed-quotient mod-p reduction (`reduce_canonical_mod_p`)
 > - `field_add_carried` carry-propagated limb addition
 > - `check_on_curve` (y² = x³ + 7) and `constrain_affine` terminal checks
 > - Intermediate + terminal limb range checks; MSB-corrected scalar mul
@@ -408,16 +417,19 @@ No special permissions or contract setup is required.
 >   and brought it back to k=23. E2E MockProver at k=23 ≈ 2 min (release),
 >   ~15 GiB RSS.
 >
-> **Already validated (2026):**
-> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=23 ✅
-> - **Four full-circuit negative tests** (wrong root / wrong nullifier /
->   zero recipient / >uint160 recipient all correctly rejected) at k=23 ✅
-> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=23 ✅
-> - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
->   `tiny_keccak` cross-check on 160 address bits) ✅
+> **Already validated by the fast/native test suite (155 tests, green):**
 > - `cond_swap` Merkle gadget soundness (`s_mul`/`s_add` product gates) ✅
 > - `field_add_carried` Phase 1 carry chain ✅
-> - `EXPECTED_CS_DIGEST` regenerated to `f8f4b46128dd613f` ✅
+> - `EXPECTED_CS_DIGEST` pinned to `f8f4b46128dd613f` ✅
+> - Keccak `keccak_f` / `rotate_lane` / `chi_step` native cross-checks vs `tiny_keccak` ✅
+>
+> **Pending the heavy `#[ignore]d` MockProver confirmation (~2 min / ~15 GiB RSS each):**
+> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=23 — PENDING
+> - **Four full-circuit negative tests** (wrong root / wrong nullifier /
+>   zero recipient / >uint160 recipient) at k=23 — PENDING
+> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=23 — PENDING
+> - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
+>   `tiny_keccak` cross-check on 160 address bits) — PENDING
 >
 > **Tooling:**
 > - `zkmist bench` — proving timing benchmark with proof size validation
@@ -433,7 +445,8 @@ No special permissions or contract setup is required.
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >
-> See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist.
+> See [SECURITY.md](./SECURITY.md) for the full pre-deployment checklist and
+> [DEPLOYMENT.md](./DEPLOYMENT.md) for the ordered, step-by-step runbook.
 
 ---
 

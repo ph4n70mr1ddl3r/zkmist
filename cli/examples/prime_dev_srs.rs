@@ -73,5 +73,10 @@ fn main() {
     let f = std::fs::File::create(&path).expect("create cache file");
     let mut w = std::io::BufWriter::new(f);
     params.write(&mut w).expect("write params");
-    eprintln!("✅ done (k={}, {:.1}s, {:.0} MiB)", k, gen_secs, std::fs::metadata(&path).unwrap().len() as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "✅ done (k={}, {:.1}s, {:.0} MiB)",
+        k,
+        gen_secs,
+        std::fs::metadata(&path).unwrap().len() as f64 / (1024.0 * 1024.0)
+    );
 }
