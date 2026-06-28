@@ -15,4 +15,6 @@ halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", 
 halo2curves = "0.6"
 ff = "0.13"
 rand = "0.8"
+dirs = "5"
+sha2 = "0.10"
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }

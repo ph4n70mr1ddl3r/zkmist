@@ -2032,6 +2032,79 @@ impl<'a> Secp256k1Chip<'a> {
         })
     }
 
+    /// **Mixed Jacobian + affine point addition** — [`point_add`](Self::point_add)
+    /// specialized to the case `q.z == 1` (q is an affine point).
+    ///
+    /// This is mathematically **identical** to `point_add` with Z2 = 1: it is
+    /// NOT a different formula set, it just drops the five `field_mul` calls
+    /// that multiply by 1 (or by Z2). With Z2 = 1:
+    ///   - `Z2² = 1` ⇒ `U1 = X1`      (clone `p.x`)
+    ///   - `Z2³ = 1` ⇒ `S1 = Y1`      (clone `p.y`)
+    ///   - `Z1·Z2 = Z1`               (so `Z3 = H · Z1`)
+    /// so the `z2_sq`, `u1`, `z2_cu`, `s1`, and `z1z2` products collapse to
+    /// clones of already-canonical cells. Since `field_mul(·, 1)` would yield
+    /// exactly those same canonical values, this is **soundness-neutral**:
+    /// every remaining gate constrains the same expression on the same values
+    /// as `point_add`.
+    ///
+    /// Cost: **11 `field_mul`** vs `point_add`'s 16 (−5). Both `point_add`
+    /// call sites in `scalar_mul` pass an affine second operand (the generator
+    /// `G` with Z = 1, and `−P255` via `assign_affine_constant`, which sets
+    /// Z = 1), so every per-bit step saves 5 multiplications.
+    ///
+    /// Degenerate cases (P1 == ±q, where H or R is 0) are inherited unchanged
+    /// from `point_add`: the mixed path returns whatever `point_add` would for
+    /// Z2 = 1, including the same (unsupported) behavior near the identity. No
+    /// new failure mode is introduced. The math is pinned byte-for-byte against
+    /// the full path by `test_jacobian_add_mixed_matches_jacobian_add`.
+    pub fn point_add_mixed(
+        &self,
+        layouter: &mut impl Layouter<Fr>,
+        p: &AssignedPoint,
+        q: &AssignedPoint,
+    ) -> Result<AssignedPoint, Error> {
+        // Z2 = 1 ⇒ Z2² = Z2³ = 1 ⇒ U1 = X1, S1 = Y1.
+        let u1 = p.x.clone();
+        let s1 = p.y.clone();
+
+        // U2 = X2 * Z1²
+        let z1_sq = self.field_mul(layouter, &p.z, &p.z)?;
+        let u2 = self.field_mul(layouter, &q.x, &z1_sq)?;
+        // S2 = Y2 * Z1³
+        let z1_cu = self.field_mul(layouter, &z1_sq, &p.z)?;
+        let s2 = self.field_mul(layouter, &q.y, &z1_cu)?;
+        // H = U2 - U1
+        let h = self.field_sub(layouter, &u2, &u1)?;
+        // R = S2 - S1
+        let r = self.field_sub(layouter, &s2, &s1)?;
+        // H² = H * H
+        let h2 = self.field_mul(layouter, &h, &h)?;
+        // H³ = H² * H
+        let h3 = self.field_mul(layouter, &h2, &h)?;
+        // R² = R * R
+        let r2 = self.field_mul(layouter, &r, &r)?;
+        // U1*H²
+        let u1h2 = self.field_mul(layouter, &u1, &h2)?;
+        // 2*U1*H²
+        let two_u1h2 = self.field_double(layouter, &u1h2)?;
+        // X3 = R² - H³ - 2*U1*H²
+        let r2_minus_h3 = self.field_sub(layouter, &r2, &h3)?;
+        let x3 = self.field_sub(layouter, &r2_minus_h3, &two_u1h2)?;
+        // Y3 = R*(U1*H² - X3) - S1*H³
+        let u1h2_minus_x3 = self.field_sub(layouter, &u1h2, &x3)?;
+        let r_uh = self.field_mul(layouter, &r, &u1h2_minus_x3)?;
+        let s1h3 = self.field_mul(layouter, &s1, &h3)?;
+        let y3 = self.field_sub(layouter, &r_uh, &s1h3)?;
+        // Z3 = H * Z1   (Z2 = 1 ⇒ Z1·Z2 = Z1)
+        let z3 = self.field_mul(layouter, &h, &p.z)?;
+
+        Ok(AssignedPoint {
+            x: x3,
+            y: y3,
+            z: z3,
+        })
+    }
+
     /// Scalar multiplication: k * point using double-and-add.
     ///
     /// MSB-first double-and-add processing `scalar_bits[1..=255]` after
@@ -2063,7 +2136,7 @@ impl<'a> Secp256k1Chip<'a> {
         for i in 1..=255 {
             let doubled = self.point_double(layouter, &accumulator)?;
 
-            let added = self.point_add(layouter, &doubled, base_point)?;
+            let added = self.point_add_mixed(layouter, &doubled, base_point)?;
             accumulator =
                 self.conditional_select_point(layouter, &added, &doubled, &scalar_bits[i])?;
 
@@ -2125,7 +2198,7 @@ impl<'a> Secp256k1Chip<'a> {
         };
 
         // acc - P255 = acc + (-P255)
-        let subtracted = self.point_add(layouter, &accumulator, &neg_p255)?;
+        let subtracted = self.point_add_mixed(layouter, &accumulator, &neg_p255)?;
 
         // Select: if bits[0]=1 keep accumulator; if bits[0]=0 use subtracted.
         // conditional_select_point returns `a` when bit=1, `b` when bit=0.
@@ -3424,4 +3497,120 @@ fn jacobian_add(
     let z1z2 = z1.mul(&z2);
     let z3 = h.mul(&z1z2);
     (x3, y3, z3)
+}
+
+/// Mixed Jacobian + affine addition mirroring the circuit's `point_add_mixed`
+/// (Z2 = 1). Same expressions as [`jacobian_add`] with the Z2 = 1 identity
+/// substitutions applied; exists only to feed the equivalence test below.
+#[allow(dead_code)]
+fn jacobian_add_mixed(
+    x1: NativeSecpField,
+    y1: NativeSecpField,
+    z1: NativeSecpField,
+    x2: NativeSecpField,
+    y2: NativeSecpField,
+) -> (NativeSecpField, NativeSecpField, NativeSecpField) {
+    // Z2 = 1 ⇒ U1 = X1, S1 = Y1.
+    let u1 = x1;
+    let s1 = y1;
+    let z1_sq = z1.mul(&z1);
+    let u2 = x2.mul(&z1_sq);
+    let z1_cu = z1_sq.mul(&z1);
+    let s2 = y2.mul(&z1_cu);
+    let h = u2.sub(&u1);
+    let r = s2.sub(&s1);
+    let h2 = h.mul(&h);
+    let h3 = h2.mul(&h);
+    let r2 = r.mul(&r);
+    let u1h2 = u1.mul(&h2);
+    let two_u1h2 = u1h2.add(&u1h2);
+    let r2_minus_h3 = r2.sub(&h3);
+    let x3 = r2_minus_h3.sub(&two_u1h2);
+    let u1h2_minus_x3 = u1h2.sub(&x3);
+    let r_uh = r.mul(&u1h2_minus_x3);
+    let s1h3 = s1.mul(&h3);
+    let y3 = r_uh.sub(&s1h3);
+    let z3 = h.mul(&z1); // Z2 = 1 ⇒ Z1·Z2 = Z1
+    (x3, y3, z3)
+}
+
+/// Prove `point_add_mixed` is byte-for-byte identical to `point_add` when
+/// the second operand is affine (Z2 = 1).
+///
+/// Replays the EXACT `scalar_mul` trajectory — 255 double+add steps over the
+/// generator plus the MSB-correction add — computing every add with BOTH
+/// `jacobian_add_mixed` and `jacobian_add(..., z2 = 1)` on two independent
+/// accumulators, and asserts they agree on all three Jacobian coordinates at
+/// every step (doubled result, add result, and the correction add). Because
+/// the circuit's `point_add_mixed` is line-for-line the same expressions as
+/// the native `jacobian_add_mixed`, this pins the optimization to be
+/// soundness-neutral. Pure native arithmetic — no circuit synthesis, runs in
+/// milliseconds, never touches the k=24 path.
+#[test]
+fn test_jacobian_add_mixed_matches_jacobian_add() {
+    let key: [u8; 32] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+        0x89, 0xab, 0xcd, 0xef,
+    ];
+    let bits = decompose_key_to_bits(&key);
+    let g = NativePoint::GENERATOR;
+
+    // Two independent accumulators: one advances via the mixed path, one via
+    // the full path. They must stay identical throughout.
+    let mut mx = g.x;
+    let mut my = g.y;
+    let mut mz = NativeSecpField::ONE;
+    let mut fx = g.x;
+    let mut fy = g.y;
+    let mut fz = NativeSecpField::ONE;
+
+    for i in 1..=255 {
+        // mixed path (affine second operand)
+        let (mdx, mdy, mdz) = jacobian_double(mx, my, mz);
+        let (msx, msy, msz) = jacobian_add_mixed(mdx, mdy, mdz, g.x, g.y);
+        // full path with z2 = 1
+        let (fdx, fdy, fdz) = jacobian_double(fx, fy, fz);
+        let (fsx, fsy, fsz) =
+            jacobian_add(fdx, fdy, fdz, g.x, g.y, NativeSecpField::ONE);
+
+        // Both branches must agree before the conditional select.
+        assert_eq!(mdx.0, fdx.0, "double x mismatch at step {}", i);
+        assert_eq!(mdy.0, fdy.0, "double y mismatch at step {}", i);
+        assert_eq!(mdz.0, fdz.0, "double z mismatch at step {}", i);
+        assert_eq!(msx.0, fsx.0, "add x mismatch at step {}", i);
+        assert_eq!(msy.0, fsy.0, "add y mismatch at step {}", i);
+        assert_eq!(msz.0, fsz.0, "add z mismatch at step {}", i);
+
+        if bits[i] {
+            mx = msx;
+            my = msy;
+            mz = msz;
+            fx = fsx;
+            fy = fsy;
+            fz = fsz;
+        } else {
+            mx = mdx;
+            my = mdy;
+            mz = mdz;
+            fx = fdx;
+            fy = fdy;
+            fz = fdz;
+        }
+    }
+
+    // MSB-correction add (also an affine second operand, −P255).
+    let p255_scalar: [u64; 4] = [0, 0, 0, 1u64 << 63];
+    let p255 = NativePoint::scalar_mul(&p255_scalar);
+    let neg_p255_y = p255.y.neg();
+    let (mrx, mry, mrz) = jacobian_add_mixed(mx, my, mz, p255.x, neg_p255_y);
+    let (frx, fry, frz) =
+        jacobian_add(fx, fy, fz, p255.x, neg_p255_y, NativeSecpField::ONE);
+    assert_eq!(mrx.0, frx.0, "correction add x mismatch");
+    assert_eq!(mry.0, fry.0, "correction add y mismatch");
+    assert_eq!(mrz.0, frz.0, "correction add z mismatch");
+
+    eprintln!(
+        "✅ point_add_mixed matches point_add (Z2=1) over the full scalar_mul trajectory (256 adds)"
+    );
 }

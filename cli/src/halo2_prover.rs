@@ -15,16 +15,22 @@ use zkmist_merkle_tree::compute_nullifier;
 use crate::constants::*;
 use crate::types::ProofFile;
 
-/// Default k parameter for the circuit (2^24 = 16M rows).
-/// Required for the full circuit with secp256k1 + Keccak + Poseidon + Merkle
-/// AFTER the 2026 secp256k1 soundness rewrite (carry-chain reductions), which
-/// added rows per field op. k=22 and k=23 are both insufficient
-/// (`NotEnoughRowsAvailable`, confirmed via `test_secp256k1_mock_prover`).
-/// k=24 provides headroom and is validated end-to-end
-/// (`test_circuit_merkle_nullifier_e2e` PASSES at k=24).
+/// Default k parameter for the circuit (2^23 = 8.4M rows).
+///
+/// The full circuit (secp256k1 + Keccak + Poseidon + Merkle) measures
+/// **8,028,779 rows** (pinned by `test_measure_circuit_rows`), which fits in
+/// 2^23 = 8,388,608 with ~360K rows of headroom. k=22 (4.2M rows) does not fit.
+///
+/// k was 24 (16M rows) until the secp256k1 `point_add_mixed` optimization
+/// (mixed Jacobian+affine addition: 16→11 `field_mul` per scalar-mul step,
+/// ~1,280 fewer `field_mul` across the 256-step double-and-add), which shaved
+/// the ~360K rows that had pushed it just over 2^23. This halved the peak RSS
+/// (~30 GiB → ~15 GiB), letting the prover run on a 32 GiB host.
+///
+/// Validated end-to-end (`test_circuit_merkle_nullifier_e2e` PASSES at k=23).
 /// ⚠️  This MUST match the k used to generate Halo2VerifyingKey.sol.
-/// Run gen-production-verifier with --k 24 to regenerate the VK.
-const CIRCUIT_K: u32 = 24;
+/// Run gen-production-verifier with --k 23 to regenerate the VK.
+const CIRCUIT_K: u32 = 23;
 
 // ── KZG SRS loading ───────────────────────────────────────────────────
 //
@@ -58,6 +64,50 @@ fn get_cache_dir() -> Result<std::path::PathBuf, String> {
 
 fn cached_params_path(k: u32) -> Result<std::path::PathBuf, String> {
     Ok(get_cache_dir()?.join(format!("v2_params_k{}.bin", k)))
+}
+
+/// Assert the loaded SRS params are at exactly the circuit's k.
+///
+/// `Params::read` takes the file's embedded k as-is (no truncation), and the
+/// prover allocates a witness grid of `2^params.k()` rows. So a file at the
+/// WRONG k is not benign:
+///   - `params.k() < CIRCUIT_K` → halo2 rejects with `NotEnoughRowsAvailable`
+///     (the circuit doesn't fit).
+///   - `params.k() > CIRCUIT_K` → `create_proof` still allocates `2^params.k()`
+///     rows (e.g. a k=26 file with the k=23 circuit → 64M rows → ~120 GiB RSS,
+///     OOM), AND every proof verifies against a domain the on-chain verifier
+///     (which embeds the VK's k) does not expect → proofs fail on-chain with a
+///     confusing error.
+///
+/// The on-chain `Halo2Verifier` embeds `k` as a constant derived from the VK,
+/// so the prover, the VK generator, and the verifier MUST all share the exact
+/// same k. This check turns a silent misconfiguration into a loud, clear error.
+///
+/// Common cause of a mismatch after a k bump: a stale cache file
+/// (`~/.zkmist/cache/v2_params_k{k}.bin`) left over from a previous version,
+/// or a pinned `KZG_SRS_URL` pointing at a file extracted at the wrong k.
+fn ensure_params_k(
+    params: &halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>,
+    expected_k: u32,
+) -> Result<(), String> {
+    let actual_k = params.k();
+    if actual_k == expected_k {
+        return Ok(());
+    }
+    Err(format!(
+        "KZG SRS k mismatch: file is k={} ({} rows) but this build expects k={} ({} rows). \
+         The prover, the verifying-key generator, and the on-chain verifier must all use the \
+         SAME k. A larger-k file would allocate {}× more memory during proving and produce \
+         proofs the on-chain verifier rejects. Delete the stale cache \
+         (~/.zkmist/cache/v2_params_k*.bin) or re-pin KZG_SRS_URL to a k={} file. \
+         See docs/kzg-srs.md.",
+        actual_k,
+        1u64 << actual_k,
+        expected_k,
+        1u64 << expected_k,
+        1u64 << (actual_k - expected_k),
+        expected_k,
+    ))
 }
 
 /// Load the KZG SRS: cache → download+verify → dev fallback.
@@ -107,6 +157,7 @@ fn load_or_download_params(
             match std::fs::File::open(&path) {
                 Ok(file) => match Params::<G1Affine>::read(&mut BufReader::new(file)) {
                     Ok(params) => {
+                        ensure_params_k(&params, k)?;
                         eprintln!(
                             "         ✓ KZG SRS loaded{}",
                             if production {
@@ -137,8 +188,10 @@ fn load_or_download_params(
         eprintln!("         ✓ Downloaded and verified ({} bytes)", bytes);
         let file =
             std::fs::File::open(&path).map_err(|e| format!("Cannot open downloaded SRS: {e}"))?;
-        return Params::<G1Affine>::read(&mut BufReader::new(file))
-            .map_err(|e| format!("Downloaded SRS failed to parse: {e}"));
+        let params = Params::<G1Affine>::read(&mut BufReader::new(file))
+            .map_err(|e| format!("Downloaded SRS failed to parse: {e}"))?;
+        ensure_params_k(&params, k)?;
+        return Ok(params);
     }
 
     // ── 3. Dev fallback (RANDOM SRS) ──────────────────────────────────
@@ -487,3 +540,39 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halo2_proofs::poly::commitment::Params;
+    use halo2curves::bn256::G1Affine;
+
+    /// `ensure_params_k` accepts a params at the expected k (the happy path
+    /// every production run takes).
+    #[test]
+    fn test_ensure_params_k_match() {
+        // Params::new(8) is tiny (256 rows) — instant, no memory risk.
+        let params = Params::<G1Affine>::new(8);
+        assert!(ensure_params_k(&params, 8).is_ok());
+    }
+
+    /// `ensure_params_k` REJECTS a params at the wrong k with a message that
+    /// names both k values and the memory multiplier. This is the guard against
+    /// a stale cache or a pinned SRS extracted at the wrong k — both of which
+    /// would otherwise silently produce on-chain-invalid (or OOM-causing) proofs.
+    #[test]
+    fn test_ensure_params_k_mismatch_rejects() {
+        let params = Params::<G1Affine>::new(10); // file claims k=10
+        let err = ensure_params_k(&params, 8).expect_err("mismatch must reject");
+        // Message must surface both k values and the memory blowup factor.
+        assert!(err.contains("k=10"), "error should name the file's k: {}", err);
+        assert!(err.contains("k=8"), "error should name the expected k: {}", err);
+        assert!(
+            err.contains("4x") || err.contains("4×"),
+            "error should state the memory multiplier (2^(10-8)=4): {}",
+            err
+        );
+        assert!(err.contains("kzg-srs.md"), "error should point to the doc: {}", err);
+    }
+}
+

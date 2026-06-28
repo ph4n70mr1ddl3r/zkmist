@@ -7,12 +7,17 @@ downloads and verifies it independently — so that **no one has to trust the
 deployer**.
 
 > **Status:** the mechanism described here is implemented in
-> `cli/src/halo2_prover.rs` (`load_or_download_params`) and
-> `cli/src/download.rs` (`download_and_verify_to_file`). The **trust root is
-> intentionally left as a placeholder** (`KZG_SRS_URL` / `KZG_SRS_SHA256` empty
-> in `cli/src/constants.rs`) until the deployer completes the procedure in
+> `cli/src/halo2_prover.rs` (`load_or_download_params`, including the
+> `ensure_params_k` exact-k guard) and `cli/src/download.rs`
+> (`download_and_verify_to_file`). The **trust root is intentionally left as a
+> placeholder** (`KZG_SRS_URL` / `KZG_SRS_SHA256` empty in
+> `cli/src/constants.rs`) until the deployer completes the procedure in
 > [§2](#2-deployer-obtain-verify-and-pin-the-transcript). The readiness checker
 > gates on this (check `[1d/8]`).
+>
+> **k = 23** (not 24): the secp256k1 `point_add_mixed` optimization (2026)
+> halved the witness, so the circuit now needs `2^23 = 8,388,608` rows and the
+> pinned SRS file MUST be at **exactly k=23** — see §1.1.
 
 ---
 
@@ -47,14 +52,38 @@ generating its own, so the trust assumption is *1-of-many-thousands* instead of
 
 The **Ethereum EIP-4844 KZG ceremony** (≈140,000 participants) is the gold
 standard of public trust — but it produced only **2¹² = 4,096 G1 points**,
-sized for blob verification. ZKMist V2's circuit needs **2²⁴ = 16,777,216**
-points (k=24). The EIP-4844 SRS is therefore **~4,000× too small** and cannot be
-used, despite what earlier drafts of `V2_PLAN.md` claimed.
+sized for blob verification. ZKMist V2's circuit needs **2²³ = 8,388,608**
+points (k=23). The EIP-4844 SRS is therefore **~2,000× too small** and cannot
+be used.
 
 The correct source is the **PSE perpetual powers-of-tau** ceremony — a universal,
-updatable ceremony sized for halo2 (well beyond 2²⁴ points), reused by Scroll,
+updatable ceremony sized for halo2 (well beyond 2²³ points), reused by Scroll,
 Taiko, Polygon zkEVM, and others. It is still a ceremony (1-of-N honesty on the
 PSE participants), but N is large and the transcript is publicly audited.
+
+### 1.1 The file MUST be at exactly k=23 (not “k ≥ 23”)
+
+`halo2_proofs::poly::commitment::Params::read` reads the file’s embedded `k`
+**as-is — there is no truncation**, and the prover then allocates a witness
+grid of `2^params.k()` rows. Consequences of a wrong-k file:
+
+- `k < 23` → halo2 rejects with `NotEnoughRowsAvailable` (circuit doesn’t fit).
+- `k > 23` → `create_proof` still allocates `2^k` rows. A k=26 file would
+  allocate **64M rows (~120 GiB RSS)** — the prover OOMs even though the
+  circuit only uses 8M. AND the proof verifies against a domain the on-chain
+  verifier (which embeds the VK’s `k`) does not expect → proofs fail on-chain.
+
+The prover now enforces this with `ensure_params_k` (a mismatch aborts with a
+message naming both k values, the memory multiplier, and this doc) — but the
+**pinned file itself must be k=23**, so the deployer’s extraction step (§2.1)
+must target exactly k=23.
+
+> ⚠️ **Truncation is not available via the halo2 0.3.x public API.**
+> `Params.g_lagrange` is `pub(crate)`, and there is no `truncate`/`downsize`
+> method, so a tool **in this repo cannot** downsize a larger halo2 params
+> file to k=23. You must either (a) extract directly at k=23 via the ceremony’s
+> phase2 tooling (§2.1), or (b) fork halo2 to expose `g_lagrange` and write a
+> truncation tool. Option (a) is strongly preferred.
 
 ---
 
@@ -63,39 +92,50 @@ PSE participants), but N is large and the transcript is publicly audited.
 This is a **one-time** step, done once before mainnet deployment. After this,
 the system is "deploy and forget" — claimants self-serve forever.
 
-### 2.1 Obtain the PSE halo2 params file at k=24
+### 2.1 Obtain the PSE halo2 params file at k=23
 
 The prover's `Params::<G1Affine>::read` consumes **halo2_proofs 0.3.0's binary
-params format** (the same format `Params::write` produces). The PSE ceremony
-raw transcript is in a different "MPC" format and must be converted. You have
-two options:
+params format** (the same format `Params::write` produces) at **exactly k=23**
+(see §1.1 — truncation is not possible via the halo2 0.3.x public API). The PSE
+**perpetual powers-of-tau** ceremony (repo:
+`privacy-scaling-explorations/perpetualpowersoftau`) publishes a raw MPC
+*transcript*, not halo2 params directly. To produce a halo2 params file at k=23
+you extract from that transcript using the PSE phase2 / halo2 setup tooling at
+the target size:
 
-- **(Preferred) Download a pre-converted halo2 params file** published by a
-  reputable source (PSE or a major halo2 project), sized ≥ 2²⁴. Verify its
-  provenance against the PSE perpetual-powers-of-tau ceremony records.
-- **Convert it yourself** from the PSE raw transcript using the PSE
-  `phase2`/transcript tooling, producing a `params-k24` (or larger) binary file.
-  You can then truncate to exactly k=24 with `Params::read` + `Params::write`
-  over a fresh `Params::<G1Affine>::new(k)`-sized... no — use the official
-  conversion utility so you do not have to trust a third party's conversion.
+- **(Preferred) Run the PSE phase2 extraction at k=23.** Use the official PSE
+  halo2 setup tooling (the same code path Scroll/Taiko/Polygon use) to derive a
+  `params-k23.bin` (halo2 0.3.0 params format, `2^23` G1 points) directly from
+  the perpetual-powers-of-tau transcript. This is the only path that avoids
+  trusting a third party's conversion AND gives the exact k=23.
+- **(Alternative) Download a pre-converted halo2 params file** published by a
+  reputable source (PSE or a major halo2 project) at **exactly k=23**. Many
+  projects publish at k=21, 22, 25, 26 — **verify the published file's k is
+  exactly 23** before pinning; a different k is rejected by `ensure_params_k`.
+  If only a larger-k file is available, you must run phase2 extraction yourself
+  at k=23 (you cannot truncate it — §1.1).
 
-> ⚠️ **Trust note:** the conversion is deterministic, so two independent parties
-> converting the same raw transcript must produce byte-identical output. Cross-
-> check with another project's published file if in doubt.
+> ⚠️ **Trust note:** the phase2 extraction is deterministic, so two independent
+> parties extracting at k=23 from the same transcript must produce
+> byte-identical output. Cross-check your digest against another project's
+> k=23 file if one exists.
 
 ### 2.2 Independently verify the file
 
-Before pinning anything, confirm the file you have is the genuine PSE SRS:
+Before pinning anything, confirm the file you have is the genuine PSE SRS **at
+k=23**:
 
 1. Re-derive its SHA-256 yourself (do not copy a hash from anywhere — compute it):
    ```bash
-   sha256sum params-k24.bin
+   sha256sum params-k23.bin
    ```
 2. Cross-reference that digest against the PSE ceremony's published records (the
    ceremony's final accumulated transcript has a publicly committed digest). If
-   you converted the raw transcript yourself, the digest is whatever you
-   produced — the trust is in the ceremony transcript, not a hash you were told.
-3. Sanity-check the file parses as halo2 params and reports 2²⁴ G1 points.
+   you ran phase2 extraction yourself, the digest is whatever you produced — the
+   trust is in the ceremony transcript, not a hash you were told.
+3. Sanity-check the file parses as halo2 params and reports **k=23** (the
+   readiness checker's `ensure_params_k` enforces this at runtime; you can also
+   confirm via `Params::read` + `params.k()` in a one-off script).
 
 ### 2.3 Publish the file
 
@@ -113,7 +153,7 @@ Set both constants in `cli/src/constants.rs`:
 
 ```rust
 pub const KZG_SRS_URL: &str =
-    "https://github.com/<org>/<repo>/releases/download/<tag>/params-k24.bin";
+    "https://github.com/<org>/<repo>/releases/download/<tag>/params-k23.bin";
 pub const KZG_SRS_SHA256: &str =
     "<the 64-hex-char SHA-256 you computed in §2.2, lowercase, no 0x>";
 ```
@@ -144,10 +184,10 @@ public ceremony the deployer had no part in.
 1. **Install** the `zkmist` CLI (see `README.md`).
 2. **Run** `zkmist prove --key-file <your-key> <eligibility args>`.
    - On first run the CLI streams the pinned SRS file to
-     `~/.zkmist/cache/v2_params_k24.bin`, showing a progress bar, and verifies
+     `~/.zkmist/cache/v2_params_k23.bin`, showing a progress bar, and verifies
      its SHA-256 against the value compiled into the binary. **A mismatch
      aborts before any proof is created.** This is a few hundred MB and happens
-     once.
+     once. The file’s k (23) is also asserted before use.
    - On every subsequent run the cached file is **re-hashed** and compared to
      the pinned value before use — so a tampered local cache is also rejected.
 3. The CLI creates the Halo2-KZG proof, **verifies it locally** against the
@@ -177,8 +217,8 @@ clearly warned at runtime and flagged by the readiness checker (`[1c/8]` would
 flip to failing only if the dev gate were removed; `[1d/8]` fails until the real
 hash is pinned, which is the real gate).
 
-Note: at k=24, `Params::new` takes several minutes on first run (it builds 16M
-points from scratch). The cached dev file makes subsequent runs fast. The
+Note: at k=23, `Params::new` takes a couple of minutes on first run (it builds
+8.4M points from scratch). The cached dev file makes subsequent runs fast. The
 production download path avoids this cost entirely (the transcript is
 pre-computed by the ceremony).
 

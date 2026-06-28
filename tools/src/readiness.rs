@@ -196,7 +196,7 @@ fn main() {
             eprintln!("         (random SRS). Whoever ran it knows the trapdoor and can forge");
             eprintln!("         proofs. This is dev/test ONLY — mainnet MUST load the Ethereum");
             eprintln!("         KZG ceremony SRS from a trusted transcript (Params::read). This");
-            eprintln!("         also explains the >8 min cold params-generation cost at k=24.");
+            eprintln!("         also explains the >4 min cold params-generation cost at k=23.");
             failed += 1;
         } else {
             eprintln!("      ✅ Prover does not generate a random SRS (loads a transcript)");
@@ -505,10 +505,10 @@ fn main() {
         eprintln!("  Remaining steps before mainnet deployment:");
         eprintln!("    ┌──────────────────────────────────────────────────────────────");
         eprintln!("    │ CRITICAL (blocks deployment):");
-        eprintln!("    │ [ ] Re-run full E2E MockProver test (k=24, ~30 min):  ✅ 2026 PASS");
+        eprintln!("    │ [ ] Re-run full E2E MockProver test (k=23, ~15 min):  ✅ 2026 PASS");
         eprintln!("    │     cargo test -p zkmist-circuits -- --ignored --nocapture");
         eprintln!("    │ [ ] Regenerate Halo2Verifier.sol + Halo2VerifyingKey.sol with");
-        eprintln!("    │     gen-production-verifier (now loads range tables, k=24)");
+        eprintln!("    │     gen-production-verifier (now loads range tables, k=23)");
         eprintln!("    │ [ ] Verify VK k-value matches CIRCUIT_K (checked above)");
         eprintln!("    │ [ ] Verify VK has non-zero fixed commitments (checked above)");
         eprintln!("    │ [ ] External security audit of secp256k1 non-native field arithmetic");
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_extract_vk_k_regenerated_k24_line() {
-        // The form gen-production-verifier emits once the real VK lands at k=24.
+        // The form gen-production-verifier emits once the real VK lands at k=23.
         let line = "            mstore(0x0040, 0x0000000000000000000000000000000000000000000000000000000000000018) // k\n";
         assert_eq!(extract_vk_k(line), Some(24));
     }
@@ -899,20 +899,20 @@ mod tests {
         let vk_k = vk_k.expect("VK k line should parse");
         let prover_k = prover_k.expect("prover CIRCUIT_K should parse");
 
-        // Documented current state: placeholder VK at k=21, prover at k=24.
-        // (When the VK is regenerated at k=24, update vk_k to 24 and assert
-        // equality instead of the mismatch below.)
+        // Documented current state: placeholder VK at k=21, prover at k=23.
+        // (When the VK is regenerated at k=23, flip the vk_k expectation to 23
+        // and assert equality instead of the mismatch below.)
         assert_eq!(
-            prover_k, 24,
+            prover_k, 23,
             "prover CIRCUIT_K moved — update CIRCUIT_K doc/CI"
         );
         assert_eq!(
             vk_k, 21,
-            "VK k changed — if regenerated to 24, flip this test to assert equality"
+            "VK k changed — if regenerated to 23, flip this test to assert equality"
         );
         assert_ne!(
             vk_k, prover_k,
-            "still mismatched until Halo2VerifyingKey.sol is regenerated at k=24"
+            "still mismatched until Halo2VerifyingKey.sol is regenerated at k=23"
         );
     }
 }

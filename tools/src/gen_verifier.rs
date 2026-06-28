@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //!   cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
-//!   cargo run --release -p zkmist-tools --bin gen-verifier -- --k 22 --output contracts/src/Halo2Verifier.sol
+//!   cargo run --release -p zkmist-tools --bin gen-verifier -- --k 23 --output contracts/src/Halo2Verifier.sol
 //!
 //! Generates a VK-embedded verifier with the VK hash and circuit parameters.
 //! The VK hash uniquely identifies the circuit and is used for integrity checks.
@@ -25,7 +25,7 @@ use zkmist_circuits::ZKMistV2Claim;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_path = PathBuf::from("../contracts/src/Halo2Verifier.sol");
-    let mut k: u32 = 24; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (k=24 after the 2026 secp256k1 soundness rewrite)
+    let mut k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (k=23 after the secp256k1 point_add_mixed optimization halved the witness)
 
     let mut i = 1;
     while i < args.len() {
@@ -51,7 +51,7 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage: gen-verifier [OPTIONS]");
                 eprintln!("  --output, -o <path>       Output Solidity file path");
-                eprintln!("  --k <power>               Circuit size parameter (default: 24, must match CIRCUIT_K)");
+                eprintln!("  --k <power>               Circuit size parameter (default: 23, must match CIRCUIT_K)");
                 eprintln!();
                 eprintln!("Generates Halo2Verifier.sol from the ZKMist V2 circuit VK.");
                 eprintln!();
@@ -87,6 +87,15 @@ fn main() {
     let vk = keygen_vk(&params, &circuit).expect("Failed to generate VK");
 
     eprintln!("  ✓ Verification key generated");
+    // VK-equivalence bridge: SHA-256 over the pinned VK debug representation
+    // (domain + fixed/permutation commitments + constraint system). When
+    // gen-production-verifier ports the full synthesize AND both tools load the
+    // SAME pinned PSE SRS, the SHA-256 printed here MUST match the one printed
+    // by gen-production-verifier byte-for-byte — proving configure() +
+    // synthesize() + SRS agree. (Under this tool's random `Params::new` SRS the
+    // value is non-deterministic; it is only meaningful for cross-comparison
+    // once a real SRS is pinned.)
+    // (Computed below as `vk_hash` and printed as "VK hash: 0x...".)
 
     // The VK is uniquely identified by its internal transcript_repr field,
     // which is a Blake2b hash of the pinned VK (fixed commitments, constraint

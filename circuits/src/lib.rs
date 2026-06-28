@@ -130,7 +130,7 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
 /// --nocapture`, copy the printed `CS_DIGEST` into BOTH this constant and
 /// `gen-production-verifier`, then commit. (Running that single test is
-/// cheap; it does not invoke the expensive k=24 MockProver/KZG paths.)
+/// cheap; it does not invoke the expensive k=23 MockProver/KZG paths.)
 ///
 /// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` now carries the
 /// sound `cond_swap` (`s_bool`/`s_mul`/`s_add` product gates) and this same
@@ -700,12 +700,13 @@ mod tests {
     ///
     /// `cargo test --lib` runs every `#[test]` as a thread inside one binary.
     /// The four `*_rejected` negative tests are `#[ignore]`d and each allocates
-    /// a full 2^24-row × ~28-column witness (~30 GiB RSS, measured) — even one
-    /// such run saturates a 32 GiB host, and several in parallel hard-crash the
-    /// whole process (and the agent running the suite). Holding this mutex for
-    /// the duration of each heavy test makes them run one at a time when invoked
-    /// via `--ignored`, while the ~60 cheap tests keep parallelizing freely.
-    /// Poisoning is tolerated so one failing heavy test doesn't mask the others.
+    /// a full 2^23-row × ~28-column witness (~15 GiB RSS, measured) — a single
+    /// run is fine on a 32 GiB host, but several in parallel can still
+    /// hard-crash the whole process (and the agent running the suite). Holding
+    /// this mutex for the duration of each heavy test makes them run one at a
+    /// time when invoked via `--ignored`, while the ~60 cheap tests keep
+    /// parallelizing freely. Poisoning is tolerated so one failing heavy test
+    /// doesn't mask the others.
     ///
     /// (`test_circuit_configures` used to hold this lock too when it ran at
     /// k=24, but it is now a cheap configure-only smoke test and needs no
@@ -717,10 +718,11 @@ mod tests {
     fn test_circuit_configures() {
         // Configure-only smoke test: invoke `Circuit::configure` directly to
         // confirm the circuit wires without panicking. This deliberately does
-        // NOT call `MockProver::run`, which synthesizes the full 2^24-row
-        // witness and needs ~30 GiB RSS — enough to hard-crash a 32 GiB host
-        // (the WSL OOM that motivated this change). The real k=24 path is
-        // covered by `test_circuit_merkle_nullifier_e2e`, which is `#[ignore]`d.
+        // NOT call `MockProver::run`, which synthesizes the full 2^23-row
+        // witness (~15 GiB RSS) — affordable alone but pointless here, and it
+        // would still risk an OOM if cargo ran it in parallel with another heavy
+        // test. The real k=23 path is covered by `test_circuit_merkle_nullifier_e2e`,
+        // which is `#[ignore]`d.
         //
         // `test_circuit_constraint_system_digest` already runs this same
         // `configure()` cheaply and additionally pins the resulting constraint
@@ -732,6 +734,257 @@ mod tests {
         eprintln!("✅ ZKMistV2Claim circuit configuration valid (configure-only)");
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Row-counting harness — measure the circuit's required layout height
+    // WITHOUT allocating the 2^k witness grid.
+    //
+    // This replaces the OOM-risky `MockProver::run(k=24, …)` as the way to
+    // learn how many rows the circuit actually needs. It synthesizes the
+    // circuit through `SimpleFloorPlanner` with a no-op `Assignment` that
+    // records the maximum absolute row index touched. Because the floor
+    // planner measures region shapes internally (`RegionShape`, never touching
+    // the assignment) and then places regions back-to-back passing ABSOLUTE
+    // rows in, `max_row + 1` is exactly the circuit's layout height. Memory
+    // use is O(number of regions) — a few hundred KB for this circuit — NOT
+    // O(2^k); this is why it is safe to run on any host (the real k=23 path
+    // allocates ~15 GiB; the previous k=24 path OOM-killed 32 GiB hosts). The
+    // layout is witness-independent by halo2's
+    // construction, and `Value::unknown()` propagates without panic, so the
+    // no-op assignment yields the correct count.
+    //
+    // The decisive output: `rows_used + blinding + 1` and whether it fits in
+    // 2^23 (→ k=23 feasible) or 2^24. See docs/glv-secp256k1-design.md §7.1.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// No-op `Assignment` that records the maximum absolute row index touched
+    /// by any `enable_selector` / `assign_advice` / `assign_fixed` / `copy` /
+    /// `fill_from_row` call. Stores nothing per cell — just a running max — so
+    /// synthesis never allocates a witness grid.
+    struct RowCountingAssignment {
+        max_row: usize,
+    }
+
+    impl halo2_proofs::plonk::Assignment<Fr> for RowCountingAssignment {
+        fn enter_region<NR, N>(&mut self, _: N)
+        where
+            NR: Into<String>,
+            N: FnOnce() -> NR,
+        {
+        }
+        fn exit_region(&mut self) {}
+
+        fn enable_selector<A, AR>(
+            &mut self,
+            _: A,
+            _: &halo2_proofs::plonk::Selector,
+            row: usize,
+        ) -> Result<(), halo2_proofs::plonk::Error>
+        where
+            A: FnOnce() -> AR,
+            AR: Into<String>,
+        {
+            if row + 1 > self.max_row {
+                self.max_row = row + 1;
+            }
+            Ok(())
+        }
+
+        fn query_instance(
+            &self,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Instance>,
+            _: usize,
+        ) -> Result<halo2_proofs::circuit::Value<Fr>, halo2_proofs::plonk::Error> {
+            Ok(halo2_proofs::circuit::Value::unknown())
+        }
+
+        fn assign_advice<V, VR, A, AR>(
+            &mut self,
+            _: A,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Advice>,
+            row: usize,
+            _: V,
+        ) -> Result<(), halo2_proofs::plonk::Error>
+        where
+            V: FnOnce() -> halo2_proofs::circuit::Value<VR>,
+            VR: Into<halo2_proofs::plonk::Assigned<Fr>>,
+            A: FnOnce() -> AR,
+            AR: Into<String>,
+        {
+            if row + 1 > self.max_row {
+                self.max_row = row + 1;
+            }
+            Ok(())
+        }
+
+        fn assign_fixed<V, VR, A, AR>(
+            &mut self,
+            _: A,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Fixed>,
+            row: usize,
+            _: V,
+        ) -> Result<(), halo2_proofs::plonk::Error>
+        where
+            V: FnOnce() -> halo2_proofs::circuit::Value<VR>,
+            VR: Into<halo2_proofs::plonk::Assigned<Fr>>,
+            A: FnOnce() -> AR,
+            AR: Into<String>,
+        {
+            if row + 1 > self.max_row {
+                self.max_row = row + 1;
+            }
+            Ok(())
+        }
+
+        fn copy(
+            &mut self,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Any>,
+            left_row: usize,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Any>,
+            right_row: usize,
+        ) -> Result<(), halo2_proofs::plonk::Error> {
+            if left_row + 1 > self.max_row {
+                self.max_row = left_row + 1;
+            }
+            if right_row + 1 > self.max_row {
+                self.max_row = right_row + 1;
+            }
+            Ok(())
+        }
+
+        fn fill_from_row(
+            &mut self,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Fixed>,
+            row: usize,
+            _: halo2_proofs::circuit::Value<halo2_proofs::plonk::Assigned<Fr>>,
+        ) -> Result<(), halo2_proofs::plonk::Error> {
+            // `row` is the first UNUSED row after a table = the table's height.
+            // The table's content cells (rows 0..row-1) already fed max_row via
+            // assign_fixed; this just pins the tail. Track conservatively.
+            if row + 1 > self.max_row {
+                self.max_row = row + 1;
+            }
+            Ok(())
+        }
+
+        fn push_namespace<NR, N>(&mut self, _: N)
+        where
+            NR: Into<String>,
+            N: FnOnce() -> NR,
+        {
+        }
+        fn pop_namespace(&mut self, _: Option<String>) {}
+    }
+
+    /// Synthesize `circuit` through its floor planner with a no-op assignment
+    /// and return `(rows_used, blinding_factors)`. `rows_used` is the circuit's
+    /// required layout height; a circuit fits at parameter `k` iff
+    /// `rows_used + blinding_factors + 1 <= 2^k` (regions must fit inside
+    /// `usable_rows = 2^k - blinding - 1`).
+    ///
+    /// Cheap & memory-safe: O(regions) memory, no 2^k grid. Safe to run on a
+    /// 32 GiB host (unlike `MockProver::run` / `keygen_vk` at k=24).
+    fn measure_circuit_rows(circuit: &ZKMistV2Claim) -> (usize, usize) {
+        use halo2_proofs::plonk::{ConstraintSystem, FloorPlanner};
+        let mut cs = ConstraintSystem::<Fr>::default();
+        let config = <ZKMistV2Claim as Circuit<Fr>>::configure(&mut cs);
+        let blinding = cs.blinding_factors();
+        // The floor-planner `constants` pool is only used for
+        // `assign_advice_from_constant`; this circuit assigns all fixed
+        // columns directly (range/secp tables, SECP_P), so an empty pool is
+        // correct for measurement. `cs.constants` is `pub(crate)` and has no
+        // public accessor, but we don't need it here.
+        let constants: Vec<halo2_proofs::plonk::Column<halo2_proofs::plonk::Fixed>> = vec![];
+
+        let mut counter = RowCountingAssignment { max_row: 0 };
+        <ZKMistV2Claim as Circuit<Fr>>::FloorPlanner::synthesize(
+            &mut counter, circuit, config, constants,
+        )
+        .expect("measurement synthesis failed");
+        (counter.max_row, blinding)
+    }
+
+    /// Measure the full `ZKMistV2Claim` circuit's required rows and report the
+    /// minimum viable `k`, plus explicit fit/over verdicts for k=23 and k=24.
+    ///
+    /// This is the zero-risk replacement for the OOM-prone
+    /// `MockProver::run(k=24, …)` measurement: it tells us exactly how far the
+    /// circuit is from 2^23 (and whether the mixed-add optimization alone, or
+    /// mixed-add + GLV, is enough to reach k=23). NOT `#[ignore]`d — it is
+    /// cheap and memory-safe, so it runs in the default suite.
+    #[test]
+    fn test_measure_circuit_rows() {
+        // Standard PRD test key + a sound depth-TREE_DEPTH Merkle proof. The
+        // witness VALUES do not affect the row count (halo2 layouts are
+        // witness-independent); these just keep native helpers (e.g.
+        // `native_derive_address`, which rejects the zero key) happy.
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+        let (address, _, _) = native_derive_address(&key);
+        let (root_ark, siblings_ark, path_indices_u8) =
+            zkmist_merkle_tree::build_single_leaf_proof(&address, TREE_DEPTH);
+        let mut siblings_arr = [[0u8; 32]; TREE_DEPTH];
+        let mut path_arr = [0u8; TREE_DEPTH];
+        siblings_arr.copy_from_slice(&siblings_ark);
+        path_arr.copy_from_slice(&path_indices_u8);
+
+        let nullifier = {
+            let key_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&key));
+            let np = PoseidonParams::new_circom(2);
+            crate::nullifier::native_compute_nullifier(&key_field, &np)
+        };
+        let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
+
+        let circuit = ZKMistV2Claim {
+            private_key: key,
+            siblings: siblings_arr,
+            path_indices: path_arr,
+            merkle_root: root_field,
+            nullifier,
+            recipient: Fr::from(0xB0Bu64),
+        };
+
+        let (rows_used, blinding) = measure_circuit_rows(&circuit);
+        let total = rows_used + blinding + 1; // rows that must fit in 2^k
+
+        // Smallest k with 2^k >= total.
+        let min_k = (total as u64)
+            .next_power_of_two()
+            .trailing_zeros() as u32;
+
+        let fits_k23 = total <= (1usize << 23);
+        let fits_k24 = total <= (1usize << 24);
+
+        eprintln!("────────────── ZKMistV2Claim row measurement ──────────────");
+        eprintln!("  rows used (layout height): {:>14}", rows_used);
+        eprintln!("  blinding factors:          {:>14}", blinding);
+        eprintln!("  total (rows + blinding +1): {:>14}", total);
+        eprintln!("  2^23 = {:>14}   2^24 = {:>14}", 1usize << 23, 1usize << 24);
+        eprintln!("  minimum viable k:          {:>14}", min_k);
+        eprintln!("  fits k=23 (8.4M rows)?     {:>14}", if fits_k23 { "YES ✅" } else { "NO  ❌" });
+        eprintln!("  fits k=24 (16.8M rows)?    {:>14}", if fits_k24 { "YES ✅" } else { "NO  ❌" });
+        if !fits_k23 {
+            let over_23 = total.saturating_sub(1usize << 23);
+            let reduction_needed = over_23 as f64 / rows_used as f64;
+            eprintln!("  over 2^23 by:              {:>14} rows ({:.1}% of current)",
+                      over_23, reduction_needed * 100.0);
+            eprintln!("  → GLV (mixed-add already landed) must shave ~{:.0}% of rows.",
+                      reduction_needed * 100.0);
+        }
+        eprintln!("───────────────────────────────────────────────────────────");
+
+        // Sanity: the circuit's production k is now 23 (CIRCUIT_K in
+        // cli/src/halo2_prover.rs). The mixed-add optimization brought the
+        // layout from just-over 2^23 to ~8.03M rows (360K under 2^23). Guard
+        // both directions: we MUST fit k=23 (regression guard — a gadget that
+        // adds >360K rows would silently push us back to k=24 / ~30 GiB), and
+        // we MUST still fit k=24 (harness-correctness guard).
+        assert!(fits_k23, "circuit no longer fits k=23 — a gadget grew; either optimize or bump CIRCUIT_K back to 24");
+        assert!(fits_k24, "circuit no longer fits k=24 — measurement harness is broken");
+    }
+
     /// Full end-to-end MockProver test with a real key, Merkle proof, and nullifier.
     ///
     /// This test validates that the Poseidon, Merkle, nullifier, secp256k1,
@@ -740,7 +993,7 @@ mod tests {
     /// If any gadget has a soundness bug, the on-curve check or
     /// `constrain_affine` will catch it.
     ///
-    /// STATUS (2026 review): ✅ **PASSES at k=24**. This is the top
+    /// STATUS (2026 review): ✅ **PASSES at k=23**. This is the top
     /// deployment blocker cleared. The honest end-to-end proof — real key →
     /// secp256k1 → Keccak address → Merkle membership → nullifier → recipient —
     /// verifies, and the binding between the three pillars (secp scalar, Keccak
@@ -769,7 +1022,7 @@ mod tests {
     /// 26-level root).
     ///
     /// NOTE: This test is `#[ignore]` by default because it is very slow
-    /// (full circuit at k=24 is 16M rows; ~32 min, ~30 GiB RSS).
+    /// (full circuit at k=23 is 8.4M rows; ~15-30 min, ~15 GiB RSS).
     /// Run with:
     ///   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
     #[test]
@@ -831,17 +1084,16 @@ mod tests {
             recipient,
         };
 
-        // The full circuit (secp256k1 + Keccak + Poseidon + Merkle) requires
-        // k=24 after the 2026 soundness rewrite of the secp256k1 non-native
-        // reductions (carry chains + witnessed quotient + canonicalization),
-        // which added many rows per field op. The isolated secp256k1 gadget
-        // alone no longer fits in k=22/23 (see `test_secp256k1_mock_prover`),
-        // so the combined circuit needs k=24 (16M rows). k=23 (8M rows) now
-        // overflows (`NotEnoughRowsAvailable`). Peak RSS ≈ 29–35 GiB at k=24.
+        // The full circuit (secp256k1 + Keccak + Poseidon + Merkle) measures
+        // 8,028,779 rows (see `test_measure_circuit_rows`), fitting k=23
+        // (2^23 = 8,388,608) with ~360K rows of headroom after the secp256k1
+        // `point_add_mixed` optimization (16→11 field_mul per scalar-mul step).
+        // k=22 (4.2M rows) does not fit. Peak RSS ≈ 13–17 GiB at k=23
+        // (vs ~30 GiB at the previous k=24, which OOM-killed 32 GiB hosts).
         //
-        // Expected runtime: 30-90 minutes (MockProver is a debug tool, not optimized
+        // Expected runtime: 15-45 minutes (MockProver is a debug tool, not optimized
         // for speed). The secp256k1 + Keccak gadgets dominate.
-        let k = 24;
+        let k = 23;
         eprintln!(
             "   Running full circuit E2E MockProver test with k={}...",
             k
@@ -910,7 +1162,9 @@ mod tests {
     /// This is a focused soundness test for the most complex gadget in the circuit.
     /// If this fails, the full E2E test will also fail.
     ///
-    /// NOTE: Still `#[ignore]`d because secp256k1 alone is ~300K+ rows at k=22.
+    /// NOTE: Still `#[ignore]`d because secp256k1 alone is a large witness at
+    /// k=23 (~15 GiB RSS, slow MockProver). It fits k=23 with headroom after
+    /// the `point_add_mixed` optimization; run it to validate the isolated gadget.
     /// Run with:
     ///   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
     #[test]
@@ -1156,13 +1410,13 @@ mod tests {
         }
 
         let circuit = SecpTestCircuit { private_key: key };
-        // k was 22 before the 2026 soundness rewrite of `field_mul` /
-        // `field_add_carried` / `field_sub` (explicit integer carry chains +
-        // witnessed quotient `q` + canonicalization). Those reductions add many
-        // rows per field op, so the isolated secp256k1 circuit no longer fits in
-        // 2^22 rows (`NotEnoughRowsAvailable` at k=22 and k=23). k=24 (16M rows)
-        // fits with headroom. Revisit if it must rise again.
-        let k = 24;
+        // k history: before the secp256k1 `point_add_mixed` optimization the
+        // isolated secp256k1 circuit sat just over 2^23 and needed k=24. The
+        // mixed-add specialization (16→11 field_mul per scalar-mul step, see
+        // `point_add_mixed`) shaved enough rows that both the isolated secp256k1
+        // circuit and the full circuit now fit k=23 (2^23 = 8,388,608). k=22
+        // (4.2M rows) still does not fit. Revisit if it must rise again.
+        let k = 23;
         eprintln!("   Running secp256k1 MockProver test with k={}...", k);
 
         let mut addr_padded = [0u8; 32];
@@ -1328,7 +1582,7 @@ mod tests {
     /// The circuit constrains the computed Merkle root to match the public
     /// input. Providing a wrong root should cause MockProver to reject.
     #[test]
-    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). The honest E2E path now passes (test_circuit_merkle_nullifier_e2e), so this negative test can be trusted to reject for the RIGHT reason. Run with --ignored."]
+    #[ignore = "slow: full circuit at k=23 (~15 min, ~15 GiB RSS). The honest E2E path now passes (test_circuit_merkle_nullifier_e2e), so this negative test can be trusted to reject for the RIGHT reason. Run with --ignored."]
     fn test_wrong_merkle_root_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1379,7 +1633,7 @@ mod tests {
             recipient,
         };
 
-        let k = 24;
+        let k = 23;
         let public_inputs = vec![wrong_root, nullifier, recipient];
         let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
@@ -1404,7 +1658,7 @@ mod tests {
 
     /// Negative test: wrong nullifier should fail.
     #[test]
-    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
+    #[ignore = "slow: full circuit at k=23 (~15 min, ~15 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_wrong_nullifier_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1450,7 +1704,7 @@ mod tests {
             recipient,
         };
 
-        let k = 24;
+        let k = 23;
         let public_inputs = vec![root_field, wrong_nullifier, recipient];
         let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
@@ -1475,7 +1729,7 @@ mod tests {
 
     /// Negative test: zero recipient should fail.
     #[test]
-    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
+    #[ignore = "slow: full circuit at k=23 (~15 min, ~15 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_zero_recipient_rejected() {
         let _heavy_guard = HEAVY_MOCK_PROVER_LOCK
             .lock()
@@ -1521,7 +1775,7 @@ mod tests {
             recipient: Fr::ZERO, // Zero recipient — should fail
         };
 
-        let k = 24;
+        let k = 23;
         let public_inputs = vec![root_field, nullifier, Fr::ZERO];
         let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
@@ -1943,7 +2197,7 @@ mod tests {
     /// A recipient > 2^160 would be truncated by Solidity's `uint160()`,
     /// creating a soundness issue. The circuit must reject such recipients.
     #[test]
-    #[ignore = "slow: full circuit at k=24 (~30 min, ~30 GiB RSS). Honest E2E path now passes; run with --ignored."]
+    #[ignore = "slow: full circuit at k=23 (~15 min, ~15 GiB RSS). Honest E2E path now passes; run with --ignored."]
     fn test_recipient_exceeding_uint160_rejected() {
         // Construct a recipient > 2^160 by setting byte 20 (LE index) to non-zero.
         // Fr::from(1u64) << 160 is not directly expressible, so we use a large value.
@@ -2008,7 +2262,7 @@ mod tests {
             recipient: big_recipient,
         };
 
-        let k = 24;
+        let k = 23;
         let public_inputs = vec![root_field, nullifier, big_recipient];
         let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
 
