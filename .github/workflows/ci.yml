@@ -86,21 +86,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendor/halo2-solidity-verifier (path dep)
       - uses: dtolnay/rust-toolchain@stable
-      # The crate depends on the public PSE halo2-solidity-verifier via a path
-      # that points one level above this repo (../../halo2-solidity-verifier,
-      # resolved from gen-production-verifier/Cargo.toml). Clone it there at
-      # the commit that matches local development. The sibling's own
+      # The path dep in gen-production-verifier/Cargo.toml resolves to
+      # ../vendor/halo2-solidity-verifier, vendored as a git submodule pinned
+      # to the commit that matches local development. The submodule's own
       # rust-toolchain.toml pin does NOT apply to a path dependency, so CI
       # `stable` builds it fine.
-      # TODO: vendor this dependency into the repo (git submodule) so the
-      # out-of-repo path and this clone step can both be removed.
-      - name: Provide sibling halo2-solidity-verifier (path dependency)
-        run: |
-          git clone https://github.com/privacy-scaling-explorations/halo2-solidity-verifier.git \
-            "$GITHUB_WORKSPACE/../halo2-solidity-verifier"
-          cd "$GITHUB_WORKSPACE/../halo2-solidity-verifier"
-          git checkout 9e99730
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "gen-production-verifier"

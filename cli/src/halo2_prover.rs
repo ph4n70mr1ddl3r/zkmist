@@ -28,9 +28,19 @@ const CIRCUIT_K: u32 = 24;
 
 // ── Params caching ───────────────────────────────────────────────────
 //
-// KZG params generation for k=24 (16M G1 points) takes 20-120 seconds.
-// We cache the serialized params to ~/.zkmist/cache/ to avoid regenerating
-// them on every prove/verify invocation.
+// WARNING (2026 review): cold KZG params generation at k=24 was measured to
+// take well over 8 minutes (did not complete within the observation window).
+// The earlier "20-120 seconds" figure is incorrect at k=24. The cost is
+// dominated by `Params::new(k)`, which builds a 16M-point structured
+// reference string from scratch. We cache the serialized params to
+// ~/.zkmist/cache/ so subsequent prove/verify invocations skip this step.
+//
+// ⚠️ SOUNDNESS GAP: `Params::new(k)` generates a RANDOM SRS whose trapdoor is
+// known to the operator that ran it — anyone with that trapdoor can forge
+// proofs. This is acceptable for local dev/test ONLY. Mainnet MUST load the
+// Ethereum KZG ceremony SRS from a trusted transcript instead. This gap is
+// flagged by the readiness checker (`uses_random_srs`); loading the ceremony
+// SRS from a file would also eliminate the cold-generation cost above.
 
 fn get_cache_dir() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;

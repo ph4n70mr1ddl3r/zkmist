@@ -12,8 +12,11 @@
 #
 # Prerequisites:
 #   - Rust (stable) with cargo
-#   - ~2 GB RAM for proof generation
-#   - ~30 seconds for proof generation
+#   - ~3 GB RAM for proof generation (measured peak at k=24)
+#   - First proof is slow: cold KZG params generation for 16M G1 points was
+#     measured to exceed 8 minutes. Subsequent runs reuse ~/.zkmist/cache/.
+#     ⚠️ The prover currently uses a RANDOM SRS (Params::new) — dev/test only;
+#     mainnet must load the Ethereum KZG ceremony SRS (see readiness checker).
 #
 # Usage:
 #   ./scripts/e2e-test.sh
@@ -85,7 +88,7 @@ echo ""
 
 # ── Step 4: Run benchmark (generates real proof) ────────────────────
 echo "[4/6] Generating Halo2-KZG proof (benchmark mode)..."
-echo "      This takes ~30 seconds for a small tree..."
+echo "      First run generates 16M KZG G1 points (measured >8 min cold; cached after)..."
 START=$(date +%s)
 BENCH_OUTPUT=$(cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4 2>&1) || true
 ELAPSED=$(($(date +%s) - START))

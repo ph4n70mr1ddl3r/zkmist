@@ -181,6 +181,32 @@ fn main() {
         skipped += 1;
     }
 
+    // ── Check 1c: KZG SRS soundness (prover params source) ───────────
+    // The on-chain verifier is only as trustworthy as the SRS the prover
+    // commits against. `Params::new(k)` / `ParamsKZG::setup(k, rng)` derive a
+    // RANDOM SRS whose trapdoor is known to the operator — proofs are forgeable
+    // by whoever generated it. Mainnet MUST load the Ethereum KZG ceremony
+    // SRS from a trusted transcript instead. This is a soundness blocker, so
+    // it fails the readiness gate (not just a warning).
+    eprintln!("[1c/8] Checking KZG SRS soundness (prover params source)...");
+    let prover_path = root.join("cli/src/halo2_prover.rs");
+    if let Ok(prover_src) = std::fs::read_to_string(&prover_path) {
+        if uses_random_srs(&prover_src) {
+            eprintln!("      ❌ Prover generates KZG params via Params::new / ParamsKZG::setup");
+            eprintln!("         (random SRS). Whoever ran it knows the trapdoor and can forge");
+            eprintln!("         proofs. This is dev/test ONLY — mainnet MUST load the Ethereum");
+            eprintln!("         KZG ceremony SRS from a trusted transcript (Params::read). This");
+            eprintln!("         also explains the >8 min cold params-generation cost at k=24.");
+            failed += 1;
+        } else {
+            eprintln!("      ✅ Prover does not generate a random SRS (loads a transcript)");
+            passed += 1;
+        }
+    } else {
+        eprintln!("      ⚠️  cli/src/halo2_prover.rs not found — cannot check SRS source");
+        skipped += 1;
+    }
+
     // ── Check 2: Merkle root consistency ─────────────────────────────
     eprintln!("[2/8] Checking merkle root consistency...");
     let cli_root = extract_constant(&root.join("cli/src/constants.rs"), "KNOWN_MERKLE_ROOT");
@@ -605,6 +631,30 @@ fn extract_prover_k_from_str(content: &str) -> Option<u32> {
     None
 }
 
+/// Detect whether a prover source generates KZG params from scratch with an
+/// RNG (an untrusted/toy SRS) instead of loading a ceremony transcript.
+///
+/// `ParamsKZG::setup(k, rng)` and `Params::<...>::new(k)` both derive a
+/// structured reference string whose trapdoor is known to whoever ran them —
+/// anyone holding it can forge proofs. Mainnet MUST load the Ethereum KZG
+/// ceremony SRS from a trusted transcript (e.g. `Params::read(...)` from the
+/// official `trusted_setup.txt`). This returns `true` when such a generation
+/// call is present on a non-comment line.
+///
+/// Note: the good path (`Params::<...>::read(&mut reader)`) contains `Params`
+/// but neither `::new(` nor `setup(`, so it is correctly NOT flagged.
+fn uses_random_srs(prover_src: &str) -> bool {
+    prover_src.lines().any(|line| {
+        let t = line.trim();
+        if t.starts_with("//") {
+            return false;
+        }
+        let uses_setup = t.contains("ParamsKZG") && t.contains("setup(");
+        let uses_new = t.contains("Params") && t.contains("::new(");
+        uses_setup || uses_new
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +713,58 @@ mod tests {
     }
 
     // ── extract_prover_k_from_str ───────────────────────────────────────
+
+    // ── uses_random_srs ───────────────────────────────────────────────
+
+    #[test]
+    fn test_uses_random_srs_flags_params_new() {
+        // The exact form used in cli/src/halo2_prover.rs::load_or_gen_params.
+        let src = "    let params = Params::<G1Affine>::new(k);\n";
+        assert!(uses_random_srs(src));
+    }
+
+    #[test]
+    fn test_uses_random_srs_flags_paramskzg_setup() {
+        // The form gen-production-verifier uses.
+        let src = "    let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(k, &mut rng);\n";
+        assert!(uses_random_srs(src));
+    }
+
+    #[test]
+    fn test_uses_random_srs_ignores_comments() {
+        // A doc/comment line mentioning Params::new must NOT trip the check —
+        // only real code calls do. (The prover has comment lines like this.)
+        let src = "// WARNING: Params::new(k) generates a random SRS.\nfn main() {}\n";
+        assert!(!uses_random_srs(src));
+    }
+
+    #[test]
+    fn test_uses_random_srs_allows_ceremony_load() {
+        // The correct mainnet path: loading a trusted transcript. Must NOT flag.
+        let src = "    let params = Params::<G1Affine>::read(&mut reader)?;\n";
+        assert!(!uses_random_srs(src));
+    }
+
+    #[test]
+    fn test_uses_random_srs_returns_false_on_clean_source() {
+        assert!(!uses_random_srs("fn main() {}\n"));
+    }
+
+    // ── Parser guard against the real committed prover ────────────────────
+    // Pins the CURRENT soundness blocker: the production prover still uses a
+    // random SRS. When it switches to loading the Ethereum KZG ceremony SRS,
+    // this test flips to `!` and the readiness check goes green.
+    #[test]
+    fn test_real_committed_prover_uses_random_srs() {
+        let prover_path = repo_root().join("cli/src/halo2_prover.rs");
+        let src = std::fs::read_to_string(&prover_path)
+            .unwrap_or_else(|e| panic!("read {}: {}", prover_path.display(), e));
+        assert!(
+            uses_random_srs(&src),
+            "prover no longer uses a random SRS — flip this test to !uses_random_srs \
+             and confirm the readiness check now passes the SRS step"
+        );
+    }
 
     #[test]
     fn test_extract_prover_k_real_definition() {
