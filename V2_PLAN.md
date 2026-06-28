@@ -221,20 +221,33 @@ ZKMist (Halo2):
 
 ### 5.3 Trusted Setup Details
 
-ZKMist V2 does **not** require its own trusted setup ceremony. It reuses the **Ethereum KZG Ceremony** (EIP-4844):
+ZKMist V2 does **not** require its own per-circuit trusted setup ceremony. It reuses a **universal** public KZG ceremony — the **PSE perpetual powers-of-tau** transcript (not the EIP-4844 ceremony; see correction below).
+
+> ⚠️ **CORRECTION (2026 review):** earlier drafts of this section claimed the
+> project reuses the **Ethereum EIP-4844 KZG Ceremony** with an SRS size of
+> **2¹² BN254 G1 points**. That is **incorrect for this circuit**. The
+> EIP-4844 ceremony produced only 2¹² = 4,096 G1 points (sized for blob
+> verification), but the 2026 secp256k1 soundness rewrite grew the circuit to
+> **k=24 = 2²⁴ = 16,777,216 rows**, requiring an SRS of at least 2²⁴ points —
+> **~4,000× larger than EIP-4844 provides**. The EIP-4844 SRS **cannot be
+> used**. The correct source is the PSE perpetual powers-of-tau ceremony
+> (universal, updatable, sized well beyond 2²⁴, reused by Scroll/Taiko/Polygon
+> zkEVM). See [`docs/kzg-srs.md`](docs/kzg-srs.md) for the full obtain/verify/
+> pin procedure and the claimant download flow.
 
 | Property | Value |
 |----------|-------|
-| Ceremony name | EIP-4844 KZG Ceremony |
-| Participants | ~140,000+ |
-| Notable participants | Vitalik Buterin, Ethereum Foundation members, protocol teams |
-| Security assumption | At least 1 of 140,000+ participants was honest |
-| SRS size | 2¹² BN254 G1 points + 256 G2 points |
-| SRS location | Hardcoded in `halo2curves` crate |
+| Ceremony | **PSE perpetual powers-of-tau** (universal, updatable) |
+| Participants | many (public, auditable transcript; continuously accrued) |
+| Security assumption | At least 1 participant was honest (1-of-N) |
+| SRS size needed | **2²⁴** BN254 G1 points (circuit is k=24 after the 2026 soundness rewrite) |
+| SRS format | halo2_proofs 0.3.0 binary params (`Params::read`/`Params::write`) |
+| Trust root in code | `KZG_SRS_URL` + `KZG_SRS_SHA256` in `cli/src/constants.rs` |
+| Claimant UX | one-time streaming download + SHA-256 verify (cached, re-verified) |
 
 **Trusted setup comparison:**
 
-The prior approach (STARK) had zero setup dependencies. Halo2-KZG depends on the Ethereum ceremony. The practical security difference is negligible — compromising the Ethereum ceremony requires subverting 140,000+ independent participants across different organizations, countries, and hardware. This is widely considered at least as secure as any individual project's ceremony, and practically equivalent to no setup.
+The prior approach (STARK) had zero setup dependencies. Halo2-KZG depends on a universal public ceremony. The practical security difference is small — compromising the PSE perpetual ceremony requires subverting its accumulated participant set. The ceremony is still a ceremony (1-of-N honesty), but it is **universal** (one ceremony, reused by every circuit up to its size, updatable) rather than per-circuit. True trustlessness (halo2-IPA / STARK) is possible for the same circuit but costs ~3–8× on-chain gas per claim and loses the existing Solidity verifier — the wrong tradeoff for a per-claim airdrop. See [`docs/kzg-srs.md`](docs/kzg-srs.md) §1 for the full model.
 
 ---
 

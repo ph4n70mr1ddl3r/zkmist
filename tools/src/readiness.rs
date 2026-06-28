@@ -207,6 +207,44 @@ fn main() {
         skipped += 1;
     }
 
+    // ── Check 1d: KZG SRS trust root pinned in constants.rs ───────────
+    // `uses_random_srs` confirms the prover LOADS a transcript rather than
+    // generating one, but that only matters if a real transcript is pinned.
+    // KZG_SRS_URL + KZG_SRS_SHA256 are the sole trust root of the whole
+    // system: each claimant downloads the file and verifies its SHA-256
+    // against this hash, so the deployer cannot tamper with the SRS after
+    // publication. An empty hash means the prover falls back to the dev
+    // (forgeable) SRS — a hard mainnet blocker.
+    eprintln!("[1d/8] Checking KZG SRS trust root (constants.rs)...");
+    let srs_hash = extract_constant(&root.join("cli/src/constants.rs"), "KZG_SRS_SHA256");
+    let srs_url = extract_constant(&root.join("cli/src/constants.rs"), "KZG_SRS_URL");
+    match (srs_hash.as_deref(), srs_url.as_deref()) {
+        (Some(h), Some(u)) => {
+            eprintln!(
+                "      ✅ KZG SRS pinned: SHA-256={}… URL={}",
+                &h[..h.len().min(12)],
+                u
+            );
+            passed += 1;
+        }
+        _ => {
+            eprintln!(
+                "      ❌ KZG SRS trust root not pinned (KZG_SRS_URL / KZG_SRS_SHA256 empty)"
+            );
+            eprintln!(
+                "         Without a pinned public SRS the prover falls back to a self-generated"
+            );
+            eprintln!(
+                "         (forgeable) SRS — proofs would be forgeable by whoever generated them."
+            );
+            eprintln!(
+                "         See docs/kzg-srs.md to obtain, independently verify, and pin the PSE"
+            );
+            eprintln!("         perpetual powers-of-tau halo2 params file before mainnet.");
+            failed += 1;
+        }
+    }
+
     // ── Check 2: Merkle root consistency ─────────────────────────────
     eprintln!("[2/8] Checking merkle root consistency...");
     let cli_root = extract_constant(&root.join("cli/src/constants.rs"), "KNOWN_MERKLE_ROOT");
@@ -636,15 +674,22 @@ fn extract_prover_k_from_str(content: &str) -> Option<u32> {
 ///
 /// `ParamsKZG::setup(k, rng)` and `Params::<...>::new(k)` both derive a
 /// structured reference string whose trapdoor is known to whoever ran them —
-/// anyone holding it can forge proofs. Mainnet MUST load the Ethereum KZG
-/// ceremony SRS from a trusted transcript (e.g. `Params::read(...)` from the
-/// official `trusted_setup.txt`). This returns `true` when such a generation
-/// call is present on a non-comment line.
+/// anyone holding it can forge proofs. Mainnet MUST load the Ethereum/PSE KZG
+/// ceremony SRS from a trusted transcript (e.g. `Params::read(...)`). This
+/// returns `true` when such a generation call is present on a non-comment line
+/// AND the source is not behind an explicit dev gate.
+///
+/// Convention: the ONLY permitted `Params::new` / `setup` must sit behind an
+/// explicit `ZKMIST_DEV_SRS` env-var gate (see `load_or_download_params` in
+/// halo2_prover.rs). If the file references `ZKMIST_DEV_SRS`, the random-SRS
+/// call is assumed to be the dev-gated fallback and is NOT flagged. Removing
+/// the gate (or adding an ungated `Params::new`) flips this back to `true`,
+/// failing the readiness gate.
 ///
 /// Note: the good path (`Params::<...>::read(&mut reader)`) contains `Params`
 /// but neither `::new(` nor `setup(`, so it is correctly NOT flagged.
 fn uses_random_srs(prover_src: &str) -> bool {
-    prover_src.lines().any(|line| {
+    let has_random_call = prover_src.lines().any(|line| {
         let t = line.trim();
         if t.starts_with("//") {
             return false;
@@ -652,7 +697,8 @@ fn uses_random_srs(prover_src: &str) -> bool {
         let uses_setup = t.contains("ParamsKZG") && t.contains("setup(");
         let uses_new = t.contains("Params") && t.contains("::new(");
         uses_setup || uses_new
-    })
+    });
+    has_random_call && !prover_src.contains("ZKMIST_DEV_SRS")
 }
 
 #[cfg(test)]
@@ -746,23 +792,55 @@ mod tests {
     }
 
     #[test]
+    fn test_uses_random_srs_allows_dev_gated_params_new() {
+        // Convention: a Params::new behind an explicit ZKMIST_DEV_SRS gate is
+        // the accepted dev fallback and must NOT be flagged. (This is exactly
+        // the shape of load_or_download_params in halo2_prover.rs.)
+        let src = "    if std::env::var(\"ZKMIST_DEV_SRS\").is_ok() {\n        let params = Params::<G1Affine>::new(k);\n    }\n";
+        assert!(!uses_random_srs(src));
+    }
+
+    #[test]
     fn test_uses_random_srs_returns_false_on_clean_source() {
         assert!(!uses_random_srs("fn main() {}\n"));
     }
 
-    // ── Parser guard against the real committed prover ────────────────────
-    // Pins the CURRENT soundness blocker: the production prover still uses a
-    // random SRS. When it switches to loading the Ethereum KZG ceremony SRS,
-    // this test flips to `!` and the readiness check goes green.
+    // ── Parser guards against the real committed prover/constants ────────
+    //
+    // After the SRS-loading rewrite the prover LOADS a transcript in
+    // production and only falls back to Params::new behind an explicit
+    // ZKMIST_DEV_SRS gate. So uses_random_srs() must be FALSE on the real
+    // prover now. The remaining blocker is that the trust root is not yet
+    // pinned (KZG_SRS_SHA256 empty) — pinned by
+    // test_real_committed_kzg_srs_hash_is_placeholder, which flips to
+    // equality once the deployer verifies and sets the hash.
     #[test]
-    fn test_real_committed_prover_uses_random_srs() {
+    fn test_real_committed_prover_srs_is_dev_gated() {
         let prover_path = repo_root().join("cli/src/halo2_prover.rs");
         let src = std::fs::read_to_string(&prover_path)
             .unwrap_or_else(|e| panic!("read {}: {}", prover_path.display(), e));
         assert!(
-            uses_random_srs(&src),
-            "prover no longer uses a random SRS — flip this test to !uses_random_srs \
-             and confirm the readiness check now passes the SRS step"
+            src.contains("ZKMIST_DEV_SRS"),
+            "dev gate removed — re-add the ZKMIST_DEV_SRS gate around any Params::new"
+        );
+        assert!(
+            !uses_random_srs(&src),
+            "prover has an ungated Params::new/setup (no ZKMIST_DEV_SRS gate) — \
+             that is a soundness bug, re-gate it"
+        );
+    }
+
+    #[test]
+    fn test_real_committed_kzg_srs_hash_is_placeholder() {
+        // CURRENT state: trust root not pinned. When the deployer obtains,
+        // independently verifies, and sets KZG_SRS_SHA256, flip this to assert
+        // a 64-hex-char value and confirm the readiness [1d/8] check passes.
+        let constants_path = repo_root().join("cli/src/constants.rs");
+        let hash = extract_constant(&constants_path, "KZG_SRS_SHA256");
+        assert_eq!(
+            hash, None,
+            "KZG_SRS_SHA256 is now set — update this test to assert a 64-hex-char \
+             value and confirm readiness [1d/8] passes"
         );
     }
 

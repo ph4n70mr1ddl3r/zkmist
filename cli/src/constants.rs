@@ -66,3 +66,28 @@ pub const PROOF_LENGTH_EXPECTED: usize = 5632;
 
 /// Proof format version.
 pub const PROOF_FORMAT_VERSION: u64 = 2;
+
+// ── KZG SRS trust root ───────────────────────────────────────────────────
+//
+// Halo2-KZG commits against a Structured Reference String (SRS). A
+// self-generated SRS (`Params::new`) is a 1-of-1 trust root: whoever ran it
+// knows the trapdoor and can forge proofs. For mainnet the prover MUST load
+// the public PSE perpetual powers-of-tau SRS instead — a universal ceremony
+// with many participants, run once and reused by every circuit up to its
+// size. The file must be in halo2_proofs 0.3.0 params format (the same format
+// `Params::read`/`Params::write` use).
+//
+// ⚠️  PLACEHOLDER — the deployer MUST set these to a verified PSE halo2
+// params file BEFORE mainnet. See docs/kzg-srs.md for how to obtain,
+// independently verify, and publish the file. The readiness checker fails
+// (check [1d/8]) until KZG_SRS_SHA256 is non-empty.
+//
+// Why a claimant trusts this and NOT the deployer: each claimant downloads
+// the file themselves and verifies its SHA-256 against KZG_SRS_SHA256. The
+// deployer pins the hash but cannot change the SRS (a different file would
+// hash differently), and cannot forge proofs because they do not know the
+// PSE ceremony's trapdoor. This is the only trust root in the system.
+/// URL the claimant downloads the pinned PSE halo2 KZG SRS from (production).
+pub const KZG_SRS_URL: &str = "";
+/// SHA-256 of the pinned PSE halo2 KZG SRS file (lowercase hex, no `0x`).
+pub const KZG_SRS_SHA256: &str = "";

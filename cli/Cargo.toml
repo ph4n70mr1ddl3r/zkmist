@@ -37,11 +37,13 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 # Hex encoding/decoding
 hex = "0.4"
-# HTTP client for GitHub downloads
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTTP client for GitHub downloads + KZG SRS streaming download
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# Async stream iteration (reqwest bytes_stream) for the large KZG SRS download
+futures-util = "0.3"
 # SHA-256 for file integrity checks
 sha2 = "0.10"
-# Progress bar
+# Progress bar (used for the multi-hundred-MB KZG SRS download)
 indicatif = "0.17"
 # Home directory
 dirs = "5"

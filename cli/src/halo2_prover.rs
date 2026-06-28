@@ -26,21 +26,27 @@ use crate::types::ProofFile;
 /// Run gen-production-verifier with --k 24 to regenerate the VK.
 const CIRCUIT_K: u32 = 24;
 
-// ── Params caching ───────────────────────────────────────────────────
+// ── KZG SRS loading ───────────────────────────────────────────────────
 //
-// WARNING (2026 review): cold KZG params generation at k=24 was measured to
-// take well over 8 minutes (did not complete within the observation window).
-// The earlier "20-120 seconds" figure is incorrect at k=24. The cost is
-// dominated by `Params::new(k)`, which builds a 16M-point structured
-// reference string from scratch. We cache the serialized params to
-// ~/.zkmist/cache/ so subsequent prove/verify invocations skip this step.
+// Halo2-KZG commits against a Structured Reference String (SRS). The prover
+// LOADS it via `Params::read` from a transcript file rather than generating
+// one, because a self-generated SRS is a 1-of-1 trust root (whoever ran it
+// knows the trapdoor and can forge proofs).
 //
-// ⚠️ SOUNDNESS GAP: `Params::new(k)` generates a RANDOM SRS whose trapdoor is
-// known to the operator that ran it — anyone with that trapdoor can forge
-// proofs. This is acceptable for local dev/test ONLY. Mainnet MUST load the
-// Ethereum KZG ceremony SRS from a trusted transcript instead. This gap is
-// flagged by the readiness checker (`uses_random_srs`); loading the ceremony
-// SRS from a file would also eliminate the cold-generation cost above.
+// Production path (KZG_SRS_URL + KZG_SRS_SHA256 pinned in constants.rs):
+//   1. stream-download the PSE perpetual powers-of-tau halo2 params file to
+//      ~/.zkmist/cache/ (never buffered in memory — it's hundreds of MB);
+//   2. verify its SHA-256 against the pinned KZG_SRS_SHA256;
+//   3. `Params::read` it.
+// Each claimant does this ONCE; the cached file is re-verified against the
+// pinned hash on every run, so a tampered cache is rejected. The deployer
+// cannot forge proofs because they do not know the PSE ceremony's trapdoor.
+//
+// Dev path: if the trust root is not pinned AND `ZKMIST_DEV_SRS=1` is set,
+// fall back to `Params::new(k)` (a RANDOM SRS) so local tests/benchmarks run
+// without the large download. This is dev/test ONLY and is surfaced by the
+// readiness checker. See docs/kzg-srs.md for obtaining/verifying the real
+// transcript.
 
 fn get_cache_dir() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
@@ -54,11 +60,18 @@ fn cached_params_path(k: u32) -> Result<std::path::PathBuf, String> {
     Ok(get_cache_dir()?.join(format!("v2_params_k{}.bin", k)))
 }
 
-/// Load KZG params from cache, or generate and cache them.
+/// Load the KZG SRS: cache → download+verify → dev fallback.
 ///
-/// The params are deterministic (derived from the Ethereum KZG ceremony SRS),
-/// so caching is safe. Cache invalidation only happens when k changes.
-fn load_or_gen_params(
+/// Production (KZG_SRS_URL + KZG_SRS_SHA256 pinned in constants.rs): stream
+/// the pinned PSE halo2 params file to the cache dir, verify its SHA-256, and
+/// `Params::read` it. A cached file is re-verified against the pinned hash so
+/// a tampered cache is rejected. This is the only path that produces proofs
+/// safe for mainnet.
+///
+/// Dev fallback (ZKMIST_DEV_SRS=1, trust root NOT pinned): generate a RANDOM
+/// SRS via `Params::new` so local tests/benchmarks work without the large
+/// download. Dev/test ONLY — proofs are forgeable by the operator.
+fn load_or_download_params(
     k: u32,
 ) -> Result<halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>, String> {
     use halo2_proofs::poly::commitment::Params;
@@ -66,62 +79,90 @@ fn load_or_gen_params(
     use std::io::{BufReader, BufWriter};
 
     let path = cached_params_path(k)?;
+    let pinned_hash = KZG_SRS_SHA256.trim();
+    let pinned_url = KZG_SRS_URL.trim();
+    let production = !pinned_hash.is_empty() && !pinned_url.is_empty();
 
-    // Try loading from cache
+    // ── 1. Cache hit (re-verify against the pinned hash in production) ──
     if path.exists() {
-        eprintln!(
-            "         Loading cached KZG params from {}...",
-            path.display()
-        );
-        match std::fs::File::open(&path) {
-            Ok(file) => {
-                let mut reader = BufReader::new(file);
-                match Params::<G1Affine>::read(&mut reader) {
-                    Ok(params) => {
-                        eprintln!("         ✓ Cached params loaded");
-                        return Ok(params);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "         Warning: cached params corrupt ({}), regenerating",
-                            e
-                        );
-                    }
+        if production {
+            match crate::download::verify_file_sha256(&path, pinned_hash) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "         ⚠️  Cached KZG SRS SHA-256 mismatch (tampered or stale); re-downloading"
+                    );
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "         ⚠️  Cannot verify cached SRS ({}); ignoring cache",
+                        e
+                    );
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "         Warning: cannot read cached params ({}), regenerating",
-                    e
-                );
+        }
+        if path.exists() {
+            eprintln!("         Loading KZG SRS from {}...", path.display());
+            match std::fs::File::open(&path) {
+                Ok(file) => match Params::<G1Affine>::read(&mut BufReader::new(file)) {
+                    Ok(params) => {
+                        eprintln!(
+                            "         ✓ KZG SRS loaded{}",
+                            if production {
+                                " (SHA-256 verified)"
+                            } else {
+                                ""
+                            }
+                        );
+                        return Ok(params);
+                    }
+                    Err(e) => eprintln!("         ⚠️  Cached SRS unreadable ({}); re-fetching", e),
+                },
+                Err(e) => {
+                    eprintln!("         ⚠️  Cannot open cached SRS ({}); re-fetching", e)
+                }
             }
         }
     }
 
-    // Generate fresh params
-    eprintln!(
-        "         Generating KZG params (k={}, {} rows)...",
-        k,
-        1u64 << k
-    );
-    let params = Params::<G1Affine>::new(k);
-    eprintln!("         ✓ KZG params generated");
-
-    // Cache for future use
-    match std::fs::File::create(&path) {
-        Ok(file) => {
-            let mut writer = BufWriter::new(file);
-            match params.write(&mut writer) {
-                Ok(()) => eprintln!("         ✓ Cached params to {}", path.display()),
-                Err(e) => eprintln!("         Warning: failed to cache params: {}", e),
-            }
-        }
-        Err(e) => {
-            eprintln!("         Warning: cannot create cache file: {}", e);
-        }
+    // ── 2. Production: stream-download + verify + cache ────────────────
+    if production {
+        eprintln!(
+            "         Downloading KZG SRS (k={}, {} rows)...",
+            k,
+            1u64 << k
+        );
+        let bytes = crate::download::download_and_verify_to_file(pinned_url, pinned_hash, &path)?;
+        eprintln!("         ✓ Downloaded and verified ({} bytes)", bytes);
+        let file =
+            std::fs::File::open(&path).map_err(|e| format!("Cannot open downloaded SRS: {e}"))?;
+        return Params::<G1Affine>::read(&mut BufReader::new(file))
+            .map_err(|e| format!("Downloaded SRS failed to parse: {e}"));
     }
 
-    Ok(params)
+    // ── 3. Dev fallback (RANDOM SRS) ──────────────────────────────────
+    if std::env::var("ZKMIST_DEV_SRS").is_ok() {
+        eprintln!("         ⚠️  ZKMIST_DEV_SRS=1 — generating a RANDOM SRS (dev/test ONLY)");
+        eprintln!(
+            "            Do NOT use proofs from this SRS on mainnet — they are forgeable by you."
+        );
+        let params = Params::<G1Affine>::new(k);
+        // Cache for dev convenience (no hash to pin).
+        if let Ok(file) = std::fs::File::create(&path) {
+            if params.write(&mut BufWriter::new(file)).is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        return Ok(params);
+    }
+
+    Err(
+        "No KZG SRS configured. Either:\n  \
+             (a) pin KZG_SRS_URL + KZG_SRS_SHA256 in cli/src/constants.rs (production — see docs/kzg-srs.md), or\n  \
+             (b) set ZKMIST_DEV_SRS=1 for local dev/test (generates a RANDOM, forgeable SRS)."
+            .to_string(),
+    )
 }
 
 /// Generate a Halo2-KZG proof for a V2 claim.
@@ -204,7 +245,7 @@ pub fn generate_v2_proof(
     let start = std::time::Instant::now();
 
     eprintln!("      [1/5] Loading KZG parameters (k={})...", k);
-    let params = load_or_gen_params(k)?;
+    let params = load_or_download_params(k)?;
     eprintln!(
         "      [1/5] KZG params ready ({:.1}s)",
         start.elapsed().as_secs_f64()
@@ -371,7 +412,7 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     };
 
     let k = CIRCUIT_K;
-    let params = load_or_gen_params(k)?;
+    let params = load_or_download_params(k)?;
     let vk = keygen_vk(&params, &circuit).map_err(|e| format!("VK generation failed: {:?}", e))?;
 
     eprintln!("  VK regenerated ({:.1}s)", start.elapsed().as_secs_f64());
