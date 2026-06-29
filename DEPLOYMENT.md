@@ -12,7 +12,7 @@ The four blocking issues from the production review, in resolution order:
 
 | # | Blocker | Owner | Why it blocks |
 |---|---------|-------|---------------|
-| 1 | On-chain verifier is a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments; `gen-production-verifier` `synthesize` is a stub) | eng | Every honest proof would revert → airdrop mints nothing, forever |
+| 1 | On-chain verifier was a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments); the generation tool's `synthesize` was a stub | eng | Every honest proof would revert → airdrop mints nothing, forever. **RESOLVED (tool):** `gen-production-verifier` now runs the real circuit (15 fixed commitments, k=23). **Remaining:** pin SRS → `--emit` → confirm VK match (Phase 3) |
 | 2 | KZG SRS not pinned (`KZG_SRS_URL`/`KZG_SRS_SHA256` empty → prover falls back to a forgeable random SRS) | deployer | Whoever ran the prover can forge proofs → unlimited mint |
 | 3 | secp256k1 non-native arithmetic is hand-rolled and unaudited (MockProver-confirmed at k=23, but NOT audited and NOT real-KZG-confirmed) | eng + auditor | A missing constraint = forged proofs (MockProver covers the tested constraints; only an audit covers the untested gaps) |
 | 4 | No real proof has ever verified against the Solidity verifier; no testnet deployment | eng | The one property that matters is empirically unproven |
@@ -123,67 +123,81 @@ pinned file (no `ZKMIST_DEV_SRS` fallback) when generating a proof.
 
 ## Phase 3 — Generate the REAL on-chain verifier (eliminates the placeholder)
 
-The current `contracts/src/Halo2Verifier.sol` + `Halo2VerifyingKey.sol` are a
-**placeholder**: the VK has `k = 0x15 (21)` with all-zero fixed commitments, but
-the prover runs at `CIRCUIT_K = 23`. A k=23 proof cannot verify against a k=21
-VK. This must be regenerated from the real circuit.
+> **✅ The generation TOOL is now functional** (2026-06-29). `gen-production-verifier`
+> runs the REAL `zkmist_circuits::ZKMistV2Claim::synthesize` via `keygen_vk` and
+> produces a real VK — confirmed against a dev SRS: **15 fixed commitments, 20
+> permutation commitments** (the placeholder had 0 fixed + identity permutation),
+> k=23, keygen 112s / 22.7 GiB RSS. The version-split blocker is RESOLVED by a
+> digest-preserving compat shim (no circuit duplication). The remaining step is
+> purely operational: pin the SRS, run with `--emit`, confirm the VK matches.
 
-**Why this is non-trivial (the version split):** `zkmist-circuits` and the CLI
-build against crates.io `halo2_proofs 0.3.x`. The Solidity codegen library
-(`vendor/halo2-solidity-verifier`) builds against the PSE **git fork** of halo2
-(tag v0.3.0). The two halo2 versions have divergent APIs
-(`query_fixed(col, Rotation)` vs `(col)`; `lookup(name, closure)` vs `(closure)`;
-transcript `Blake2bRead/Write::init`, `SingleVerifier`, lifetimes) and are
-distinct crates to Cargo, so `gen-production-verifier` cannot simply `use
-zkmist_circuits::ZKMistV2Claim`. Today it carries a hand-maintained re-port of
-`configure()` and a **stub `synthesize()`**, guarded by `SYNTHESIZE_IS_STUB`
-so it refuses to emit.
+The current `contracts/src/Halo2Verifier.sol` + `Halo2VerifyingKey.sol` are
+STILL a **placeholder** (the tool refuses to overwrite them without `--emit`):
+the VK has `k = 0x15 (21)` with all-zero fixed commitments, but the prover runs
+at `CIRCUIT_K = 23`. They must be regenerated from the real circuit.
 
-**Choose one path (in order of preference):**
+### How the version split was resolved
 
-### Path A — Swap in an audited secp256k1 library AND unify on one halo2 (best)
-If Phase 1's recommendation to swap secp256k1 is taken, port the whole workspace
-onto the PSE git fork in the same change (so `gen-production-verifier` depends
-on `zkmist-circuits` directly and the stub is deleted). This requires adapting
-the CLI prover's transcript calls to the git-fork API — security-critical, so
-re-run Phase 0 afterward. The version split then disappears entirely.
+`zkmist-circuits` and the CLI build against crates.io `halo2_proofs 0.3.x`.
+The Solidity codegen library (`vendor/halo2-solidity-verifier`) builds against
+the PSE **git fork** of halo2 (tag v0.3.0). The two forks are API-incompatible
+at the call site (`query_fixed(col)` vs `(col, Rotation)`; unnamed vs named
+`lookup`) and their crate types do not unify, so a circuit compiled under one
+fork cannot be passed to `keygen_vk` under the other.
 
-### Path B — Complete the `synthesize()` re-port in `gen-production-verifier`
-Keep the version split. Port the full `synthesize()` body + all chips listed in
-the `PORT-TODO` comment at the top of `gen-production-verifier/src/main.rs`
-into the git-fork API (`query_fixed(col, Rotation::cur())`, `lookup(name, …)`).
-Then set `SYNTHESIZE_IS_STUB = false`. **Re-run Phase 0 afterward** (the port is
-a transcription of security-critical witness assignment).
+The resolution (no circuit duplication, no prover changes):
+- `gen-production-verifier` is its **own workspace** on the git fork, and forces
+  `zkmist-circuits` onto the git fork too (via `cargo update -p halo2_proofs@
+  0.3.2 --precise 0.3.0` in its lockfile), so `keygen_vk` accepts the same
+  `ZKMistV2Claim`.
+- A tiny cfg-gated compat shim in `zkmist-circuits` (`circuits/src/compat.rs`,
+  feature `git-fork-api`, enabled only by `gen-production-verifier`) routes the
+  6 `query_fixed` + 2 `lookup` call sites to the fork-correct signature. It is
+  **provably digest-preserving**: the lookup name is not in the pinned CS, and
+  `Rotation::cur()` is what crates.io hard-codes. Guarded on both sides by
+  `EXPECTED_CS_DIGEST = f8f4b46128dd613f` (the tool's parity assert passed under
+  the git fork) and the k=23 MockProver suite (unchanged under crates.io).
+- The main zkmist workspace is completely unaffected (the feature is never
+  enabled there; the prover and all 155 tests are unmodified).
 
-Either way, generate against the **same pinned SRS** from Phase 2:
+### Generate against the pinned SRS (Phase 2)
 
 ```bash
-# Path A or B, once synthesize is real:
-cargo run --release -p zkmist-gen-production-verifier -- \
-    --output contracts/src \
-    --k 23 \
-    --params-file /path/to/pse-halo2-kzg-srs-k23.bin
+cd gen-production-verifier
+cargo build --release
+
+# Default: runs keygen_vk, prints the VK fingerprint, does NOT write .sol files.
+cargo run --release -- --k 23 --params-file /path/to/pse-halo2-kzg-srs-k23.bin
+
+# After confirming the fingerprint matches (see cross-check below), emit:
+cargo run --release -- --k 23 --params-file /path/to/pse-halo2-kzg-srs-k23.bin --emit
 ```
 
-**Cross-check (mandatory):** the generator prints the VK `transcript_repr` and a
-pinned SHA-256. They MUST match the values printed by the prover-side tool
-against the same SRS:
+**Cross-check (mandatory, before `--emit`):** the generator prints the VK
+`transcript_repr` and a pinned SHA-256. They MUST match the prover-side tool
+against the SAME pinned SRS:
 ```bash
 cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- \
     --params-file /path/to/pse-halo2-kzg-srs-k23.bin
 ```
-Mismatch ⇒ the circuit or SRS drifted; do not deploy.
+Mismatch ⇒ the circuit or SRS drifted; do NOT pass `--emit`.
 
 **Pass criterion:**
-- `contracts/src/Halo2VerifyingKey.sol` has `k = 0x17 (23)` and NON-zero fixed
-  commitments (range8, secp `SECP_P`, keccak `RC`, poseidon round constants).
-- VK `transcript_repr` matches between the generator and the prover tool.
+- The two tools print the SAME `transcript_repr` / pinned SHA-256.
+- After `--emit`, `contracts/src/Halo2VerifyingKey.sol` has `k = 0x17 (23)` and
+  NON-zero fixed commitments (range8, secp `SECP_P`, keccak `RC`, poseidon
+  round constants).
 - `cargo run -p zkmist-tools --bin readiness` check `[1b/8]` is green (no more
   "ALL fixed commitments are zero" / "k-value MISMATCH" warnings).
 
 ```bash
 cd contracts && forge build && forge test -vvv
 ```
+
+> **Safeguard:** the tool refuses `--emit` with a random dev SRS (it requires
+> `--params-file`), and refuses to emit at all without `--emit` (default is a
+> fingerprint-only dry run). This prevents an unvalidated VK from silently
+> replacing the placeholder and bricking the airdrop.
 
 ---
 
@@ -278,7 +292,7 @@ never happen, see the birthday-bound analysis in SECURITY.md). See SECURITY.md
 [x] Phase 0  — all 7 #[ignore]d MockProver tests PASS at k=23 (2026-06-29)
 [ ] Phase 1  — external audit report, no open Critical/High   ← NEXT GATE
 [ ] Phase 2  — PSE SRS pinned; readiness [1d/8] green
-[ ] Phase 3  — real Halo2Verifier.sol + Halo2VerifyingKey.sol (k=23, non-zero fixed); VK repr matches prover; readiness [1b/8] green
+[ ] Phase 3  — generation TOOL functional (✅ 2026-06-29); remaining: --emit with pinned SRS + confirm VK match
 [ ] Phase 4  — real proof mints on local anvil; tampered proof reverts
 [ ] Phase 5  — real claim mints on Base Sepolia; nullifier replay reverts
 [ ] Phase 6  — mainnet deploy + Basescan verification; CLI constants updated

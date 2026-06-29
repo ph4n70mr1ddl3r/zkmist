@@ -18,6 +18,16 @@ num-bigint = "0.4"
 num-traits = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 
+[features]
+# Marker feature enabled ONLY by `gen-production-verifier` (its separate
+# workspace compiles this crate against the PSE git fork of halo2, which has a
+# divergent `ConstraintSystem` API). When enabled, the `compat` shim routes
+# `query_fixed`/`lookup`/etc. to the git-fork call signatures; when disabled
+# (the main workspace: cli/tools/tests), the crates.io 0.3.x signatures are
+# used. NEVER enable this in the main workspace — it would break the prover.
+default = []
+git-fork-api = []
+
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"

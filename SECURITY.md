@@ -70,15 +70,16 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
 - [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **✅ all PASS at k=23 (2026-06-29 confirmation run)**. Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. Measured: ~2:11–2:31 wall, ~19.5 GiB peak RSS each (release).
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including the carry-chain mod-p reduction: `carry_chain_columns` + `reduce_canonical_mod_p`)
-- [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
+- [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** from the real circuit VK. The generation TOOL is functional (2026-06-29): `gen-production-verifier` runs the REAL `ZKMistV2Claim::synthesize` via `keygen_vk` (confirmed 15 fixed + 20 permutation commitments, k=23, against a dev SRS). The remaining steps are operational — pin the PSE SRS, emit, confirm the VK match:
   ```
-  cargo run --release -p zkmist-tools --bin gen-verifier -- --output contracts/src/Halo2Verifier.sol
-  # Then use halo2-solidity-verifier with the generated Halo2Verifier.vk.bin
-  # See: https://github.com/privacy-scaling-explorations/halo2-solidity-verifier
+  cd gen-production-verifier && cargo build --release
+  # dry run (prints VK fingerprint, writes nothing):
+  cargo run --release -- --k 23 --params-file <pinned PSE SRS>
+  # after confirming the fingerprint matches tools/gen-verifier (same SRS), emit:
+  cargo run --release -- --k 23 --params-file <pinned PSE SRS> --emit
   ```
-  **IMPORTANT**: The current `Halo2VerifyingKey.sol` has k=21 (0x15) with all-zero fixed commitments.
-  This is from a partial circuit configuration, NOT the full production circuit (which needs **k=23**).
-  Must regenerate from the full circuit — the E2E MockProver test now passes at k=23.
+  See [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 3. The version split (crates.io vs PSE-git-fork halo2) is resolved by a digest-preserving compat shim — no circuit duplication, no prover changes.
+  **IMPORTANT**: The CURRENT `contracts/src/Halo2VerifyingKey.sol` is still the placeholder (k=21 / 0x15, all-zero fixed commitments). The tool refuses to overwrite it without `--emit` + a pinned SRS, so it cannot accidentally brick the airdrop.
 - [ ] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol`
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```

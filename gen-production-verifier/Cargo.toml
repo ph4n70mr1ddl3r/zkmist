@@ -11,6 +11,14 @@ name = "gen-production-verifier"
 path = "src/main.rs"
 
 [dependencies]
+# The REAL ZKMist circuit, compiled against the PSE git fork of halo2 in THIS
+# separate workspace. The `[patch.crates-io]` below forces zkmist-circuits's
+# `halo2_proofs = "0.3.0"` requirement to resolve to the PSE git fork (not the
+# crates.io 0.3.2 registry version), so this crate's halo2 types unify with
+# halo2_solidity_verifier's and `keygen_vk` accepts the real `ZKMistV2Claim`.
+# A cfg-gated compat shim in zkmist-circuits handles the fork-API call-site
+# differences; see zkmist-circuits's `git-fork-api` feature, enabled here.
+zkmist-circuits = { path = "../circuits", features = ["git-fork-api"] }
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0" }
 halo2curves = "0.6"
 ff = "0.13"
@@ -18,3 +26,14 @@ rand = "0.8"
 dirs = "5"
 sha2 = "0.10"
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }
+
+# Force EVERY `halo2_proofs = "0.3.x"` resolution in this workspace (including
+# zkmist-circuits's) to the PSE git fork v0.3.0, so all halo2 types unify.
+# Without this, Cargo keeps BOTH the git (0.3.0) and registry (0.3.2) versions;
+# zkmist-circuits then compiles against the registry fork, whose `ZKMistV2Claim`
+# type is incompatible with the git-fork `keygen_vk` / `SolidityGenerator` used
+# below. Scoped to THIS separate workspace only — the main zkmist workspace is
+# unaffected and stays on crates.io halo2 (where the CLI prover and the k=23
+# MockProver tests are validated).
+[patch.crates-io]
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0" }

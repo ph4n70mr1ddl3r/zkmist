@@ -41,7 +41,7 @@ impl RangeCheckConfig {
         let s_decompose = meta.selector();
 
         // Lookup gate: advice[cur] must appear in the 8-bit range table.
-        meta.lookup(|meta| {
+        crate::compat::lookup(meta, "range8", |meta| {
             let _s = meta.query_selector(s_decompose);
             let val = meta.query_advice(advice, Rotation::cur());
             // The selector gates the lookup — only active rows are checked.

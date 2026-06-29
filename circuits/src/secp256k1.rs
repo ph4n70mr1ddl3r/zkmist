@@ -546,7 +546,7 @@ impl Secp256k1Config {
         meta.create_gate("secp_add_fixed", |meta| {
             let s = meta.query_selector(s_add_fixed);
             let a = meta.query_advice(advice[0], Rotation::cur());
-            let f = meta.query_fixed(fixed);
+            let f = crate::compat::query_fixed(meta, fixed);
             let b = meta.query_advice(advice[1], Rotation::cur());
             vec![s * (a + f - b)]
         });
@@ -555,7 +555,7 @@ impl Secp256k1Config {
         meta.create_gate("secp_mul_fixed", |meta| {
             let s = meta.query_selector(s_mul_fixed);
             let a = meta.query_advice(advice[0], Rotation::cur());
-            let f = meta.query_fixed(fixed);
+            let f = crate::compat::query_fixed(meta, fixed);
             let b = meta.query_advice(advice[1], Rotation::cur());
             vec![s * (a * f - b)]
         });

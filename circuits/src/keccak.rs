@@ -248,7 +248,7 @@ impl KeccakConfig {
             let bits: Vec<_> = (0..8)
                 .map(|i| meta.query_advice(advice[i], Rotation::cur()))
                 .collect();
-            let byte_val = meta.query_fixed(fixed);
+            let byte_val = crate::compat::query_fixed(meta, fixed);
 
             // Weighted sum: bit[0]*1 + bit[1]*2 + ... + bit[7]*128
             let weights = [1u64, 2, 4, 8, 16, 32, 64, 128];

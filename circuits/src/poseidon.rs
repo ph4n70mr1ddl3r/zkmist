@@ -261,7 +261,7 @@ impl PoseidonConfig {
         meta.create_gate("add_fix", |meta| {
             let s = meta.query_selector(s_add_fix);
             let a = meta.query_advice(advice[0], Rotation::cur());
-            let f = meta.query_fixed(fixed);
+            let f = crate::compat::query_fixed(meta, fixed);
             let b = meta.query_advice(advice[1], Rotation::cur());
             vec![s * (a + f - b)]
         });
@@ -270,7 +270,7 @@ impl PoseidonConfig {
         meta.create_gate("mul_fix", |meta| {
             let s = meta.query_selector(s_mul_fix);
             let a = meta.query_advice(advice[0], Rotation::cur());
-            let f = meta.query_fixed(fixed);
+            let f = crate::compat::query_fixed(meta, fixed);
             let b = meta.query_advice(advice[1], Rotation::cur());
             vec![s * (a * f - b)]
         });

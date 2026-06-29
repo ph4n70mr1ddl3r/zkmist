@@ -103,12 +103,12 @@ impl Circuit<Fr> for MultiplyCircuit {
             let s = meta.query_selector(s_mul);
             let a = meta.query_advice(advice, Rotation::cur());
             let b = meta.query_advice(advice, Rotation::next());
-            let c = meta.query_fixed(constant);
+            let c = crate::compat::query_fixed(meta, constant);
             vec![s * (a * c - b)]
         });
 
         // Lookup: advice[0] must be in the range table
-        meta.lookup(|meta| {
+        crate::compat::lookup(meta, "trivial_range", |meta| {
             let a = meta.query_advice(advice, Rotation::cur());
             vec![(a, table)]
         });

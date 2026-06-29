@@ -448,7 +448,7 @@ No special permissions or contract setup is required.
 >
 > **Remaining blockers before deployment:**
 > - Regenerate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol` from the full circuit VK (at k=23) using `halo2-solidity-verifier`
-> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 (0x15) with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=23). The `gen-production-verifier` tool exists for this but its `synthesize()` is a stub (see that crate's docs) — porting the full synthesize (or eliminating the halo2 version split) is the open task.
+> - **NOTE**: Current `Halo2VerifyingKey.sol` has k=21 (0x15) with all-zero fixed commitments (placeholder). Must regenerate from the full production circuit (k=23). The `gen-production-verifier` tool now runs the REAL `ZKMistV2Claim::synthesize` via `keygen_vk` (2026-06-29: confirmed 15 fixed + 20 permutation commitments against a dev SRS, k=23) — the version-split blocker is resolved by a digest-preserving compat shim, no circuit duplication. Remaining: pin the PSE SRS (Phase 2), run with `--emit`, confirm the VK `transcript_repr` matches `tools/gen-verifier` under the same SRS (see [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 3).
 > - **External security review** of circuit (especially secp256k1 and Keccak gadgets)
 > - Testnet deployment on Base Sepolia
 >

@@ -7,6 +7,7 @@
 //! 4. **Nullifier**: `poseidon(Fr(key), Fr(domain))` with V2 domain separator
 //! 5. **Non-zero recipient**: Rejects address(0)
 
+pub mod compat;
 pub mod gadgets;
 // Keccak bit-level operations use index-based loops for clarity
 // with lane/byte indexing. Complex types are inherent to circuit code.
@@ -220,6 +221,22 @@ pub struct ZKMistV2Claim {
     pub merkle_root: Fr,
     pub nullifier: Fr,
     pub recipient: Fr,
+}
+
+impl Default for ZKMistV2Claim {
+    /// All-zero instance, equivalent to `Circuit::without_witnesses`.
+    /// Used by `keygen_vk` in `gen-production-verifier` (keygen ignores witness
+    /// values, so an empty instance is sufficient and canonical).
+    fn default() -> Self {
+        Self {
+            private_key: [0u8; 32],
+            siblings: [[0u8; 32]; TREE_DEPTH],
+            path_indices: [0u8; TREE_DEPTH],
+            merkle_root: Fr::ZERO,
+            nullifier: Fr::ZERO,
+            recipient: Fr::ZERO,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
