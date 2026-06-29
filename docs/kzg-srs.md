@@ -74,16 +74,21 @@ grid of `2^params.k()` rows. Consequences of a wrong-k file:
   verifier (which embeds the VK’s `k`) does not expect → proofs fail on-chain.
 
 The prover now enforces this with `ensure_params_k` (a mismatch aborts with a
-message naming both k values, the memory multiplier, and this doc) — but the
-**pinned file itself must be k=23**, so the deployer’s extraction step (§2.1)
-must target exactly k=23.
+message naming both k values, the memory multiplier, and this doc) — so the
+**pinned file itself must be k=23**.
 
-> ⚠️ **Truncation is not available via the halo2 0.3.x public API.**
-> `Params.g_lagrange` is `pub(crate)`, and there is no `truncate`/`downsize`
-> method, so a tool **in this repo cannot** downsize a larger halo2 params
-> file to k=23. You must either (a) extract directly at k=23 via the ceremony’s
-> phase2 tooling (§2.1), or (b) fork halo2 to expose `g_lagrange` and write a
-> truncation tool. Option (a) is strongly preferred.
+> ✅ **Truncation IS supported (correcting an earlier note).** This doc
+> previously stated truncation was impossible because `Params.g_lagrange` is
+> `pub(crate)`. That is out of date for the PSE halo2 fork (tag v0.3.0): the
+> `Params` trait exposes a public **`downsize(&mut self, k)`** method that
+> truncates the monomial basis AND recomputes the Lagrange basis via halo2's
+> own audited `g_to_lagrange`. The repo ships **`tools/src/truncate_srs.rs`**
+> (CLI: `truncate-srs`) which `read`s a larger-k file, calls `downsize(23)`,
+> and `write`s the result — reusing halo2's own serialization, no private-field
+> access. It is mathematically sound: a KZG SRS is the power vector
+> `[1, τ, τ², …, τ^(n-1)]·G₁`, so the first `2^23` powers of a k=24/25/26 SRS
+> ARE the k=23 SRS for the same trapdoor τ — identical ceremony security. See
+> §2.1 below for the one-command path (`--truncate-from`).
 
 ---
 
@@ -109,16 +114,56 @@ the target size:
   the perpetual-powers-of-tau transcript. This is the only path that avoids
   trusting a third party's conversion AND gives the exact k=23.
 - **(Alternative) Download a pre-converted halo2 params file** published by a
-  reputable source (PSE or a major halo2 project) at **exactly k=23**. Many
-  projects publish at k=21, 22, 25, 26 — **verify the published file's k is
-  exactly 23** before pinning; a different k is rejected by `ensure_params_k`.
-  If only a larger-k file is available, you must run phase2 extraction yourself
-  at k=23 (you cannot truncate it — §1.1).
+  reputable source (PSE or a major halo2 project). Many projects publish at
+  k=21, 22, 25, 26 — **a different k is now fine**: if the published k is > 23,
+  downsize it to k=23 with `truncate-srs` (§1.1). If it is < 23 it is too small
+  and cannot be used.
 
 > ⚠️ **Trust note:** the phase2 extraction is deterministic, so two independent
 > parties extracting at k=23 from the same transcript must produce
 > byte-identical output. Cross-check your digest against another project's
 > k=23 file if one exists.
+
+#### Automating the fetch + verify (`scripts/fetch-pse-srs.sh`)
+
+Whichever source you choose, **run it through `scripts/fetch-pse-srs.sh`**
+before pinning. The script downloads a candidate file (or several, for
+independent cross-checking), verifies its SHA-256 against a digest you supply,
+then runs `tools/src/verify_srs.rs` which parses it through the *same*
+`ParamsKZG::<Bn256>::read` the prover uses, asserts `k == 23`, asserts the G1
+point count, and — if you pass two `--url` flags — asserts the two downloads
+are byte-identical. On success it prints the exact `constants.rs` snippet.
+
+```bash
+# Self-test the plumbing (no download, uses a forgeable dev file):
+./scripts/fetch-pse-srs.sh --self-test
+
+# Real fetch, single source + an independently-obtained digest:
+./scripts/fetch-pse-srs.sh \
+    --url https://<publisher>/params-k23.bin \
+    --sha256 <64-hex digest you obtained independently> \
+    --out params-k23.bin
+
+# Strongest: two independent publishers, cross-checked byte-for-byte:
+./scripts/fetch-pse-srs.sh \
+    --url https://publisher-A/params-k23.bin \
+    --url https://publisher-B/params-k23.bin \
+    --sha256 <digest> \
+    --out params-k23.bin
+
+# If only a LARGER k (e.g. k=24/25/26) is available from a reputable source,
+# downsize to exactly k=23 via halo2's own audited Params::downsize (§1.1).
+# Same trapdoor τ, same ceremony security — only unused high-degree powers
+# are dropped. Deterministic, so the pinned hash is reproducible:
+./scripts/fetch-pse-srs.sh \
+    --truncate-from params-k24.bin \
+    --out params-k23.bin
+```
+
+The script **does not choose the source for you** — picking the URL is a
+trust decision (it lists candidate publishers in `--help`). The verification
+is mandatory and one-sided: a mismatched hash, a wrong `k`, or a divergent
+second source aborts with a non-zero exit and installs nothing.
 
 ### 2.2 Independently verify the file
 

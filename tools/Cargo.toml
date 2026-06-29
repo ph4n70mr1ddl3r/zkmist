@@ -24,6 +24,10 @@ path = "src/readiness.rs"
 name = "verify-srs"
 path = "src/verify_srs.rs"
 
+[[bin]]
+name = "truncate-srs"
+path = "src/truncate_srs.rs"
+
 [dependencies]
 zkmist-merkle-tree = { path = "../merkle-tree" }
 zkmist-circuits = { path = "../circuits" }
