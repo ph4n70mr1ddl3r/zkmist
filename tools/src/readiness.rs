@@ -18,9 +18,21 @@
 //! Usage:
 //!
 //! ```sh
-//! cargo run -p zkmist-tools --bin readiness
+//! # PR gate (advisory on known deploy blockers; fails only on regressions):
 //! cargo run -p zkmist-tools --bin readiness -- --skip-slow
+//! # Deploy gate (fails on ANY blocker, including the known ones):
+//! cargo run -p zkmist-tools --bin readiness -- --strict
 //! ```
+//!
+//! # Known-blocker / regression split
+//
+//! A handful of checks are EXPECTED to fail until the operator completes a
+//! documented pre-deploy step — VK regeneration (`1b`), SRS hash pinning
+//! (`1d`), and the post-deploy `AIRDROP_CONTRACT` placeholder (`4`). On a PR
+//! (default mode) these are counted as *known blockers* and do NOT fail the
+//! run, so the gate stays green unless something that should be green truly
+//! *regresses*. Under `--strict` (the manual/scheduled deploy gate) every
+//! known blocker also fails the run, so you cannot deploy past them.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +55,11 @@ fn find_project_root() -> Option<PathBuf> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let skip_slow = args.iter().any(|a| a == "--skip-slow");
+    // `--strict` fails the run on KNOWN deployment blockers (VK regen, SRS
+    // pinning, placeholder AIRDROP_CONTRACT) too — use it for the manual /
+    // scheduled deploy gate. The default (PR) mode treats those blockers as
+    // advisory so the gate is green unless something genuinely *regresses*.
+    let strict = args.iter().any(|a| a == "--strict");
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("ZKMist Pre-Deployment Readiness Checker");
@@ -51,6 +68,7 @@ fn main() {
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --skip-slow   Skip slow checks (MockProver, forge test)");
+        eprintln!("  --strict      Fail on KNOWN deploy blockers too (deploy gate)");
         eprintln!("  --help        Show this help");
         std::process::exit(0);
     }
@@ -66,6 +84,9 @@ fn main() {
 
     let mut passed = 0usize;
     let mut failed = 0usize;
+    // Failures from checks tagged as known deployment blockers (VK regen, SRS
+    // pinning, placeholder AIRDROP_CONTRACT). Advisory unless `--strict`.
+    let mut known_blockers = 0usize;
     let mut skipped = 0usize;
 
     // ── Check 1: Halo2Verifier.sol integrity ─────────────────────────
@@ -139,7 +160,7 @@ fn main() {
             eprintln!(
                 "         Fix: regenerate with gen-production-verifier (now loads range tables)"
             );
-            failed += 1;
+            record_known_blocker(&mut failed, &mut known_blockers, strict);
         } else {
             eprintln!("      ⚠️  Halo2VerifyingKey.sol may contain placeholder VK data");
             eprintln!("         Regenerate after full E2E MockProver test passes");
@@ -164,7 +185,7 @@ fn main() {
                     "         Fix: regenerate VK with gen-production-verifier --k {}",
                     exp
                 );
-                failed += 1;
+                record_known_blocker(&mut failed, &mut known_blockers, strict);
             }
             (Some(vk), None) => {
                 eprintln!(
@@ -241,7 +262,7 @@ fn main() {
                 "         See docs/kzg-srs.md to obtain, independently verify, and pin the PSE"
             );
             eprintln!("         perpetual powers-of-tau halo2 params file before mainnet.");
-            failed += 1;
+            record_known_blocker(&mut failed, &mut known_blockers, strict);
         }
     }
 
@@ -338,8 +359,10 @@ fn main() {
         eprintln!(
             "      ⚠️  Placeholders found (expected before deployment, must fix before mainnet)"
         );
-        // Don't count as failure — placeholders are expected pre-deployment
-        skipped += 1;
+        // Placeholders are a known pre-deploy blocker (AIRDROP_CONTRACT is
+        // filled in only after deployment). Advisory on PRs; fails the run
+        // under --strict (deploy gate).
+        record_known_blocker(&mut failed, &mut known_blockers, strict);
     } else {
         eprintln!("      ✅ No placeholder values");
         passed += 1;
@@ -486,19 +509,42 @@ fn main() {
     eprintln!();
     eprintln!("════════════════════════════════════════════════════════════");
     eprintln!(
-        "  Results: {} passed, {} failed, {} skipped",
-        passed, failed, skipped
+        "  Results: {} passed, {} regression(s), {} known blocker(s), {} skipped",
+        passed, failed, known_blockers, skipped
     );
     eprintln!("════════════════════════════════════════════════════════════");
 
+    // Exit policy:
+    //   - A *regression* (failed > 0) always fails the run — on a PR this is
+    //     the signal that a check which should be green has broken.
+    //   - A *known deployment blocker* (VK regen, SRS pinning, placeholder
+    //     AIRDROP_CONTRACT) only fails under `--strict` (the deploy gate). On
+    //     a PR it is advisory, so the gate stays green while the documented
+    //     pre-deploy steps are still pending.
     if failed > 0 {
         eprintln!();
         eprintln!(
-            "  ❌ NOT READY for deployment — fix {} failing check(s)",
+            "  ❌ NOT READY — {} regression(s) detected (not counting known blockers)",
             failed
         );
         std::process::exit(1);
-    } else {
+    }
+    if known_blockers > 0 {
+        eprintln!();
+        eprintln!(
+            "  ⚠️  {} known deployment blocker(s) remain (VK regen / SRS pin / post-deploy address).",
+            known_blockers
+        );
+        if strict {
+            eprintln!("  ❌ Failing under --strict — resolve the blockers before deploying.");
+            std::process::exit(1);
+        }
+        eprintln!("  (advisory on PRs; run with --strict to gate the deploy)");
+        std::process::exit(0);
+    }
+
+    // Fully green — no regressions, no known blockers.
+    {
         eprintln!();
         eprintln!("  ✅ All automated checks passed!");
         eprintln!();
@@ -528,6 +574,18 @@ fn main() {
         eprintln!("    │ [ ] Set up monitoring/alerting (BaseScan, Tenderly, Dune)");
         eprintln!("    │ [ ] Consider replacing hand-rolled secp256k1 with audited library");
         eprintln!("    └──────────────────────────────────────────────────────────────");
+    }
+}
+
+/// Record a *known deployment blocker* (VK regen, SRS pinning, or the
+/// post-deploy `AIRDROP_CONTRACT` placeholder). On a PR (default) these are
+/// advisory so the gate only fails on genuine regressions; under `--strict`
+/// (the manual/scheduled deploy gate) they also fail the run.
+fn record_known_blocker(failed: &mut usize, known_blockers: &mut usize, strict: bool) {
+    if strict {
+        *failed += 1;
+    } else {
+        *known_blockers += 1;
     }
 }
 
@@ -712,6 +770,22 @@ mod tests {
             .parent()
             .expect("tools/ should have a parent dir")
             .to_path_buf()
+    }
+
+    // ── record_known_blocker (PR-advisory vs --strict deploy gate) ───────
+
+    #[test]
+    fn test_record_known_blocker_is_advisory_by_default() {
+        let (mut failed, mut known) = (0usize, 0usize);
+        record_known_blocker(&mut failed, &mut known, false);
+        assert_eq!((failed, known), (0, 1));
+    }
+
+    #[test]
+    fn test_record_known_blocker_fails_under_strict() {
+        let (mut failed, mut known) = (0usize, 0usize);
+        record_known_blocker(&mut failed, &mut known, true);
+        assert_eq!((failed, known), (1, 0));
     }
 
     // ── extract_vk_k: must read the VALUE, not the OFFSET ───────────────

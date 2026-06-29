@@ -87,9 +87,10 @@ fn cached_params_path(k: u32) -> Result<std::path::PathBuf, String> {
 /// (`~/.zkmist/cache/v2_params_k{k}.bin`) left over from a previous version,
 /// or a pinned `KZG_SRS_URL` pointing at a file extracted at the wrong k.
 fn ensure_params_k(
-    params: &halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>,
+    params: &halo2_proofs::poly::kzg::commitment::ParamsKZG<halo2curves::bn256::Bn256>,
     expected_k: u32,
 ) -> Result<(), String> {
+    use halo2_proofs::poly::commitment::Params as _;
     let actual_k = params.k();
     if actual_k == expected_k {
         return Ok(());
@@ -123,9 +124,9 @@ fn ensure_params_k(
 /// download. Dev/test ONLY — proofs are forgeable by the operator.
 fn load_or_download_params(
     k: u32,
-) -> Result<halo2_proofs::poly::commitment::Params<halo2curves::bn256::G1Affine>, String> {
+) -> Result<halo2_proofs::poly::kzg::commitment::ParamsKZG<halo2curves::bn256::Bn256>, String> {
     use halo2_proofs::poly::commitment::Params;
-    use halo2curves::bn256::G1Affine;
+    use halo2_proofs::poly::kzg::commitment::ParamsKZG;
     use std::io::{BufReader, BufWriter};
 
     let path = cached_params_path(k)?;
@@ -155,21 +156,25 @@ fn load_or_download_params(
         if path.exists() {
             eprintln!("         Loading KZG SRS from {}...", path.display());
             match std::fs::File::open(&path) {
-                Ok(file) => match Params::<G1Affine>::read(&mut BufReader::new(file)) {
-                    Ok(params) => {
-                        ensure_params_k(&params, k)?;
-                        eprintln!(
-                            "         ✓ KZG SRS loaded{}",
-                            if production {
-                                " (SHA-256 verified)"
-                            } else {
-                                ""
-                            }
-                        );
-                        return Ok(params);
+                Ok(file) => {
+                    match ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(file)) {
+                        Ok(params) => {
+                            ensure_params_k(&params, k)?;
+                            eprintln!(
+                                "         ✓ KZG SRS loaded{}",
+                                if production {
+                                    " (SHA-256 verified)"
+                                } else {
+                                    ""
+                                }
+                            );
+                            return Ok(params);
+                        }
+                        Err(e) => {
+                            eprintln!("         ⚠️  Cached SRS unreadable ({}); re-fetching", e)
+                        }
                     }
-                    Err(e) => eprintln!("         ⚠️  Cached SRS unreadable ({}); re-fetching", e),
-                },
+                }
                 Err(e) => {
                     eprintln!("         ⚠️  Cannot open cached SRS ({}); re-fetching", e)
                 }
@@ -188,7 +193,7 @@ fn load_or_download_params(
         eprintln!("         ✓ Downloaded and verified ({} bytes)", bytes);
         let file =
             std::fs::File::open(&path).map_err(|e| format!("Cannot open downloaded SRS: {e}"))?;
-        let params = Params::<G1Affine>::read(&mut BufReader::new(file))
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(file))
             .map_err(|e| format!("Downloaded SRS failed to parse: {e}"))?;
         ensure_params_k(&params, k)?;
         return Ok(params);
@@ -200,7 +205,7 @@ fn load_or_download_params(
         eprintln!(
             "            Do NOT use proofs from this SRS on mainnet — they are forgeable by you."
         );
-        let params = Params::<G1Affine>::new(k);
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(k, &mut rand::rngs::OsRng);
         // Cache for dev convenience (no hash to pin).
         if let Ok(file) = std::fs::File::create(&path) {
             if params.write(&mut BufWriter::new(file)).is_err() {
@@ -288,11 +293,18 @@ pub fn generate_v2_proof(
     };
 
     // ── Generate proof ───────────────────────────────────────────────
+    // Real KZG (PSE halo2 fork): BN254 commitment + Keccak256 transcript, so
+    // the proof verifies in Halo2Verifier.sol on-chain (which uses the same
+    // Keccak256 transcript — see squeeze_challenge in the verifier source).
+    use halo2_proofs::transcript::TranscriptWriterBuffer as _;
     use halo2_proofs::{
-        plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
-        transcript::{Blake2bRead, Blake2bWrite, Challenge255},
+        plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
+        poly::kzg::{
+            multiopen::{ProverSHPLONK, VerifierSHPLONK},
+            strategy::SingleStrategy,
+        },
     };
-    use halo2curves::bn256::G1Affine;
+    use halo2_solidity_verifier::Keccak256Transcript;
 
     let k = CIRCUIT_K;
     let start = std::time::Instant::now();
@@ -319,8 +331,8 @@ pub fn generate_v2_proof(
 
     eprintln!("      [3/5] Creating Halo2-KZG proof...");
     let prove_start = std::time::Instant::now();
-    let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<G1Affine>>::init(vec![]);
-    create_proof(
+    let mut transcript = Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(Vec::new());
+    create_proof::<_, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
         &[circuit],
@@ -341,11 +353,11 @@ pub fn generate_v2_proof(
     // ── Verify locally before saving ─────────────────────────────────
     eprintln!("      [4/5] Verifying proof locally...");
     let verify_start = std::time::Instant::now();
-    let strategy = SingleVerifier::new(&params);
+    let strategy = SingleStrategy::new(&params);
     let mut read_transcript =
-        Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
+        Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(proof_bytes.as_slice());
     let vk_ref = pk.get_vk();
-    verify_proof(
+    verify_proof::<_, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
         &params,
         vk_ref,
         strategy,
@@ -449,10 +461,10 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
     let start = std::time::Instant::now();
 
     use halo2_proofs::{
-        plonk::{keygen_vk, verify_proof, SingleVerifier},
-        transcript::{Blake2bRead, Challenge255},
+        plonk::{keygen_vk, verify_proof},
+        poly::kzg::{multiopen::VerifierSHPLONK, strategy::SingleStrategy},
     };
-    use halo2curves::bn256::G1Affine;
+    use halo2_solidity_verifier::Keccak256Transcript;
 
     // Create a dummy circuit to derive the VK
     let circuit = ZKMistV2Claim {
@@ -511,11 +523,11 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
 
     // Verify the proof
     eprintln!("  Verifying proof cryptographically...");
-    let strategy = SingleVerifier::new(&params);
+    let strategy = SingleStrategy::new(&params);
     let mut read_transcript =
-        Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
+        Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(proof_bytes.as_slice());
 
-    match verify_proof(
+    match verify_proof::<_, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
         &params,
         &vk,
         strategy,
@@ -544,15 +556,14 @@ pub fn verify_v2_proof(proof_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use halo2_proofs::poly::commitment::Params;
-    use halo2curves::bn256::G1Affine;
+    use halo2_proofs::poly::kzg::commitment::ParamsKZG;
 
     /// `ensure_params_k` accepts a params at the expected k (the happy path
     /// every production run takes).
     #[test]
     fn test_ensure_params_k_match() {
-        // Params::new(8) is tiny (256 rows) — instant, no memory risk.
-        let params = Params::<G1Affine>::new(8);
+        // ParamsKZG::setup(8) is tiny (256 rows) — instant, no memory risk.
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(8, &mut rand::rngs::OsRng);
         assert!(ensure_params_k(&params, 8).is_ok());
     }
 
@@ -562,7 +573,7 @@ mod tests {
     /// would otherwise silently produce on-chain-invalid (or OOM-causing) proofs.
     #[test]
     fn test_ensure_params_k_mismatch_rejects() {
-        let params = Params::<G1Affine>::new(10); // file claims k=10
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(10, &mut rand::rngs::OsRng); // file claims k=10
         let err = ensure_params_k(&params, 8).expect_err("mismatch must reject");
         // Message must surface both k values and the memory blowup factor.
         assert!(
@@ -714,14 +725,20 @@ mod tests {
         // Helper: verify the proof bytes against given public inputs.
         let verify = |inputs: &[halo2curves::bn256::Fr]| -> Result<(), halo2_proofs::plonk::Error> {
             use halo2_proofs::{
-                plonk::{verify_proof, SingleVerifier},
-                transcript::{Blake2bRead, Challenge255},
+                plonk::verify_proof,
+                poly::kzg::{multiopen::VerifierSHPLONK, strategy::SingleStrategy},
             };
-            use halo2curves::bn256::G1Affine;
-            let strategy = SingleVerifier::new(&params);
+            use halo2_solidity_verifier::Keccak256Transcript;
+            let strategy = SingleStrategy::new(&params);
             let mut rt =
-                Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof_bytes.as_slice());
-            verify_proof(&params, &vk, strategy, &[&[inputs]], &mut rt)
+                Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(proof_bytes.as_slice());
+            verify_proof::<_, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+                &params,
+                &vk,
+                strategy,
+                &[&[inputs]],
+                &mut rt,
+            )
         };
 
         // ── [2] Positive: correct public inputs MUST verify. ──

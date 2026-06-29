@@ -15,8 +15,7 @@
 //! Usage: `cargo run --release -p zkmist-cli --example prime_dev_srs -- [k]`
 //! (k defaults to 23).
 
-use halo2_proofs::poly::commitment::Params;
-use halo2curves::bn256::G1Affine;
+use halo2_proofs::poly::{commitment::Params as _, kzg::commitment::ParamsKZG};
 
 fn main() {
     let k: u32 = std::env::args()
@@ -60,7 +59,7 @@ fn main() {
         }
     });
 
-    let params = Params::<G1Affine>::new(k);
+    let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(k, &mut rand::rngs::OsRng);
     built.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = hb.join();
     let gen_secs = t.elapsed().as_secs_f64();

@@ -18,7 +18,10 @@
 use std::path::PathBuf;
 
 use ff::Field;
-use halo2_proofs::{plonk::keygen_vk, poly::commitment::Params};
+use halo2_proofs::{
+    plonk::keygen_vk,
+    poly::{commitment::Params as ParamsTrait, kzg::commitment::ParamsKZG},
+};
 use halo2curves::bn256::G1Affine;
 use zkmist_circuits::ZKMistV2Claim;
 
@@ -26,6 +29,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_path = PathBuf::from("../contracts/src/Halo2Verifier.sol");
     let mut k: u32 = 23; // MUST match CIRCUIT_K in cli/src/halo2_prover.rs (k=23 after the secp256k1 point_add_mixed optimization halved the witness)
+    let mut params_file: Option<PathBuf> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -45,6 +49,15 @@ fn main() {
                     i += 2;
                 } else {
                     eprintln!("Usage: gen-verifier --k <power>");
+                    std::process::exit(1);
+                }
+            }
+            "--params-file" => {
+                if i + 1 < args.len() {
+                    params_file = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    eprintln!("Usage: gen-verifier --params-file <path>");
                     std::process::exit(1);
                 }
             }
@@ -83,7 +96,17 @@ fn main() {
         recipient: halo2curves::bn256::Fr::ONE,
     };
 
-    let params: Params<G1Affine> = Params::new(k);
+    let params: ParamsKZG<halo2curves::bn256::Bn256> = if let Some(ref p) = params_file {
+        use std::io::BufReader;
+        let f = std::fs::File::open(p)
+            .unwrap_or_else(|e| panic!("open params file {}: {}", p.display(), e));
+        ParamsKZG::read(&mut BufReader::new(f))
+            .unwrap_or_else(|e| panic!("read params file {}: {}", p.display(), e))
+    } else {
+        eprintln!("  ⚠️  no --params-file: generating a RANDOM dev SRS (not for mainnet)");
+        ParamsKZG::setup(k, &mut rand::rngs::OsRng)
+    };
+    assert_eq!(params.k(), k, "params k ({}) != --k {}", params.k(), k);
     let vk = keygen_vk(&params, &circuit).expect("Failed to generate VK");
 
     eprintln!("  ✓ Verification key generated");

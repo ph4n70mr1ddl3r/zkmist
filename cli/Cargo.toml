@@ -14,9 +14,13 @@ clap = { version = "4", features = ["derive"] }
 alloy = { version = "1", features = ["providers", "signer-local", "contract", "transport-http"] }
 # ZK proof generation — Halo2-KZG
 zkmist-circuits = { path = "../circuits" }
-halo2_proofs = "0.3.0"
-halo2curves = "0.6.0"
+halo2_proofs.workspace = true
+halo2curves.workspace = true
 rand = "0.8"
+# KZG verifier transcript — Keccak256-based, MUST match Halo2Verifier.sol's
+# squeeze_challenge. Sourced from the vendored halo2-solidity-verifier so the
+# prover and the on-chain verifier share one transcript implementation.
+halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }
 # Merkle tree (shared library)
 zkmist-merkle-tree = { path = "../merkle-tree" }
 # Crypto primitives

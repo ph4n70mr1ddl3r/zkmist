@@ -614,6 +614,144 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
     Ok(())
 }
 
+// ── Command: gen-roundtrip-fixture ────────────────────────────────────────
+//
+// Generates the fixture consumed by the Forge on-chain round-trip test
+// (contracts/test/ZKM.realroundtrip.t.sol). It builds a FULL-DEPTH
+// (TREE_DEPTH=26) eligibility tree containing the test-vector address,
+// generates a REAL Halo2-KZG proof against it, and writes a single JSON the
+// Forge test can parse straight into `ZKMAirdrop.claim(proof, nullifier,
+// recipient)`.
+//
+// This is the prover side of the "real-KZG → on-chain verifier" loop that
+// has never been exercised (see SECURITY.md). Once the on-chain VK is
+// regenerated (gen-production-verifier at k=23) and this fixture exists,
+// RUN_REAL_ROUNDTRIP=1 forge test performs the first ever honest on-chain
+// verification.
+//
+// Requires either a pinned PSE KZG SRS (KZG_SRS_URL/KZG_SRS_SHA256 in
+// constants.rs) or ZKMIST_DEV_SRS=1 for a local forgeable SRS (dev/test
+// only — the proof verifies but is forgeable, so it validates the verifier
+// code path, not soundness).
+pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
+    use serde::Serialize;
+    use zkmist_circuits::merkle::TREE_DEPTH;
+    use zkmist_merkle_tree::build_tree_streaming_with_depth;
+
+    eprintln!("ZKMist real-KZG round-trip fixture generator");
+    eprintln!("─\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    eprintln!(
+        "Builds a full-depth (TREE_DEPTH={}) eligibility tree containing the",
+        TREE_DEPTH
+    );
+    eprintln!("test-vector address, generates a REAL Halo2-KZG proof, and writes a");
+    eprintln!("fixture JSON for contracts/test/ZKM.realroundtrip.t.sol.");
+    eprintln!();
+    eprintln!("Requires a pinned PSE KZG SRS (constants.rs) OR ZKMIST_DEV_SRS=1.");
+    eprintln!();
+
+    // Standard test-vector private key (matches `zkmist bench` + the circuit's
+    // address test: 0xfcad0b19bb29d4674531d6f115237e16afce377c).
+    let key: [u8; 32] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
+    ];
+    let address = derive_address(&key)?;
+    eprintln!(
+        "[1/4] Eligible address (test vector): {}",
+        format_address(&address)
+    );
+
+    // Full-depth tree so the proof's path length matches the production
+    // TREE_DEPTH the circuit expects (a depth-4 tree would pad the upper 22
+    // levels and could never match the real root).
+    eprintln!(
+        "[2/4] Building full-depth Merkle tree (depth={})...",
+        TREE_DEPTH
+    );
+    let addresses = vec![address];
+    let (root, proof) = build_tree_streaming_with_depth(&addresses, TREE_DEPTH, Some(0));
+    let (siblings_ark, path_indices_u8) = proof.ok_or("proof extraction failed")?;
+    let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
+    let mut path_arr = [0u8; TREE_DEPTH];
+    let copy_len = siblings_ark.len().min(TREE_DEPTH);
+    sibling_arr[..copy_len].copy_from_slice(&siblings_ark[..copy_len]);
+    path_arr[..copy_len].copy_from_slice(&path_indices_u8[..copy_len]);
+
+    // Fixed, clearly-test recipient (matches `zkmist bench`).
+    let mut recipient = [0u8; 20];
+    recipient[18] = 0xB0;
+    recipient[19] = 0x0B;
+
+    // Generate the REAL KZG proof. Under a pinned SRS this is mainnet-grade;
+    // under ZKMIST_DEV_SRS it is forgeable but still exercises the full
+    // create_proof → transcript path (sufficient to validate the verifier).
+    eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~3 min / ~20 GiB at k=23)...");
+    let tmp = std::env::temp_dir().join("zkmist_roundtrip_proof.json");
+    let nullifier = crate::halo2_prover::generate_v2_proof(
+        &key,
+        &sibling_arr,
+        &path_arr,
+        &root,
+        &recipient,
+        &tmp,
+    )?;
+    let proof_json = std::fs::read_to_string(&tmp)
+        .map_err(|e| format!("Failed to read generated proof: {}", e))?;
+    let proof_file: ProofFile = serde_json::from_str(&proof_json)
+        .map_err(|e| format!("Failed to parse generated proof: {}", e))?;
+    let _ = std::fs::remove_file(&tmp);
+    let proof_hex = proof_file.proof.trim_start_matches("0x");
+
+    #[derive(Serialize)]
+    struct Fixture {
+        version: u64,
+        tree_depth: u32,
+        merkle_root: String,
+        nullifier: String,
+        recipient: String,
+        proof: String,
+        claim_amount: String,
+        note: String,
+    }
+    let fixture = Fixture {
+        version: PROOF_FORMAT_VERSION,
+        tree_depth: TREE_DEPTH as u32,
+        merkle_root: format!("0x{}", hex::encode(root)),
+        nullifier: format!("0x{}", hex::encode(nullifier)),
+        recipient: format!("0x{}", hex::encode(recipient)),
+        proof: format!("0x{}", proof_hex),
+        claim_amount: format!("{}", (CLAIM_AMOUNT as u128) * 10u128.pow(18)),
+        note: "Generated by `zkmist gen-roundtrip-fixture`. Real Halo2-KZG proof \
+               over the full production circuit (TREE_DEPTH=26). Consumed by \
+               contracts/test/ZKM.realroundtrip.t.sol with RUN_REAL_ROUNDTRIP=1."
+            .to_string(),
+    };
+
+    eprintln!("[4/4] Writing fixture to {}", out_path);
+    if let Some(parent) = std::path::Path::new(out_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create fixture dir: {}", e))?;
+    }
+    let json = serde_json::to_string_pretty(&fixture)
+        .map_err(|e| format!("Failed to serialize fixture: {}", e))?;
+    std::fs::write(out_path, &json).map_err(|e| format!("Failed to write fixture: {}", e))?;
+
+    eprintln!();
+    eprintln!("\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}");
+    eprintln!("  Fixture written: {}", out_path);
+    eprintln!("\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}");
+    eprintln!("  merkleRoot : {}", fixture.merkle_root);
+    eprintln!("  nullifier  : {}", fixture.nullifier);
+    eprintln!("  recipient  : {}", fixture.recipient);
+    eprintln!("  proof bytes: {}", proof_hex.len() / 2);
+    eprintln!();
+    eprintln!("Next: run the on-chain round-trip against this fixture:");
+    eprintln!("  RUN_REAL_ROUNDTRIP=1 forge test --match-contract RealRoundtrip -vvv");
+    Ok(())
+}
+
 // ── Command: verify ──────────────────────────────────────────────────────
 
 pub fn cmd_verify(proof_file: &str) -> Result<(), String> {

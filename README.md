@@ -84,7 +84,7 @@ A relayer or observer cannot link the qualified address to the receiving address
 ### Prerequisites
 
 - **Rust** (stable) — [rustup.rs](https://rustup.rs)
-- **~2 GB RAM** for proof generation
+- **~16–20 GiB RAM** for proof generation (measured peak ~19.5 GiB RSS for the k=23 circuit; real KZG `create_proof` is comparable). See [SECURITY.md](./SECURITY.md) for the benchmarks.
 - **~3 GB disk** for eligibility list
 
 ### Build

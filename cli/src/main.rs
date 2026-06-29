@@ -93,6 +93,16 @@ enum Commands {
         #[arg(long, default_value = "4")]
         tree_depth: usize,
     },
+
+    /// Generate the real-KZG round-trip fixture (proof + public inputs) for
+    /// the Forge on-chain verification test (contracts/test/ZKM.realroundtrip.t.sol).
+    /// Heavy: generates a real Halo2-KZG proof. Needs a pinned PSE SRS or
+    /// ZKMIST_DEV_SRS=1.
+    GenRoundtripFixture {
+        /// Output path for the fixture JSON.
+        #[arg(long, default_value = "contracts/fixtures/real_roundtrip.json")]
+        out: String,
+    },
 }
 
 fn main() {
@@ -116,6 +126,7 @@ fn main() {
         Commands::Check { address } => cmd_check(&address),
         Commands::Status { rpc_url } => cmd_status(rpc_url.as_deref()),
         Commands::Bench { tree_depth } => cmd_bench(tree_depth),
+        Commands::GenRoundtripFixture { out } => cmd_gen_roundtrip_fixture(&out),
     };
 
     if let Err(e) = result {

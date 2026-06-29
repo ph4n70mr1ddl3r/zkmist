@@ -20,6 +20,10 @@ required-features = ["monitoring"]
 name = "readiness"
 path = "src/readiness.rs"
 
+[[bin]]
+name = "verify-srs"
+path = "src/verify_srs.rs"
+
 [dependencies]
 zkmist-merkle-tree = { path = "../merkle-tree" }
 zkmist-circuits = { path = "../circuits" }
@@ -28,8 +32,9 @@ ark-ff = "0.5"
 light-poseidon = "0.4"
 hex = "0.4"
 sha2 = "0.10"
-halo2_proofs = "0.3.0"
-halo2curves = "0.6.0"
+rand = "0.8"
+halo2_proofs.workspace = true
+halo2curves.workspace = true
 ff = "0.13"
 snark-verifier = { version = "0.2", optional = true }
 

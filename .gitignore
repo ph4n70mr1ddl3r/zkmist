@@ -41,6 +41,13 @@ desktop.ini
 # Contain user-specific nullifiers and serialized receipts.
 zkmist_proof_*.json
 
+# ── Real-KZG round-trip fixture (generated, may be a forgeable dev-SRS proof) ─
+# Produced by `zkmist gen-roundtrip-fixture`, consumed by the Forge test
+# contracts/test/ZKM.realroundtrip.t.sol. Never commit: it is a build artifact
+# and, under ZKMIST_DEV_SRS, a forgeable proof that must not masquerade as a
+# trusted fixture.
+contracts/fixtures/
+
 # ── Logs ────────────────────────────────────────────────────────────────
 *.log
 .logs/

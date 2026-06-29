@@ -255,17 +255,21 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "disabled: real KZG proof/verify is expensive and crashes the system; run explicitly with --ignored if needed"]
+    #[ignore = "disabled: real KZG proof/verify is expensive; run explicitly with --ignored if needed"]
     fn test_real_kzg_proof_and_verify() {
         use halo2_proofs::{
-            plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, SingleVerifier},
-            poly::commitment::Params,
-            transcript::{Blake2bRead, Blake2bWrite, Challenge255},
+            plonk::{create_proof, keygen_pk, keygen_vk, verify_proof},
+            poly::kzg::{
+                commitment::ParamsKZG,
+                multiopen::{ProverSHPLONK, VerifierSHPLONK},
+                strategy::SingleStrategy,
+            },
+            transcript::TranscriptWriterBuffer,
         };
-        use halo2curves::bn256::G1Affine;
+        use halo2_solidity_verifier::Keccak256Transcript;
 
         let k = 9;
-        let params: Params<G1Affine> = Params::new(k);
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(k, &mut rand::rngs::OsRng);
 
         let circuit = MultiplyCircuit {
             x: Value::known(Fr::from(21)),
@@ -278,8 +282,9 @@ mod tests {
         let public_inputs = [Fr::from(42)];
         let mut rng = rand::rngs::OsRng;
 
-        let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<G1Affine>>::init(vec![]);
-        create_proof(
+        let mut transcript =
+            Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(Vec::new());
+        create_proof::<_, ProverSHPLONK<_>, _, _, _, _>(
             &params,
             &pk,
             &[circuit],
@@ -292,11 +297,11 @@ mod tests {
         let proof = transcript.finalize();
         eprintln!("✅ Real KZG proof generated: {} bytes", proof.len());
 
-        let strategy = SingleVerifier::new(&params);
+        let strategy = SingleStrategy::new(&params);
         let mut read_transcript =
-            Blake2bRead::<_, G1Affine, Challenge255<G1Affine>>::init(proof.as_slice());
+            Keccak256Transcript::<halo2curves::bn256::G1Affine, _>::new(proof.as_slice());
 
-        let result = verify_proof(
+        let result = verify_proof::<_, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
             &params,
             pk.get_vk(),
             strategy,

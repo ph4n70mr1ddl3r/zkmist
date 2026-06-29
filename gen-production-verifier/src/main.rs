@@ -58,9 +58,7 @@ use halo2_proofs::{
 use halo2_solidity_verifier::{BatchOpenScheme, SolidityGenerator};
 
 // The REAL circuit + parity-guard constants, imported directly (no duplicate).
-use zkmist_circuits::{
-    constraint_system_digest, EXPECTED_CS_DIGEST, ZKMistV2Claim,
-};
+use zkmist_circuits::{constraint_system_digest, ZKMistV2Claim, EXPECTED_CS_DIGEST};
 
 /// Production circuit `k`. MUST match `CIRCUIT_K` in `cli/src/halo2_prover.rs`
 /// (k=23 after the secp256k1 `point_add_mixed` optimization halved the witness).
@@ -102,11 +100,18 @@ fn load_or_gen_params(
 
     // 2. Dev fallback (RANDOM SRS), cached.
     if std::env::var("ZKMIST_DEV_SRS").is_ok() {
-        let cache = dirs::home_dir()
-            .map(|h| h.join(".zkmist").join("cache").join(format!("dev_paramskzg_k{}.bin", k)));
+        let cache = dirs::home_dir().map(|h| {
+            h.join(".zkmist")
+                .join("cache")
+                .join(format!("dev_paramskzg_k{}.bin", k))
+        });
         if let Some(ref p) = cache {
             if p.exists() {
-                eprintln!("      Loading cached dev ParamsKZG (k={}) from {}...", k, p.display());
+                eprintln!(
+                    "      Loading cached dev ParamsKZG (k={}) from {}...",
+                    k,
+                    p.display()
+                );
                 if let Ok(f) = std::fs::File::open(p) {
                     if let Ok(params) =
                         ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(f))
@@ -128,7 +133,10 @@ fn load_or_gen_params(
             }
             if let Ok(f) = std::fs::File::create(p) {
                 let _ = params.write(&mut BufWriter::new(f));
-                eprintln!("      ✓ cached dev SRS to {} (reused on subsequent runs)", p.display());
+                eprintln!(
+                    "      ✓ cached dev SRS to {} (reused on subsequent runs)",
+                    p.display()
+                );
             }
         }
         return params;
@@ -200,12 +208,21 @@ fn main() {
     eprintln!();
 
     if k != EXPECTED_K {
-        eprintln!("⚠️  WARNING: k={} does not match expected CIRCUIT_K={}", k, EXPECTED_K);
+        eprintln!(
+            "⚠️  WARNING: k={} does not match expected CIRCUIT_K={}",
+            k, EXPECTED_K
+        );
         eprintln!("   The generated verifier will reject proofs created with a different k.");
-        eprintln!("   Proceeding anyway. Use --k {} for the production value.", EXPECTED_K);
+        eprintln!(
+            "   Proceeding anyway. Use --k {} for the production value.",
+            EXPECTED_K
+        );
     }
 
-    eprintln!("[1/4] Creating circuit (k={}) from zkmist_circuits::ZKMistV2Claim...", k);
+    eprintln!(
+        "[1/4] Creating circuit (k={}) from zkmist_circuits::ZKMistV2Claim...",
+        k
+    );
     let circuit = ZKMistV2Claim::default();
 
     // Parity guard: the git-fork configure() digest must equal the crates.io
@@ -242,7 +259,10 @@ fn main() {
     let vk = halo2_proofs::plonk::keygen_vk(&params, &circuit).expect("keygen_vk failed");
     eprintln!("      ✓ ({:.1}s)", t.elapsed().as_secs_f64());
     eprintln!("      VK repr: {:?}", vk.transcript_repr());
-    eprintln!("      fixed_commitments:       {}", vk.fixed_commitments().len());
+    eprintln!(
+        "      fixed_commitments:       {}",
+        vk.fixed_commitments().len()
+    );
     eprintln!(
         "      permutation_commitments: {}",
         vk.permutation().commitments().len()
@@ -259,7 +279,10 @@ fn main() {
         eprintln!("   fixed/lookup tables. The imported ZKMistV2Claim is not the real circuit.");
         std::process::exit(2);
     }
-    eprintln!("   ✓ non-zero fixed commitments ({}); synthesize ran the real circuit", n_fixed);
+    eprintln!(
+        "   ✓ non-zero fixed commitments ({}); synthesize ran the real circuit",
+        n_fixed
+    );
     let _ = n_perm; // reported above
 
     // VK fingerprint for cross-checking against tools/gen_verifier under the
@@ -274,11 +297,20 @@ fn main() {
     };
     eprintln!(
         "      pinned SHA-256: 0x{}",
-        pinned_sha256.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        pinned_sha256
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     );
     eprintln!();
-    eprintln!("   ⚠️  This VK was derived with {} SRS.",
-        if params_file.is_some() { "a PINNED" } else { "a RANDOM dev" });
+    eprintln!(
+        "   ⚠️  This VK was derived with {} SRS.",
+        if params_file.is_some() {
+            "a PINNED"
+        } else {
+            "a RANDOM dev"
+        }
+    );
     if params_file.is_none() {
         eprintln!("   It will NOT match the prover. Re-run with --params-file <pinned PSE SRS>.");
     }
@@ -314,10 +346,16 @@ fn main() {
                   // deploying.\n\n";
 
     std::fs::create_dir_all(&output_dir).ok();
-    std::fs::write(output_dir.join("Halo2Verifier.sol"), format!("{}{}", banner, verifier))
-        .unwrap();
-    std::fs::write(output_dir.join("Halo2VerifyingKey.sol"), format!("{}{}", banner, vk_sol))
-        .unwrap();
+    std::fs::write(
+        output_dir.join("Halo2Verifier.sol"),
+        format!("{}{}", banner, verifier),
+    )
+    .unwrap();
+    std::fs::write(
+        output_dir.join("Halo2VerifyingKey.sol"),
+        format!("{}{}", banner, vk_sol),
+    )
+    .unwrap();
 
     let has_pairing = verifier.contains("ecPairing") || verifier.contains("0x08");
     eprintln!("      ✓ Halo2Verifier.sol ({} bytes)", verifier.len());

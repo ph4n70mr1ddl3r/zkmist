@@ -12,7 +12,7 @@
 #
 # Prerequisites:
 #   - Rust (stable) with cargo
-#   - ~3 GB RAM for proof generation (measured peak at k=24)
+#   - ~16-20 GiB RAM for proof generation (measured peak ~19.5 GiB RSS at k=23)
 #   - First proof is slow: cold KZG params generation for 16M G1 points was
 #     measured to exceed 8 minutes. Subsequent runs reuse ~/.zkmist/cache/.
 #     ⚠️ The prover currently uses a RANDOM SRS (Params::new) — dev/test only;

@@ -5,8 +5,8 @@ edition = "2021"
 description = "Halo2-KZG circuits for ZKMist V2 anonymous airdrop claims"
 
 [dependencies]
-halo2_proofs = "0.3.0"
-halo2curves = "0.6.0"
+halo2_proofs.workspace = true
+halo2curves.workspace = true
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 ff = "0.13"
@@ -19,16 +19,15 @@ num-traits = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 
 [features]
-# Marker feature enabled ONLY by `gen-production-verifier` (its separate
-# workspace compiles this crate against the PSE git fork of halo2, which has a
-# divergent `ConstraintSystem` API). When enabled, the `compat` shim routes
-# `query_fixed`/`lookup`/etc. to the git-fork call signatures; when disabled
-# (the main workspace: cli/tools/tests), the crates.io 0.3.x signatures are
-# used. NEVER enable this in the main workspace — it would break the prover.
-default = []
+# Always enabled now that the whole workspace is on the PSE git fork (see
+# root Cargo.toml). routes `query_fixed`/`lookup` to the fork signatures via
+# circuits/src/compat.rs. Kept as a feature for clarity/documentation; no
+# longer a fork switch.
+default = ["git-fork-api"]
 git-fork-api = []
 
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"
 zkmist-merkle-tree = { path = "../merkle-tree" }
+halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }

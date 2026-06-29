@@ -912,6 +912,23 @@ mod tests {
         {
         }
         fn pop_namespace(&mut self, _: Option<String>) {}
+
+        fn annotate_column<A, AR>(
+            &mut self,
+            _: A,
+            _: halo2_proofs::plonk::Column<halo2_proofs::plonk::Any>,
+        ) where
+            A: FnOnce() -> AR,
+            AR: Into<String>,
+        {
+        }
+
+        fn get_challenge(
+            &self,
+            _: halo2_proofs::plonk::Challenge,
+        ) -> halo2_proofs::circuit::Value<Fr> {
+            halo2_proofs::circuit::Value::unknown()
+        }
     }
 
     /// Synthesize `circuit` through its floor planner with a no-op assignment

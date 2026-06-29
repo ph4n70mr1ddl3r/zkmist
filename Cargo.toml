@@ -4,5 +4,37 @@ members = [
     "merkle-tree",
     "tools",
     "circuits",
+    "gen-production-verifier",
 ]
+# vendor/halo2-solidity-verifier is a git submodule (third-party PSE code we
+# depend on via `path =`). Cargo auto-promotes any path dep living under the
+# workspace root into an *implicit* workspace member, which made
+# `cargo clippy --workspace` lint (and `-D warnings`-fail on) upstream code we
+# do not control — e.g. the `clippy::io_other_error` style lint introduced in
+# rust-1.96, which the pinned PSE revision has not adopted. Excluding it keeps
+# it a perfectly normal path dependency (build/resolve unchanged) while limiting
+# the `-D warnings` gate to first-party crates. Do NOT edit the submodule to
+# silence lints — the change is lost on the next `git submodule update`.
+exclude = ["vendor/halo2-solidity-verifier"]
 resolver = "2"
+
+[workspace.dependencies]
+# ── Single source of truth for the halo2 backend ───────────────────────────
+#
+# The PSE git fork (tag v0.3.0), NOT crates.io 0.3.x. This is REQUIRED, not
+# optional: crates.io `halo2_proofs` 0.3.2 has NO KZG support (it is the
+# trustless IPA-only fork). Proofs generated under crates.io halo2 are IPA
+# proofs that can NEVER verify in the KZG `Halo2Verifier.sol` on-chain
+# (different commitment scheme + Blake2b vs Keccak256 transcript). Unifying
+# the whole workspace on the PSE fork makes the CLI prover generate real KZG
+# proofs (BN254 pairing, Keccak256 transcript) that match the on-chain
+# verifier, and lets `gen-production-verifier` join this workspace (no more
+# separate-workspace version split).
+#
+# The PSE fork's `ConstraintSystem` API differs from crates.io at 6
+# `query_fixed` + 2 `lookup` call sites; `circuits/src/compat.rs` routes both
+# to the fork signatures (the `git-fork-api` feature is now always enabled —
+# see circuits/Cargo.toml — so the shim is a thin, audited layer rather than a
+# fork-switching abstraction).
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v0.3.0" }
+halo2curves = "0.6.1"
