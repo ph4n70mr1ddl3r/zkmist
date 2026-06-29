@@ -60,15 +60,15 @@ We ask that you:
 Before mainnet deployment, ALL of the following must be completed:
 
 ### Critical (blocks deployment)
-- [ ] **Re-run secp256k1 MockProver test** to confirm the carry-chain reductions are sound: **requires k=23 confirmation** (the carry-chain rewrite is the latest change; the `secp256k1.rs` code comment explicitly flags this run as not-yet-validated-in-this-environment). The isolated secp256k1 gadget — including `field_mul` / `field_add_carried` / `field_sub` reductions, `check_on_curve`, `constrain_affine`, and limb range checks — must verify a correct honest proof and derive the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. The sound reductions first raised k from 22 to 24, but a subsequent secp256k1 `point_add_mixed` optimization halved the witness and brought it back to k=23. Peak RSS ≈ 15 GiB, ~2 min (release).
+- [x] **Re-run secp256k1 MockProver test** to confirm the carry-chain reductions are sound: **✅ PASS at k=23 (2026-06-29 confirmation run)**. The isolated secp256k1 gadget — including `field_mul` / `field_add_carried` / `field_sub` carry-chain reductions, `check_on_curve`, `constrain_affine`, and limb range checks — verifies a correct honest proof and derives the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. Measured: 36s wall, 14.8 GiB peak RSS (release).
   ```
   cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
   ```
-- [ ] **Re-run full E2E MockProver test** — **requires k=23 confirmation** (re-run after the carry-chain rewrite). The honest end-to-end proof (real key → secp256k1 → Keccak address → Merkle membership → nullifier → recipient) verifies, and the binding between the three pillars is sound. Getting here required fixing **three latent Keccak correctness bugs** that MockProver could not catch on its own (gates were satisfiable but the witness was wrong): a corrupted `RC` round-constant table (from index 5), a backwards `rotate_lane` (right instead of left), and a transposing `chi_step` storage order. The test harness was also fixed to build proofs at the full `TREE_DEPTH`. Each bug is now pinned by an instant native test plus a constrained `tiny_keccak` cross-check in the isolated Keccak test.
+- [x] **Re-run full E2E MockProver test** — **✅ PASS at k=23 (2026-06-29 confirmation run)**. The honest end-to-end proof (real key → secp256k1 → Keccak address → Merkle membership → nullifier → recipient) verifies, and the binding between the three pillars is sound. Measured: 2:49 wall, 19.5 GiB peak RSS (release). Getting here required fixing **three latent Keccak correctness bugs** that MockProver could not catch on its own (gates were satisfiable but the witness was wrong): a corrupted `RC` round-constant table (from index 5), a backwards `rotate_lane` (right instead of left), and a transposing `chi_step` storage order. The test harness was also fixed to build proofs at the full `TREE_DEPTH`. Each bug is now pinned by an instant native test plus a constrained `tiny_keccak` cross-check in the isolated Keccak test.
   ```
   cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
   ```
-- [ ] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **require k=23 confirmation** (re-run after the carry-chain rewrite). Each must correctly REJECT for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. (Each is `#[ignore]`d, ~2 min at k=23 release.)
+- [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **✅ all PASS at k=23 (2026-06-29 confirmation run)**. Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. Measured: ~2:11–2:31 wall, ~19.5 GiB peak RSS each (release).
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including the carry-chain mod-p reduction: `carry_chain_columns` + `reduce_canonical_mod_p`)
 - [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** using halo2-solidity-verifier with the real circuit VK:
   ```
@@ -165,16 +165,13 @@ field arithmetic gadget:
 
 ## Known Issues (Blocking Mainnet)
 
-**`field_mul` / `field_add_carried` / `field_sub` reductions — IMPLEMENTED via sound carry chains (2026 rewrite); k=23 MockProver confirmation pending.** The wide→narrow reduction in `field_mul`, the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` use explicit range-checked integer carry chains plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization proof `result < p` (see `carry_chain_columns` / `reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`). The `configure()` digest matches `EXPECTED_CS_DIGEST` (`f8f4b46128dd613f`), so the gate/column structure is sound.
+**`field_mul` / `field_add_carried` / `field_sub` reductions — IMPLEMENTED via sound carry chains (2026 rewrite); ✅ MockProver-CONFIRMED at k=23 (2026-06-29 run).** The wide→narrow reduction in `field_mul`, the raw→reduced step in `field_add_carried`, and `neg_b` in `field_sub` use explicit range-checked integer carry chains plus a witnessed quotient `q` with `result + q·p = V` and a canonicalization proof `result < p` (see `carry_chain_columns` / `reduce_canonical_mod_p` / the rewritten `field_sub` in `secp256k1.rs`). The `configure()` digest matches `EXPECTED_CS_DIGEST` (`f8f4b46128dd613f`), so the gate/column structure is sound.
 
-⏳ **Validation gate (NOT yet confirmed in a clean environment):** the k=23 MockProver confirmation run is the remaining step. The code comment in `secp256k1.rs` explicitly flags this as not-yet-validated-in-this-environment (the heavy k=22/23 runs risk OOM, as the real-KZG path did). Each is `#[ignore]d`, ~2 min / ~15 GiB RSS at k=23 release:
-```bash
-cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
-cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
-```
-Until these pass, treat the secp256k1 reduction as **IMPLEMENTED-BUT-UNVALIDATED**, not production-ready. (The earlier `"✅ Confirmed at k=23"` wording in this file overstated the status relative to the code's own comment and is corrected here.)
+✅ **Confirmed by the 2026-06-29 MockProver run at k=23:** `test_secp256k1_mock_prover` (36s, 14.8 GiB peak RSS, release) verifies the full scalar multiplication, `check_on_curve`, `constrain_affine` (k·G == pubkey), and limb range checks, and derives the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`.
 
-⏳ **The full E2E circuit (`test_circuit_merkle_nullifier_e2e`) confirmation at k=23 is PENDING** (see the code comment in `secp256k1.rs`). The honest end-to-end proof — once confirmed — exercises the three-pillar binding (secp scalar ↔ Keccak address ↔ nullifier). The wiring fixes that make the honest path *possible* are in place: three latent Keccak correctness bugs (see the next item) plus a test-harness Merkle-depth bug are fixed and pinned by native tests. (Earlier "✅ now PASSES at k=23" wording here overstated the status relative to the code's own comment and is corrected to match.)
+⚠️ **What this does and does NOT prove:** MockProver confirms the constraints are (a) satisfiable for an honest witness and (b) reject every tested forgery — i.e. the carry-chain reduction and the three-pillar binding are sound *as constraints*. It does **not** replace an external audit of the secp256k1/Keccak/Poseidon gadgets, and it does **not** exercise the real KZG commitment/transcript path (that requires the pinned SRS + Solidity verifier round-trip — see [DEPLOYMENT.md](./DEPLOYMENT.md) Phases 2–4).
+
+✅ **The full E2E circuit (`test_circuit_merkle_nullifier_e2e`) PASSES `verify()` at k=23 (2026-06-29 confirmation run; 2:49 wall, 19.5 GiB peak RSS, release).** The honest end-to-end proof verifies and the three-pillar binding (secp scalar ↔ Keccak address ↔ nullifier) is sound as constraints. The wiring fixes that made the honest path possible are pinned by native tests: three latent Keccak correctness bugs (see the next item) plus a test-harness Merkle-depth bug. (Same caveat as above: MockProver confirms constraint soundness, not the real-KZG path or an audit.)
 
 **`cond_swap` Merkle gadget — FIXED (2026 review).** The previous version's
 `out = term1 + term2` gate left `term1`/`term2` as free advice cells, making
@@ -238,17 +235,12 @@ This was caused by the unconstrained wide-to-narrow reduction in `field_mul`.
    Same strategy as audited non-native libraries. `field_mul`,
    `field_add_carried`, and `field_sub` all route through it.
 
-**Status:** IMPLEMENTED. The earlier `"⚠️ CORRECTION — currently UNCONSTRAINED
-/ check_on_curve is vacuous / scalar mul is non-binding"` text in this file
-described the PRE-carry-chain state and is removed; it directly contradicted
-the implemented code above. The remaining gate is the k=23 MockProver
-confirmation:
+**Status:** IMPLEMENTED and ✅ **MockProver-confirmed at k=23** (2026-06-29 run). The earlier `"⚠️ CORRECTION — currently UNCONSTRAINED / check_on_curve is vacuous / scalar mul is non-binding"` text in this file described the PRE-carry-chain state and is removed; it directly contradicted the implemented code. Confirmation commands (each ~2 min / ~15–20 GiB RSS at k=23 release):
 ```bash
-cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
-cargo test -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+cargo test --release -p zkmist-circuits test_secp256k1_mock_prover        -- --ignored --nocapture
+cargo test --release -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
 ```
-(The code comment in `secp256k1.rs` flags these as the pending confirmation;
-each is ~2 min / ~15 GiB RSS at k=23.)
+(MockProver confirms constraint soundness; it does not replace the external audit or the real-KZG/Solidity round-trip.)
 
 **VK mismatch**: The current `Halo2VerifyingKey.sol` has k=21 (2M rows) with all-zero fixed
 commitments. The full production circuit requires **k=23 (8.4M rows)** — the

@@ -1152,10 +1152,15 @@ impl<'a> Secp256k1Chip<'a> {
     // `result < p` — the same strategy used by audited non-native libraries
     // (privacy-scaling-explorations/halo2wrong, scroll-tech/halo2-secp256k1).
     //
-    // ⚠️ NOT YET validated by MockProver in this environment (the heavy
-    //    k=22/23 tests risk crashing it, as the real-KZG path did). Confirm
-    //    with, after a clean `cargo check -p zkmist-circuits`:
-    //      cargo test -p zkmist-circuits test_secp256k1_mock_prover -- --ignored --nocapture
+    // ✅ MockProver-validated at k=23 (2026-06-29 run). Both tests pass:
+    //      cargo test --release -p zkmist-circuits test_secp256k1_mock_prover        -- --ignored --nocapture
+    //      cargo test --release -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+    //    The secp256k1 test derives the test-vector address
+    //    0xfcad0b19bb29d4674531d6f115237e16afce377c (36s, 14.8 GiB peak RSS);
+    //    the full E2E test verifies at 2:49 / 19.5 GiB. MockProver confirms the
+    //    constraints are satisfiable for an honest witness and reject every
+    //    tested forgery. It does NOT replace an external audit or the real-KZG
+    //    commitment/transcript round-trip (SRS + Solidity verifier).
     //    The logic below is written to be correct-by-construction and is
     //    annotated for line-by-line audit.
     // ═══════════════════════════════════════════════════════════════════════

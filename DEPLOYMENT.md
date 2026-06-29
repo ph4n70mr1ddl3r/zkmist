@@ -14,16 +14,26 @@ The four blocking issues from the production review, in resolution order:
 |---|---------|-------|---------------|
 | 1 | On-chain verifier is a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments; `gen-production-verifier` `synthesize` is a stub) | eng | Every honest proof would revert → airdrop mints nothing, forever |
 | 2 | KZG SRS not pinned (`KZG_SRS_URL`/`KZG_SRS_SHA256` empty → prover falls back to a forgeable random SRS) | deployer | Whoever ran the prover can forge proofs → unlimited mint |
-| 3 | secp256k1 non-native arithmetic is hand-rolled and unaudited; k=23 MockProver confirmation pending | eng + auditor | A missing constraint = forged proofs |
+| 3 | secp256k1 non-native arithmetic is hand-rolled and unaudited (MockProver-confirmed at k=23, but NOT audited and NOT real-KZG-confirmed) | eng + auditor | A missing constraint = forged proofs (MockProver covers the tested constraints; only an audit covers the untested gaps) |
 | 4 | No real proof has ever verified against the Solidity verifier; no testnet deployment | eng | The one property that matters is empirically unproven |
 
 ---
 
 ## Phase 0 — Confirm the circuit is sound (gate for everything else)
 
+> **✅ Status: PASSED 2026-06-29.** All seven `#[ignore]d` MockProver tests
+> pass at production k (23 for the full circuit, 22 for the isolated Keccak
+> chip). Recorded baseline for regression: `test_secp256k1_mock_prover` 36s /
+> 14.8 GiB, `test_circuit_merkle_nullifier_e2e` 2:49 / 19.5 GiB, four
+> `*_rejected` tests ~2:11–2:31 / ~19.5 GiB each, `test_keccak_mock_prover_full`
+> 1:25 / 3.7 GiB. The secp256k1 test derives the test-vector address
+> `0xfcad0b19bb29d4674531d6f115237e16afce377c`. **Re-run Phase 0 after any
+> change to `circuits/`, `gen-production-verifier`, or the halo2 version** — it
+> is the regression gate for every later phase.
+
 All circuit-soundness work is moot if the honest proof doesn't verify and the
-negatives don't reject. The heavy tests are `#[ignore]d` (~2 min, ~15 GiB RSS
-each at k=23, release build). Run them on a machine with ≥16 GiB free RAM:
+negatives don't reject. The heavy tests are `#[ignore]d` (~2 min, ~15–20 GiB
+RSS each at k=23, release build). Run them on a machine with ≥24 GiB free RAM:
 
 ```bash
 # Honest proofs must verify
@@ -37,12 +47,9 @@ cargo test --release -p zkmist-circuits test_zero_recipient_rejected            
 cargo test --release -p zkmist-circuits test_recipient_exceeding_uint160_rejected  -- --ignored --nocapture
 ```
 
-**Pass criterion:** all six pass. The honest tests must additionally derive the
-test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`. The code
-comment in `circuits/src/secp256k1.rs` (`carry_chain_columns` /
-`reduce_canonical_mod_p`) explicitly flags this confirmation as
-not-yet-validated-in-this-environment — treat the circuit as
-IMPLEMENTED-BUT-UNVALIDATED until these pass.
+**Pass criterion:** all seven pass (the honest tests + four negatives + the
+isolated Keccak chip). The honest tests must additionally derive the
+test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`.
 
 **Do not proceed** if any honest test fails (soundness bug) or any negative test
 passes (missing constraint).
@@ -55,6 +62,8 @@ passes (missing constraint).
 ---
 
 ## Phase 1 — External audit (parallelizable with Phase 0, blocks Phase 4)
+
+> Phase 0 is now complete; **Phase 1 is the next gate.**
 
 Commission an independent audit of:
 
@@ -266,8 +275,8 @@ never happen, see the birthday-bound analysis in SECURITY.md). See SECURITY.md
 ## One-page checklist
 
 ```
-[ ] Phase 0  — all 6 #[ignore]d MockProver tests pass at k=23
-[ ] Phase 1  — external audit report, no open Critical/High
+[x] Phase 0  — all 7 #[ignore]d MockProver tests PASS at k=23 (2026-06-29)
+[ ] Phase 1  — external audit report, no open Critical/High   ← NEXT GATE
 [ ] Phase 2  — PSE SRS pinned; readiness [1d/8] green
 [ ] Phase 3  — real Halo2Verifier.sol + Halo2VerifyingKey.sol (k=23, non-zero fixed); VK repr matches prover; readiness [1b/8] green
 [ ] Phase 4  — real proof mints on local anvil; tampered proof reverts

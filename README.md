@@ -4,7 +4,7 @@
 
 [![Chain](https://img.shields.io/badge/chain-Base-0052FF)](https://base.org)
 
-> **⚠️ Pre-alpha — NOT audited, NOT deployable.** Halo2-KZG circuits are implemented and the soundness-critical **wiring between the secp256k1 scalar, the Keccak-derived address, and the nullifier is constrained** (leaf↔address, nullifier↔scalar, pubkey↔Keccak-input), but the circuit has **not been externally audited** and the full end-to-end proof test has not yet passed at production `k`. Do not deploy to mainnet. The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that requires an independent security audit. See [SECURITY.md](./SECURITY.md) for audit status and [V2_PLAN.md](./V2_PLAN.md) for architecture.
+> **⚠️ Pre-alpha — NOT audited, NOT deployable.** Halo2-KZG circuits are implemented and the soundness-critical **wiring between the secp256k1 scalar, the Keccak-derived address, and the nullifier is constrained** (leaf↔address, nullifier↔scalar, pubkey↔Keccak-input). The full circuit **passes Halo2 `MockProver` at production `k=23`** (2026-06-29: honest E2E verifies + four negative tests reject), but the circuit has **not been externally audited** and the real-KZG proof → on-chain verifier round-trip has not been exercised (the on-chain verifier is still a placeholder VK and the SRS is unpinned — see [DEPLOYMENT.md](./DEPLOYMENT.md)). Do not deploy to mainnet. The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that requires an independent security audit. See [SECURITY.md](./SECURITY.md) for audit status and [V2_PLAN.md](./V2_PLAN.md) for architecture.
 >
 > Note: a high test count is **not** a soundness signal — Halo2's `MockProver` only verifies gates that exist; it cannot detect a *missing* constraint.
 
@@ -375,26 +375,26 @@ No special permissions or contract setup is required.
 >   constrained equal to the scalar-mul output coordinates. (An earlier revision
 >   left these as free advice cells — a catastrophic soundness break — and is now
 >   fixed.)
-> - **secp256k1 non-native field arithmetic: IMPLEMENTED via sound carry chains
->   (2026 rewrite); k=23 MockProver confirmation PENDING.** The isolated
->   secp256k1 gadget — `field_mul` / `field_add_carried` / `field_sub` carry-chain
->   reductions, `check_on_curve`, `constrain_affine` (k·G == pubkey), and limb
->   range checks — is implemented with the audited-library strategy
->   (`carry_chain_columns` + `reduce_canonical_mod_p`). The code comment in
->   `circuits/src/secp256k1.rs` explicitly flags the k=23 MockProver run as
->   not-yet-validated-in-this-environment; treat as IMPLEMENTED-BUT-UNVALIDATED
->   until it passes (see [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 0).
-> - **Full E2E circuit: k=23 MockProver confirmation PENDING.** The honest
+> - **secp256k1 non-native field arithmetic: ✅ MockProver-CONFIRMED at
+>   k=23 (2026-06-29 run).** The isolated secp256k1 gadget — `field_mul` /
+>   `field_add_carried` / `field_sub` carry-chain reductions, `check_on_curve`,
+>   `constrain_affine` (k·G == pubkey), and limb range checks — implements the
+>   audited-library strategy (`carry_chain_columns` +
+>   `reduce_canonical_mod_p`) and **passes MockProver at k=23** (36s, 14.8 GiB
+>   RSS), deriving the test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`.
+>   Still required before mainnet: external audit and the real-KZG round-trip
+>   (MockProver confirms constraints, not the commitment/transcript path). See
+>   [SECURITY.md](./SECURITY.md) and [DEPLOYMENT.md](./DEPLOYMENT.md).
+> - **Full E2E circuit: ✅ PASSES at k=23 (2026-06-29 run).** The honest
 >   end-to-end proof — real key → secp256k1 → Keccak address → Merkle membership
->   → nullifier → recipient — must be confirmed to verify at k=23. The **top
->   warning** of this README ("has not yet passed at production `k`") is the
->   authoritative status; earlier "✅ PASSES" wording here overstated it
->   relative to the code's own comment. The wiring fixes that make the honest
->   path *possible* are in place: three latent Keccak correctness bugs that
->   MockProver could not catch on its own are fixed and pinned by instant native
->   tests plus a constrained `tiny_keccak` cross-check (corrupted `RC` table,
->   backwards `rotate_lane`, transposing `chi_step`). See [SECURITY.md](./SECURITY.md)
->   and [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 0.
+>   → nullifier → recipient — verifies (2:49, 19.5 GiB RSS), and the binding
+>   between the three pillars is sound as constraints. Getting the honest path
+>   *possible* required fixing three latent Keccak correctness bugs that
+>   MockProver could not catch on its own (gates were satisfiable but the
+>   witness was wrong): a corrupted `RC` round-constant table, a backwards
+>   `rotate_lane`, and a transposing `chi_step`. Each is now pinned by an
+>   instant native test plus a constrained `tiny_keccak` cross-check. See
+>   [SECURITY.md](./SECURITY.md) and [DEPLOYMENT.md](./DEPLOYMENT.md).
 > - The secp256k1 gadget uses **hand-rolled non-native field arithmetic** that
 >   has **not been externally audited**. An independent audit of both the
 >   arithmetic and the circuit wiring is required before mainnet.
@@ -417,19 +417,26 @@ No special permissions or contract setup is required.
 >   and brought it back to k=23. E2E MockProver at k=23 ≈ 2 min (release),
 >   ~15 GiB RSS.
 >
-> **Already validated by the fast/native test suite (155 tests, green):**
+> **✅ MockProver-confirmed at k=23 (2026-06-29 run):**
+> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) — PASS (2:49, 19.5 GiB)
+> - **Four full-circuit negative tests** (wrong root / wrong nullifier /
+>   zero recipient / >uint160 recipient all correctly rejected) — all PASS
+>   (~2:11–2:31 each, 19.5 GiB)
+> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` — PASS
+>   (36s, 14.8 GiB), derives test-vector address
+> - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
+>   `tiny_keccak` cross-check on 160 address bits) — PASS (1:25, 3.7 GiB)
+>
+> **Also validated by the fast/native test suite (155 tests, green):**
 > - `cond_swap` Merkle gadget soundness (`s_mul`/`s_add` product gates) ✅
 > - `field_add_carried` Phase 1 carry chain ✅
 > - `EXPECTED_CS_DIGEST` pinned to `f8f4b46128dd613f` ✅
 > - Keccak `keccak_f` / `rotate_lane` / `chi_step` native cross-checks vs `tiny_keccak` ✅
 >
-> **Pending the heavy `#[ignore]d` MockProver confirmation (~2 min / ~15 GiB RSS each):**
-> - **Full E2E MockProver** (`test_circuit_merkle_nullifier_e2e`) at k=23 — PENDING
-> - **Four full-circuit negative tests** (wrong root / wrong nullifier /
->   zero recipient / >uint160 recipient) at k=23 — PENDING
-> - secp256k1 non-native reductions via `test_secp256k1_mock_prover` at k=23 — PENDING
-> - Keccak chip via `test_keccak_mock_prover_full` at k=22 (constrained
->   `tiny_keccak` cross-check on 160 address bits) — PENDING
+> **What MockProver does NOT cover (still required before mainnet):**
+> - External security audit of the secp256k1 / Keccak / Poseidon gadgets
+> - The real KZG commitment/transcript path (needs pinned SRS + Solidity verifier round-trip)
+> - Testnet deployment on Base Sepolia
 >
 > **Tooling:**
 > - `zkmist bench` — proving timing benchmark with proof size validation
