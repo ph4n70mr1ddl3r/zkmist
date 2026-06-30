@@ -161,20 +161,32 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// (`s_add_carry` carry chains). Both changed the constraint system, so the
 /// digest moved from `72e30a6509cad673` to `f8f4b46128dd613f`.
 ///
+/// Regenerated again (2026-07-01 bug-hunt) after closing three "free constant
+/// seed cell" soundness holes of the same class:
+///   • `accumulate_weighted_bits` — the initial accumulator was a free advice
+///     cell, decoupling the nullifier key from the secp256k1 scalar (unlimited
+///     claims). Now seeded from the first gate-constrained weighted bit.
+///   • `Secp256k1Chip::check_single_limb` — the running-sum seed `zero_ref`
+///     was free, leaving the 64-bit limb range check vacuous. Now bound to zero
+///     row-neutrally via `z_cur[0] == z_scaled[0]` (gate ⇒ z·256, so z=0).
+///   • `cond_swap` — the "one" constant was a free advice cell, letting the
+///     prover forge arbitrary Merkle swap outputs. Now enforced by a fixed
+///     column via a new `s_sum_fixed` gate (`sel + one_minus_sel = 1`).
+/// The digest moved from `f8f4b46128dd613f` to `3905c7141112d7a6`. The fixes
+/// also shaved ~0.4M rows, so the circuit still fits k=23.
+///
 /// To regenerate after any future `configure()` change: run
 /// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
 /// --nocapture`, copy the printed `CS_DIGEST` into BOTH this constant and
 /// `gen-production-verifier`, then commit. (Running that single test is
 /// cheap; it does not invoke the expensive k=23 MockProver/KZG paths.)
 ///
-/// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` now carries the
-/// sound `cond_swap` (`s_bool`/`s_mul`/`s_add` product gates) and this same
-/// digest (`f8f4b46128dd613f`). The port was validated structurally via a
-/// standalone digest harness under crates.io halo2 0.3.0 (the real circuit's
-/// halo2), which reproduced `f8f4b46128dd613f` exactly; the generator's own
-/// runtime parity assert re-validates it under the PSE halo2 git fork when
-/// built in an environment with `halo2-solidity-verifier` present.
-pub const EXPECTED_CS_DIGEST: &str = "f8f4b46128dd613f";
+/// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` carries this same
+/// digest (`3905c7141112d7a6`), imported from here, so both sides agree by
+/// construction. The generator's runtime parity assert re-validates it under
+/// the PSE halo2 git fork when built in an environment with
+/// `halo2-solidity-verifier` present.
+pub const EXPECTED_CS_DIGEST: &str = "3905c7141112d7a6";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each
 /// already decomposed into 8 boolean bits by `build_initial_state`) to equal a

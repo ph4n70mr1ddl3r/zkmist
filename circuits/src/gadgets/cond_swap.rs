@@ -35,7 +35,7 @@
 use ff::Field;
 use halo2_proofs::{
     circuit::{AssignedCell, Region, Value},
-    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Selector},
+    plonk::{Advice, Column, ConstraintSystem, Error, Expression, Fixed, Selector},
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
@@ -44,17 +44,23 @@ use halo2curves::bn256::Fr;
 #[derive(Debug, Clone)]
 pub struct CondSwapConfig {
     advice: [Column<Advice>; 3],
+    fixed: Column<Fixed>,
     s_bool: Selector,
     s_mul: Selector,
     s_add: Selector,
+    /// Gate `advice[0] + advice[1] = fixed` — binds a sum to a fixed constant
+    /// (used to prove `sel + one_minus_sel = 1` without a free "one" cell).
+    s_sum_fixed: Selector,
 }
 
 impl CondSwapConfig {
     /// Add conditional swap gates. Advice columns must already have `enable_equality`.
     pub fn configure(meta: &mut ConstraintSystem<Fr>, advice: [Column<Advice>; 3]) -> Self {
+        let fixed = meta.fixed_column();
         let s_bool = meta.selector();
         let s_mul = meta.selector();
         let s_add = meta.selector();
+        let s_sum_fixed = meta.selector();
 
         // Boolean: sel * (1 - sel) = 0
         meta.create_gate("cond_swap_bool", |meta| {
@@ -82,11 +88,25 @@ impl CondSwapConfig {
             vec![s * (a + b - c)]
         });
 
+        // Sum-to-fixed: advice[0] + advice[1] = fixed.
+        // Sound constant binding (2026 bug-hunt): forces `sel + one_minus_sel = 1`
+        // using a fixed-column `1`, eliminating the free "one" advice cell that
+        // previously let a malicious prover set the swap outputs to anything.
+        meta.create_gate("cond_swap_sum_fixed", |meta| {
+            let s = meta.query_selector(s_sum_fixed);
+            let a = meta.query_advice(advice[0], Rotation::cur());
+            let b = meta.query_advice(advice[1], Rotation::cur());
+            let f = meta.query_fixed(fixed, Rotation::cur());
+            vec![s * (a + b - f)]
+        });
+
         Self {
             advice,
+            fixed,
             s_bool,
             s_mul,
             s_add,
+            s_sum_fixed,
         }
     }
 }
@@ -127,7 +147,11 @@ pub fn cond_swap(
     region.constrain_equal(sel.cell(), sel_cell.cell())?;
     config.s_bool.enable(region, offset)?;
 
-    // Row 1: one_minus_sel via sel + one_minus_sel = 1
+    // Row 1: one_minus_sel via sel + one_minus_sel = 1 (fixed constant).
+    // Sound (2026 bug-hunt): the `1` lives in the fixed column and is enforced
+    // by `s_sum_fixed`, so `one_minus_sel` is cryptographically `1 - sel`.
+    // The old code used a free advice "one" cell, letting a malicious prover
+    // pick `one_minus_sel` freely and forge arbitrary swap outputs.
     let sel_r1 = region.assign_advice(|| "sel_r1", config.advice[0], offset + 1, || sel_val)?;
     region.constrain_equal(sel.cell(), sel_r1.cell())?;
     let one_minus_sel = region.assign_advice(
@@ -136,13 +160,8 @@ pub fn cond_swap(
         offset + 1,
         || one_minus_sel_val,
     )?;
-    let _one = region.assign_advice(
-        || "one",
-        config.advice[2],
-        offset + 1,
-        || Value::known(Fr::ONE),
-    )?;
-    config.s_add.enable(region, offset + 1)?;
+    region.assign_fixed(|| "one_const", config.fixed, offset + 1, || Value::known(Fr::ONE))?;
+    config.s_sum_fixed.enable(region, offset + 1)?;
 
     // Row 2: sel * b = sel_b
     let sel_r2 = region.assign_advice(|| "sel_r2", config.advice[0], offset + 2, || sel_val)?;

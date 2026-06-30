@@ -103,10 +103,12 @@ fn configure(meta: &mut ConstraintSystem<Fr>) -> ShadowConfig {
 
 /// A shadow of `Secp256k1Chip::check_single_limb`. `malicious` selects the
 /// witness strategy: honest (real byte reconstruction) vs malicious (zeroed
-/// running sum, `z_final = limb`).
+/// running sum, `z_final = limb`) vs smart (nonzero free seed `z[0]` so the
+/// chain terminal still hits the out-of-range limb).
 struct ShadowCircuit {
     limb_value: Fr,
     malicious: bool,
+    smart: bool,
 }
 
 impl Circuit<Fr> for ShadowCircuit {
@@ -117,6 +119,7 @@ impl Circuit<Fr> for ShadowCircuit {
         ShadowCircuit {
             limb_value: Fr::ZERO,
             malicious: self.malicious,
+            smart: self.smart,
         }
     }
 
@@ -128,7 +131,7 @@ impl Circuit<Fr> for ShadowCircuit {
     }
 
     fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
-        let (cfg, anchor_col) = config;
+        let (cfg, _anchor_col) = config;
 
         layouter.assign_table(|| "range8", |mut table| {
             for i in 0u64..256 {
@@ -137,38 +140,39 @@ impl Circuit<Fr> for ShadowCircuit {
             Ok(())
         })?;
 
-        // Witness: honest reconstruction vs all-zero (malicious).
-        let (bytes, z_term): ([u8; 8], Fr) = if self.malicious {
-            ([0u8; 8], Fr::ZERO)
+        // Witness: honest reconstruction, naive all-zero (malicious), or the
+        // "smart" attack that exploits a FREE zero seed (z[0] unconstrained).
+        //
+        // Smart attack: with bytes = 0 and z[0] = limb · 256^-8, the running
+        // sum reaches z[8] = z[0]·256^8 = limb for an ARBITRARY (out-of-range)
+        // limb. If `zero_ref` is not provably zero, this satisfies every gate.
+        let bytes: [u8; 8];
+        let z_seed: Fr; // value taken by z[0]
+        if self.smart {
+            bytes = [0u8; 8];
+            let mut pow = Fr::ONE;
+            for _ in 0..8 {
+                pow *= Fr::from(256u64);
+            }
+            z_seed = self.limb_value * pow.invert().unwrap();
+        } else if self.malicious {
+            bytes = [0u8; 8];
+            z_seed = Fr::ZERO;
         } else {
-            // Reconstruct the honest big-endian running sum for limb_value.
-            // limb_value is constructed to fit in 64 bits in the honest case.
-            let mut acc = Fr::ZERO;
-            for _ in 0..64 {
-                acc = acc.double();
-            }
-            let _ = acc;
-            // For the honest limb value used in this test (0x_0123...CDEF),
-            // compute bytes and the running-sum terminal directly.
             let limb_u64 = limbs_u64_for_honest();
-            let rb = limb_u64.to_be_bytes();
-            let mut z = Fr::ZERO;
-            for &byt in &rb {
-                z = z * Fr::from(256u64) + Fr::from(byt as u64);
-            }
-            (rb, z)
-        };
+            bytes = limb_u64.to_be_bytes();
+            z_seed = Fr::ZERO;
+        }
+        // Reconstruct the full running sum z[0..=8] from the chosen seed/bytes.
+        let mut z = [Fr::ZERO; 9];
+        z[0] = z_seed;
+        for i in 0..8 {
+            z[i + 1] = z[i] * Fr::from(256u64) + Fr::from(bytes[i] as u64);
+        }
+        let z_term = z[8];
 
         layouter.assign_region(|| "check_single_limb_shadow", |mut region| {
             let mut offset = 0usize;
-
-            // Zero anchor (mirrors secp advice[3] zero_ref).
-            let zero_ref = region.assign_advice(
-                || "z0_anchor",
-                anchor_col,
-                offset,
-                || Value::known(Fr::ZERO),
-            )?;
             let mut prev_z_next: Option<halo2_proofs::circuit::AssignedCell<Fr, Fr>> = None;
 
             for b in 0..8usize {
@@ -181,29 +185,10 @@ impl Circuit<Fr> for ShadowCircuit {
                 )?;
 
                 // Row A: z_cur * 256 = z_scaled
-                let z_cur = if b == 0 {
-                    Fr::ZERO
-                } else {
-                    // honest & malicious both carry the chain value here
-                    if self.malicious {
-                        Fr::ZERO
-                    } else {
-                        // recompute honest running sum up to b
-                        let mut z = Fr::ZERO;
-                        for &byt in &bytes[..b] {
-                            z = z * Fr::from(256u64) + Fr::from(byt as u64);
-                        }
-                        z
-                    }
-                };
+                let z_cur = z[b];
                 let z_cur_cell = region.assign_advice(|| "z_cur", cfg.advice[0], offset, || {
                     Value::known(z_cur)
                 })?;
-                if b == 0 {
-                    region.constrain_equal(z_cur_cell.cell(), zero_ref.cell())?;
-                } else if let Some(prev) = &prev_z_next {
-                    region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
-                }
                 region.assign_fixed(|| "256", cfg.fixed, offset, || {
                     Value::known(Fr::from(256u64))
                 })?;
@@ -212,6 +197,15 @@ impl Circuit<Fr> for ShadowCircuit {
                     Value::known(z_scaled_val)
                 })?;
                 cfg.s_mul_fixed.enable(&mut region, offset)?;
+                // Seed (b==0): mirror the row-neutral fix. The gate enforces
+                // z_scaled[0] = z_cur[0]·256; forcing z_cur[0]==z_scaled[0]
+                // gives z_cur[0]·255 = 0 ⇒ z_cur[0] = 0. The smart attack sets
+                // z[0]=δ≠0, so this constrain_equal FAILS (δ ≠ δ·256).
+                if b == 0 {
+                    region.constrain_equal(z_cur_cell.cell(), z_scaled.cell())?;
+                } else if let Some(prev) = &prev_z_next {
+                    region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
+                }
                 offset += 1;
 
                 // Row B: z_scaled + byte = z_next
@@ -276,6 +270,7 @@ fn fixed_pattern_accepts_honest_in_range_limb() {
     let circuit = ShadowCircuit {
         limb_value: honest_limb_fr(),
         malicious: false,
+        smart: false,
     };
     let prover = MockProver::run(12, &circuit, vec![]).expect("mockprover setup");
     prover
@@ -288,6 +283,7 @@ fn fixed_pattern_rejects_out_of_range_limb() {
     let circuit = ShadowCircuit {
         limb_value: huge_limb_fr(),
         malicious: true,
+        smart: false,
     };
     let prover = MockProver::run(12, &circuit, vec![]).expect("mockprover setup");
     let res = prover.verify();
@@ -296,6 +292,29 @@ fn fixed_pattern_rejects_out_of_range_limb() {
         "the fixed range check MUST reject an out-of-range limb (2^200 + 7). \
          If this passes, the running-sum chain in check_single_limb has been \
          removed/broken and the range check is vacuous again. Failures: {:?}",
+        res
+    );
+}
+
+/// Smart attack: a FREE zero seed (`zero_ref`) lets the prover set z[0] ≠ 0,
+/// so the chain terminal still reaches an out-of-range limb with all-zero
+/// bytes. This MUST be rejected — if it passes, `zero_ref` is not provably
+/// zero and the range check is vacuous (the 2026-06-30 fix only chained the
+/// running sum; it never bound the seed to zero).
+#[test]
+fn fixed_pattern_rejects_smart_attack_on_free_zero_seed() {
+    let circuit = ShadowCircuit {
+        limb_value: huge_limb_fr(),
+        malicious: false,
+        smart: true,
+    };
+    let prover = MockProver::run(12, &circuit, vec![]).expect("mockprover setup");
+    let res = prover.verify();
+    assert!(
+        res.is_err(),
+        "the fixed range check MUST reject the smart (nonzero-seed) attack on \
+         an out-of-range limb. If this passes, `zero_ref` is a free cell and \
+         check_single_limb is STILL vacuous despite the chain links. Failures: {:?}",
         res
     );
 }

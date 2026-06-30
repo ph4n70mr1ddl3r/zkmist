@@ -2275,67 +2275,88 @@ impl<'a> Secp256k1Chip<'a> {
             || "accumulate_weighted_bits",
             |mut region| {
                 let mut offset = 0usize;
-                // Running accumulator (advice[2]); starts at zero. Soundness of
-                // the zero start is implied by the terminal `constrain_equal`
-                // the caller places against a known target.
-                let mut acc: AssignedCell<Fr, Fr> = region.assign_advice(
-                    || "acc_init",
-                    self.config.advice[2],
-                    offset,
-                    || Value::known(Fr::ZERO),
-                )?;
 
-                for (i, bit) in bits.iter().enumerate() {
-                    // Row: advice[0] = bit (copy), fixed = weight, advice[1] = bit·weight.
-                    let b_copy = region.assign_advice(
-                        || "ab_bit",
+                // ── Soundness (2026 bug-hunt): no free "zero start" cell. ──
+                // The previous version initialized the accumulator with a bare
+                // advice cell assigned `Fr::ZERO` but read by NO gate on its
+                // row. That cell was free, so a malicious prover could seed it
+                // with any `δ` and still satisfy the terminal `constrain_equal`
+                // against the caller's target — making the accumulator vacuous.
+                // For the nullifier-key binding (Finding 2) this fully decouples
+                // `poseidon(key, domain)` from the secp256k1 scalar actually
+                // multiplied, enabling unlimited claims with fresh nullifiers.
+                //
+                // Fix: seed the accumulator from the FIRST weighted bit, which is
+                // already constrained by `s_mul_fixed` (advice[0]·fixed = advice[1])
+                // and boolean-constrained by `s_bool`. Every subsequent step adds a
+                // gate-constrained partial. There is no unconstrained cell in the
+                // chain, so `acc = Σ bits[i]·weights[i]` is binding.
+                if bits.is_empty() {
+                    // Provable zero: `s_mul_fixed` with fixed=0 forces advice[1]=0
+                    // regardless of advice[0].
+                    region.assign_advice(
+                        || "empty_seed_a",
                         self.config.advice[0],
                         offset,
-                        || bit.value().copied(),
+                        || Value::known(Fr::ZERO),
                     )?;
+                    region.assign_fixed(|| "empty_seed_fixed", self.config.fixed, offset, || {
+                        Value::known(Fr::ZERO)
+                    })?;
+                    let zero = region.assign_advice(|| "empty_zero", self.config.advice[1], offset, || {
+                        Value::known(Fr::ZERO)
+                    })?;
+                    self.config.s_mul_fixed.enable(&mut region, offset)?;
+                    return Ok(zero);
+                }
+
+                // Seed: acc = bit[0] · weight[0]  (constrained by s_mul_fixed + s_bool).
+                let bit0 = bits[0].value().copied();
+                let b_copy0 = region.assign_advice(|| "ab_seed_bit", self.config.advice[0], offset, || {
+                    bit0
+                })?;
+                region.constrain_equal(bits[0].cell(), b_copy0.cell())?;
+                region.assign_fixed(|| "ab_seed_weight", self.config.fixed, offset, || {
+                    Value::known(weights[0])
+                })?;
+                let seed_val = bit0.map(|v| v * weights[0]);
+                let mut acc = region.assign_advice(|| "ab_seed", self.config.advice[1], offset, || {
+                    seed_val
+                })?;
+                self.config.s_bool.enable(&mut region, offset)?;
+                self.config.s_mul_fixed.enable(&mut region, offset)?;
+                offset += 1;
+
+                for (i, bit) in bits.iter().enumerate().skip(1) {
+                    // Row: advice[0] = bit (copy), fixed = weight, advice[1] = bit·weight.
+                    let bv = bit.value().copied();
+                    let b_copy = region.assign_advice(|| "ab_bit", self.config.advice[0], offset, || {
+                        bv
+                    })?;
                     region.constrain_equal(bit.cell(), b_copy.cell())?;
-                    region.assign_fixed(
-                        || "ab_weight",
-                        self.config.fixed,
-                        offset,
-                        || Value::known(weights[i]),
-                    )?;
-                    let partial = region.assign_advice(
-                        || "ab_partial",
-                        self.config.advice[1],
-                        offset,
-                        || bit.value().copied().map(|v| v * weights[i]),
-                    )?;
+                    region.assign_fixed(|| "ab_weight", self.config.fixed, offset, || {
+                        Value::known(weights[i])
+                    })?;
+                    let partial_val = bv.map(|v| v * weights[i]);
+                    let partial = region.assign_advice(|| "ab_partial", self.config.advice[1], offset, || {
+                        partial_val
+                    })?;
                     self.config.s_bool.enable(&mut region, offset)?;
                     self.config.s_mul_fixed.enable(&mut region, offset)?;
                     offset += 1;
 
                     // Row: acc + partial = new_acc  (s_add: advice[0]+advice[1]=advice[2])
-                    let acc_copy = region.assign_advice(
-                        || "ab_acc",
-                        self.config.advice[0],
-                        offset,
-                        || acc.value().copied(),
-                    )?;
+                    let acc_copy = region.assign_advice(|| "ab_acc", self.config.advice[0], offset, || {
+                        acc.value().copied()
+                    })?;
                     region.constrain_equal(acc.cell(), acc_copy.cell())?;
-                    let part_copy = region.assign_advice(
-                        || "ab_part",
-                        self.config.advice[1],
-                        offset,
-                        || partial.value().copied(),
-                    )?;
+                    let part_copy = region.assign_advice(|| "ab_part", self.config.advice[1], offset, || {
+                        partial.value().copied()
+                    })?;
                     region.constrain_equal(partial.cell(), part_copy.cell())?;
-                    acc = region.assign_advice(
-                        || "ab_newacc",
-                        self.config.advice[2],
-                        offset,
-                        || {
-                            acc.value()
-                                .copied()
-                                .zip(partial.value().copied())
-                                .map(|(a, p)| a + p)
-                        },
-                    )?;
+                    acc = region.assign_advice(|| "ab_newacc", self.config.advice[2], offset, || {
+                        acc.value().copied().zip(partial_val).map(|(a, p)| a + p)
+                    })?;
                     self.config.s_add.enable(&mut region, offset)?;
                     offset += 1;
                 }
@@ -2684,29 +2705,26 @@ impl<'a> Secp256k1Chip<'a> {
                 let mut offset = 0;
 
                 // ── Soundness: chain the running sum (2026 bug-hunt fix). ──
-                // The previous version left every z_cur / z_next / z_final as a
-                // FREE advice cell: it only constrained z_final == limb (trivially
-                // satisfiable) and never linked z_next[b] to z_cur[b+1], nor
-                // z_final to the running-sum terminal. A malicious prover could
-                // set all bytes/z_* to 0 and z_final = limb, satisfying every
-                // gate for an ARBITRARY limb — making this range check vacuous
-                // (empirically confirmed to accept 2^200 + 7 via MockProver).
+                // ── Soundness: chain the running sum, seed PROVABLY zero. ──
+                // History: the original left z_cur/z_next/z_final as FREE advice
+                // cells (only z_final==limb was constrained) → the check was
+                // vacuous (MockProver accepted limb = 2^200+7).
                 //
-                // The fix welds the chain shut with three constrain_equal links:
-                //   • z_cur[0]   == zero_ref            (sum is seeded at 0),
-                //   • z_cur[b>0] == z_next[b-1]          (contiguous chain),
-                //   • z_final    == z_next[7] == z[8]    (terminal bound to sum).
-                // Now z_final = Σ byte[i]·256^(7-i) with each byte ∈ [0,255],
-                // i.e. z_final < 2^64, and z_final == limb forces limb < 2^64.
+                // The 2026-06-30 fix added chain links (z_cur[b>0]==z_next[b-1],
+                // z_final==z_next[7] && z_final==limb) but left the SEED `zero_ref`
+                // as a free advice cell, so a "smart" attacker could set z[0]=δ≠0
+                // and still reach any out-of-range limb with all-zero bytes
+                // (z[8]=δ·256^8=limb). The check was STILL vacuous.
                 //
-                // advice[3] is NOT read by s_mul_fixed (advice[0,1]) or s_add
-                // (advice[0,1,2]), so it is free to host the zero anchor.
-                let zero_ref = region.assign_advice(
-                    || format!("z0_anchor_{}", limb_idx),
-                    self.config.advice[3],
-                    offset,
-                    || Value::known(Fr::ZERO),
-                )?;
+                // The 2026-07-01 fix binds the seed to zero ROW-NEUTRALLY: the
+                // `s_mul_fixed` gate already enforces z_scaled[0] = z_cur[0]·256.
+                // Forcing z_cur[0] == z_scaled[0] then yields z_cur[0]·256 =
+                // z_cur[0], i.e. z_cur[0]·255 = 0, so z_cur[0] = 0 (255 is
+                // invertible mod p_BN254). No extra cell or row is needed.
+                //
+                // With z[0]=0 and the chain links, z_final = Σ byte[i]·256^(7-i),
+                // each byte ∈ [0,255], so z_final < 2^64; z_final == limb forces
+                // limb < 2^64.
                 let mut prev_z_next: Option<AssignedCell<Fr, Fr>> = None;
 
                 for b in 0..8 {
@@ -2726,12 +2744,6 @@ impl<'a> Secp256k1Chip<'a> {
                         offset,
                         || Value::known(z[b]),
                     )?;
-                    // Chain the accumulator into z_cur.
-                    if b == 0 {
-                        region.constrain_equal(z_cur_cell.cell(), zero_ref.cell())?;
-                    } else if let Some(prev) = &prev_z_next {
-                        region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
-                    }
                     region.assign_fixed(
                         || "256",
                         self.config.fixed,
@@ -2745,6 +2757,13 @@ impl<'a> Secp256k1Chip<'a> {
                         || Value::known(z[b] * Fr::from(256u64)),
                     )?;
                     self.config.s_mul_fixed.enable(&mut region, offset)?;
+                    // Chain the running sum, and seed it at exactly zero (see
+                    // the soundness note above).
+                    if b == 0 {
+                        region.constrain_equal(z_cur_cell.cell(), z_scaled_cell.cell())?;
+                    } else if let Some(prev) = &prev_z_next {
+                        region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
+                    }
                     offset += 1;
 
                     // Row B: z_scaled + byte = z_next  (s_add gate)
