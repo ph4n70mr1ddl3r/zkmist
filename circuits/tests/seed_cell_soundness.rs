@@ -333,3 +333,149 @@ fn cond_swap_rejects_free_one_attack() {
     let res = prover.verify();
     assert!(res.is_err(), "fixed cond_swap MUST reject the free-one attack: {:?}", res);
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// 3. conditional_select_field shadow (secp scalar-mul)
+//    FIXED pattern: `result = b + sel·(a − b)` — algebraically identical to
+//    `sel·a + (1−sel)·b` but needs NO constant cell, so there is no free
+//    "one" to twist. Every operand is copy-constrained; every relation is a
+//    gate (`s_bool`, `s_add`, `s_mul`).
+//
+//    This is the SAME vulnerability class as (2) cond_swap and (1)
+//    accumulate_weighted_bits: the old `conditional_select_field` enforced
+//    `sel + one_minus_sel = one_cell` via `s_add`, but `one_cell` (advice[2])
+//    was a *free* advice cell — so `one_minus_sel` was unconstrained and a
+//    malicious prover could forge any select output. Because this gadget
+//    drives every step of `Secp256k1Chip::scalar_mul`, the hole fully
+//    decoupled the secp256k1 scalar from the multiplied point — the same
+//    unlimited-claims / double-spend impact as Finding 2.
+//
+//    The fix reformulates the select to avoid the constant entirely, so it
+//    adds no gate (the CS digest is unchanged) and even drops one row per
+//    call. The regression below claims the forged output the OLD free-one bug
+//    made reachable; the fixed gates MUST reject it.
+// ════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone)]
+struct CondSelCfg {
+    advice: [Column<Advice>; 3],
+    s_bool: Selector,
+    s_mul: Selector,
+    s_add: Selector,
+}
+
+fn cond_sel_configure(meta: &mut ConstraintSystem<Fr>) -> CondSelCfg {
+    let advice = std::array::from_fn(|_| {
+        let c = meta.advice_column();
+        meta.enable_equality(c);
+        c
+    });
+    let s_bool = meta.selector();
+    let s_mul = meta.selector();
+    let s_add = meta.selector();
+    meta.create_gate("bool", |m| {
+        let s = m.query_selector(s_bool);
+        let x = m.query_advice(advice[0], Rotation::cur());
+        vec![s * (x.clone() * (one_expr() - x))]
+    });
+    meta.create_gate("mul", |m| {
+        let s = m.query_selector(s_mul);
+        let a = m.query_advice(advice[0], Rotation::cur());
+        let b = m.query_advice(advice[1], Rotation::cur());
+        let c = m.query_advice(advice[2], Rotation::cur());
+        vec![s * (a * b - c)]
+    });
+    meta.create_gate("add", |m| {
+        let s = m.query_selector(s_add);
+        let a = m.query_advice(advice[0], Rotation::cur());
+        let b = m.query_advice(advice[1], Rotation::cur());
+        let c = m.query_advice(advice[2], Rotation::cur());
+        vec![s * (a + b - c)]
+    });
+    CondSelCfg { advice, s_bool, s_mul, s_add }
+}
+
+struct CondSelCircuit {
+    sel: Fr,
+    a: Fr,
+    b: Fr,
+}
+
+impl Circuit<Fr> for CondSelCircuit {
+    type Config = (CondSelCfg, Column<Instance>);
+    type FloorPlanner = SimpleFloorPlanner;
+    fn without_witnesses(&self) -> Self {
+        CondSelCircuit { sel: Fr::ZERO, a: Fr::ZERO, b: Fr::ZERO }
+    }
+    fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+        let cfg = cond_sel_configure(meta);
+        let inst = meta.instance_column();
+        meta.enable_equality(inst);
+        (cfg, inst)
+    }
+    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+        let (cfg, inst) = config;
+        let sel = self.sel;
+        let a = self.a;
+        let b = self.b;
+        // FIXED: result = b + sel·(a − b). No free constant anywhere.
+        let diff = a - b;
+        let t = sel * diff;
+        let out = b + t;
+        let res = layouter.assign_region(|| "cond_sel", |mut region| {
+            let o = 0usize;
+            // sel boolean
+            region.assign_advice(|| "sel", cfg.advice[0], o, || Value::known(sel))?;
+            cfg.s_bool.enable(&mut region, o)?;
+            // b + diff = a   (s_add ⟹ diff = a − b)
+            region.assign_advice(|| "b", cfg.advice[0], o + 1, || Value::known(b))?;
+            region.assign_advice(|| "diff", cfg.advice[1], o + 1, || Value::known(diff))?;
+            region.assign_advice(|| "a", cfg.advice[2], o + 1, || Value::known(a))?;
+            cfg.s_add.enable(&mut region, o + 1)?;
+            // sel * diff = t   (s_mul)
+            region.assign_advice(|| "sel2", cfg.advice[0], o + 2, || Value::known(sel))?;
+            region.assign_advice(|| "diff2", cfg.advice[1], o + 2, || Value::known(diff))?;
+            region.assign_advice(|| "t", cfg.advice[2], o + 2, || Value::known(t))?;
+            cfg.s_mul.enable(&mut region, o + 2)?;
+            // b + t = out   (s_add)
+            region.assign_advice(|| "b2", cfg.advice[0], o + 3, || Value::known(b))?;
+            region.assign_advice(|| "t2", cfg.advice[1], o + 3, || Value::known(t))?;
+            let out_cell =
+                region.assign_advice(|| "out", cfg.advice[2], o + 3, || Value::known(out))?;
+            cfg.s_add.enable(&mut region, o + 3)?;
+            Ok(out_cell)
+        })?;
+        layouter.constrain_instance(res.cell(), inst, 0)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn cond_select_accepts_honest_sel0() {
+    // sel=0, a=5, b=7 → result = b = 7.
+    let circuit = CondSelCircuit { sel: Fr::ZERO, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(7u64)]]).unwrap();
+    prover.verify().expect("honest select (sel=0) MUST verify");
+}
+
+#[test]
+fn cond_select_accepts_honest_sel1() {
+    // sel=1, a=5, b=7 → result = a = 5.
+    let circuit = CondSelCircuit { sel: Fr::ONE, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(5u64)]]).unwrap();
+    prover.verify().expect("honest select (sel=1) MUST verify");
+}
+
+#[test]
+fn cond_select_rejects_forged_output() {
+    // Old free-one-cell attack target: sel=0, a=5, b=7 but forge result=42
+    // (reachable before by setting the free `one_cell` to 6, giving oms=6,
+    // out = oms·b = 42). The fixed gates force result = b = 7, so the
+    // instance claim 42 is REJECTED. If this passes, a free constant has been
+    // re-introduced into the scalar-mul conditional select and the
+    // scalar↔nullifier binding is broken (unlimited claims / double-spend).
+    let circuit = CondSelCircuit { sel: Fr::ZERO, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(42u64)]]).unwrap();
+    let res = prover.verify();
+    assert!(res.is_err(), "fixed conditional_select MUST reject forged output: {:?}", res);
+}

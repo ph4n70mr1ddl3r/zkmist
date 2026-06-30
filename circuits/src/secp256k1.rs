@@ -2464,14 +2464,20 @@ impl<'a> Secp256k1Chip<'a> {
         Ok(AssignedPoint { x, y, z })
     }
 
-    /// Conditional select with **fully constrained** gates.
+    /// Conditional select with **fully constrained** gates (no free constants).
     ///
-    /// Computes `result = sel * a + (1 - sel) * b` for each limb, where:
-    /// - sel is constrained to be boolean via s_bool
-    /// - (1-sel) is constrained via s_add: sel + one_minus_sel = 1
-    /// - sel * a[i] is constrained via s_mul
-    /// - (1-sel) * b[i] is constrained via s_mul
-    /// - The sum is constrained via s_add
+    /// Computes `result = sel·a + (1−sel)·b` for each limb, rewritten as the
+    /// constant-free form `result = b + sel·(a − b)` so that no "1" cell is
+    /// ever needed. Every operand is copy-constrained and every relation is
+    /// enforced by a gate:
+    /// - sel is boolean via s_bool
+    /// - diff = a[i] − b[i] via s_add (`b[i] + diff = a[i]`)
+    /// - t = sel · diff via s_mul
+    /// - result = b[i] + t via s_add
+    ///
+    /// (2026-07-01 bug-hunt) the previous `sel + one_minus_sel = 1` row used a
+    /// *free* advice "one" cell, leaving `one_minus_sel` unconstrained and the
+    /// select forgeable — see the inline note below.
     fn conditional_select_field(
         &self,
         layouter: &mut impl Layouter<Fr>,
@@ -2498,97 +2504,95 @@ impl<'a> Secp256k1Chip<'a> {
                 self.config.s_bool.enable(&mut region, offset)?;
                 offset += 1;
 
-                // Row 1: Constrain one_minus_sel: sel + one_minus_sel = 1
-                // s_add gate: advice[0] + advice[1] = advice[2]
-                let one_minus_sel_val = bit.value().copied().map(|s| Fr::ONE - s);
-                let sel_for_add = region.assign_advice(
-                    || "sel_add",
-                    self.config.advice[0],
-                    offset,
-                    || bit.value().copied(),
-                )?;
-                region.constrain_equal(sel_cell.cell(), sel_for_add.cell())?;
-                let one_minus_sel = region.assign_advice(
-                    || "oms",
-                    self.config.advice[1],
-                    offset,
-                    || one_minus_sel_val,
-                )?;
-                let _one_cell = region.assign_advice(
-                    || "one",
-                    self.config.advice[2],
-                    offset,
-                    || Value::known(Fr::ONE),
-                )?;
-                self.config.s_add.enable(&mut region, offset)?;
-                offset += 1;
-
-                // For each limb: sel * a[i] + (1-sel) * b[i] = result[i]
+                // ── Soundness (2026-07-01 bug-hunt): no free "one" cell. ──
+                // The previous version computed `one_minus_sel` via the `s_add`
+                // gate `sel + one_minus_sel = one_cell`, but `one_cell` (advice[2])
+                // was a *free* advice cell — read by no other gate. The comment
+                // claimed it enforced `sel + one_minus_sel = 1`, but it actually
+                // enforced `sel + one_minus_sel = <free>`, so a malicious prover
+                // could pick `one_minus_sel` arbitrarily and forge any conditional
+                // select output. Because `conditional_select_point` drives every
+                // step of `scalar_mul`, this fully decouples the secp256k1 scalar
+                // actually multiplied from the bits — the same double-spend class
+                // as the `accumulate_weighted_bits` hole (a prover with ONE
+                // eligible key can mint unlimited fresh-nullifier claims).
+                //
+                // Fix: rewrite the select as `result = b + sel·(a − b)`, which is
+                // algebraically identical to `sel·a + (1−sel)·b` but needs NO
+                // constant cell at all — only the existing `s_add` / `s_mul` /
+                // `s_bool` gates, every operand copy-constrained. No gate is
+                // added (the constraint-system digest is unchanged), and the
+                // buggy `one_minus_sel` row is dropped (one fewer row per call).
+                //
+                // Per limb i (3 rows):
+                //   row A: s_add  b[i] + diff = a[i]        ⟹ diff = a[i] − b[i]
+                //   row B: s_mul  sel · diff   = t
+                //   row C: s_add  b[i] + t     = result[i]
+                // ⇒ result[i] = b[i] + sel·(a[i] − b[i])
                 let mut result = Vec::with_capacity(4);
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
-                    let sel_a_val = bit.value().copied().zip(a_val).map(|(s, a)| s * a);
-                    let oms_b_val = one_minus_sel_val.zip(b_val).map(|(m, b)| m * b);
-                    let sum_val = sel_a_val.zip(oms_b_val).map(|(a, b)| a + b);
+                    // diff = a[i] − b[i]  (sound: the s_add gate forces b+diff=a)
+                    let diff_val = a_val.zip(b_val).map(|(a, b)| a - b);
+                    // t = sel · diff
+                    let t_val = bit.value().copied().zip(diff_val).map(|(s, d)| s * d);
+                    // result = b[i] + t
+                    let sum_val = b_val.zip(t_val).map(|(b, t)| b + t);
 
-                    // Row: s_mul for sel * a[i]
-                    let sel_r = region.assign_advice(
-                        || "sr",
+                    // Row A: s_add for b[i] + diff = a[i]   (copies b[i], a[i])
+                    let b_ra =
+                        region.assign_advice(|| "cs_b", self.config.advice[0], offset, || b_val)?;
+                    region.constrain_equal(b.limbs[i].cell(), b_ra.cell())?;
+                    let diff_cell = region.assign_advice(
+                        || "cs_diff",
+                        self.config.advice[1],
+                        offset,
+                        || diff_val,
+                    )?;
+                    let a_ra =
+                        region.assign_advice(|| "cs_a", self.config.advice[2], offset, || a_val)?;
+                    region.constrain_equal(a.limbs[i].cell(), a_ra.cell())?;
+                    self.config.s_add.enable(&mut region, offset)?;
+                    offset += 1;
+
+                    // Row B: s_mul for sel · diff = t   (copies sel, diff)
+                    let sel_rb = region.assign_advice(
+                        || "cs_sel",
                         self.config.advice[0],
                         offset,
                         || bit.value().copied(),
                     )?;
-                    region.constrain_equal(sel_cell.cell(), sel_r.cell())?;
-                    let a_r =
-                        region.assign_advice(|| "ar", self.config.advice[1], offset, || a_val)?;
-                    region.constrain_equal(a.limbs[i].cell(), a_r.cell())?;
-                    let sel_a_cell = region.assign_advice(
-                        || "sa",
-                        self.config.advice[2],
-                        offset,
-                        || sel_a_val,
-                    )?;
-                    self.config.s_mul.enable(&mut region, offset)?;
-                    offset += 1;
-
-                    // Row: s_mul for (1-sel) * b[i]
-                    let oms_r = region.assign_advice(
-                        || "or",
-                        self.config.advice[0],
-                        offset,
-                        || one_minus_sel_val,
-                    )?;
-                    region.constrain_equal(one_minus_sel.cell(), oms_r.cell())?;
-                    let b_r =
-                        region.assign_advice(|| "br", self.config.advice[1], offset, || b_val)?;
-                    region.constrain_equal(b.limbs[i].cell(), b_r.cell())?;
-                    let oms_b_cell = region.assign_advice(
-                        || "ob",
-                        self.config.advice[2],
-                        offset,
-                        || oms_b_val,
-                    )?;
-                    self.config.s_mul.enable(&mut region, offset)?;
-                    offset += 1;
-
-                    // Row: s_add for sel_a + oms_b = result
-                    let sa_r = region.assign_advice(
-                        || "sar",
-                        self.config.advice[0],
-                        offset,
-                        || sel_a_val,
-                    )?;
-                    region.constrain_equal(sel_a_cell.cell(), sa_r.cell())?;
-                    let ob_r = region.assign_advice(
-                        || "obr",
+                    region.constrain_equal(sel_cell.cell(), sel_rb.cell())?;
+                    let diff_rb = region.assign_advice(
+                        || "cs_diff_r",
                         self.config.advice[1],
                         offset,
-                        || oms_b_val,
+                        || diff_val,
                     )?;
-                    region.constrain_equal(oms_b_cell.cell(), ob_r.cell())?;
+                    region.constrain_equal(diff_cell.cell(), diff_rb.cell())?;
+                    let t_cell =
+                        region.assign_advice(|| "cs_t", self.config.advice[2], offset, || t_val)?;
+                    self.config.s_mul.enable(&mut region, offset)?;
+                    offset += 1;
+
+                    // Row C: s_add for b[i] + t = result   (copies b[i], t)
+                    let b_rc = region.assign_advice(
+                        || "cs_b2",
+                        self.config.advice[0],
+                        offset,
+                        || b_val,
+                    )?;
+                    region.constrain_equal(b.limbs[i].cell(), b_rc.cell())?;
+                    let t_rc = region.assign_advice(
+                        || "cs_t_r",
+                        self.config.advice[1],
+                        offset,
+                        || t_val,
+                    )?;
+                    region.constrain_equal(t_cell.cell(), t_rc.cell())?;
                     let sum_cell = region.assign_advice(
-                        || "sum",
+                        || "cs_res",
                         self.config.advice[2],
                         offset,
                         || sum_val,

@@ -175,6 +175,19 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// The digest moved from `f8f4b46128dd613f` to `3905c7141112d7a6`. The fixes
 /// also shaved ~0.4M rows, so the circuit still fits k=23.
 ///
+/// Hardened again (2026-07-01 bug-hunt, follow-on) — a FOURTH hole of the
+/// same class, missed by the first pass:
+///   • `Secp256k1Chip::conditional_select_field` — `one_minus_sel` was bound
+///     only by `sel + one_minus_sel = one_cell` via `s_add`, but `one_cell`
+///     was a *free* advice cell, so the select output was forgeable. This
+///     gadget drives every step of `scalar_mul`, so the hole decoupled the
+///     secp256k1 scalar from the multiplied point — the same unlimited-claims
+///     / double-spend impact as the `accumulate_weighted_bits` hole. Fixed by
+///     rewriting the select as the constant-free form `result = b + sel·(a−b)`
+///     (only `s_add`/`s_mul`/`s_bool`, every operand copy-constrained). This
+///     is a witness-only change, so **the digest is unchanged**
+///     (`3905c7141112d7a6`); it also drops one row per call (~768 rows total).
+///
 /// To regenerate after any future `configure()` change: run
 /// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
 /// --nocapture`, copy the printed `CS_DIGEST` into BOTH this constant and
