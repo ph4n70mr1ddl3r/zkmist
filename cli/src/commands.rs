@@ -636,7 +636,7 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
 pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     use serde::Serialize;
     use zkmist_circuits::merkle::TREE_DEPTH;
-    use zkmist_merkle_tree::build_tree_streaming_with_depth;
+    use zkmist_merkle_tree::build_single_leaf_proof;
 
     eprintln!("ZKMist real-KZG round-trip fixture generator");
     eprintln!("─\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
@@ -663,16 +663,19 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
         format_address(&address)
     );
 
-    // Full-depth tree so the proof's path length matches the production
-    // TREE_DEPTH the circuit expects (a depth-4 tree would pad the upper 22
-    // levels and could never match the real root).
+    // The fixture places a SINGLE address at leaf index 0, so use the
+    // O(depth) single-leaf builder instead of materializing the full 2^depth
+    // dense tree. `build_single_leaf_proof` reproduces
+    // `build_tree_streaming_with_depth(&[addr], depth, Some(0))` exactly (see
+    // `test_single_leaf_proof_matches_streaming` in zkmist-merkle-tree) but
+    // does 26 hashes instead of 67M — the dense build wastes ~3 GiB RAM and
+    // ~12 min single-threaded for a proof that is fully determined by the
+    // all-padding subtree roots. Same root, same siblings, same path indices.
     eprintln!(
-        "[2/4] Building full-depth Merkle tree (depth={})...",
+        "[2/4] Building full-depth Merkle proof (depth={}, single leaf at index 0)...",
         TREE_DEPTH
     );
-    let addresses = vec![address];
-    let (root, proof) = build_tree_streaming_with_depth(&addresses, TREE_DEPTH, Some(0));
-    let (siblings_ark, path_indices_u8) = proof.ok_or("proof extraction failed")?;
+    let (root, siblings_ark, path_indices_u8) = build_single_leaf_proof(&address, TREE_DEPTH);
     let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
     let mut path_arr = [0u8; TREE_DEPTH];
     let copy_len = siblings_ark.len().min(TREE_DEPTH);
@@ -736,7 +739,17 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(&fixture)
         .map_err(|e| format!("Failed to serialize fixture: {}", e))?;
-    std::fs::write(out_path, &json).map_err(|e| format!("Failed to write fixture: {}", e))?;
+    // Atomic write: render to a sibling .partial, then `rename()` (atomic on
+    // the same filesystem). A crash mid-write therefore never leaves a
+    // truncated/half-written real_roundtrip.json that the Forge test would
+    // parse as junk — the worst case is a leftover .partial, not corruption.
+    let partial = format!("{}.partial", out_path);
+    std::fs::write(&partial, &json)
+        .map_err(|e| format!("Failed to write fixture (partial {}): {}", partial, e))?;
+    std::fs::rename(&partial, out_path).map_err(|e| {
+        let _ = std::fs::remove_file(&partial);
+        format!("Failed to finalize fixture (rename → {}): {}", out_path, e)
+    })?;
 
     eprintln!();
     eprintln!("\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}");

@@ -2683,6 +2683,32 @@ impl<'a> Secp256k1Chip<'a> {
             |mut region| {
                 let mut offset = 0;
 
+                // ── Soundness: chain the running sum (2026 bug-hunt fix). ──
+                // The previous version left every z_cur / z_next / z_final as a
+                // FREE advice cell: it only constrained z_final == limb (trivially
+                // satisfiable) and never linked z_next[b] to z_cur[b+1], nor
+                // z_final to the running-sum terminal. A malicious prover could
+                // set all bytes/z_* to 0 and z_final = limb, satisfying every
+                // gate for an ARBITRARY limb — making this range check vacuous
+                // (empirically confirmed to accept 2^200 + 7 via MockProver).
+                //
+                // The fix welds the chain shut with three constrain_equal links:
+                //   • z_cur[0]   == zero_ref            (sum is seeded at 0),
+                //   • z_cur[b>0] == z_next[b-1]          (contiguous chain),
+                //   • z_final    == z_next[7] == z[8]    (terminal bound to sum).
+                // Now z_final = Σ byte[i]·256^(7-i) with each byte ∈ [0,255],
+                // i.e. z_final < 2^64, and z_final == limb forces limb < 2^64.
+                //
+                // advice[3] is NOT read by s_mul_fixed (advice[0,1]) or s_add
+                // (advice[0,1,2]), so it is free to host the zero anchor.
+                let zero_ref = region.assign_advice(
+                    || format!("z0_anchor_{}", limb_idx),
+                    self.config.advice[3],
+                    offset,
+                    || Value::known(Fr::ZERO),
+                )?;
+                let mut prev_z_next: Option<AssignedCell<Fr, Fr>> = None;
+
                 for b in 0..8 {
                     // Assign byte to the range-check advice column.
                     // The unconditional lookup enforces byte ∈ [0, 255].
@@ -2694,12 +2720,18 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
 
                     // Row A: z_cur * 256 = z_scaled  (s_mul_fixed gate)
-                    let _z_cur_cell = region.assign_advice(
+                    let z_cur_cell = region.assign_advice(
                         || format!("z_cur_{}_{}", limb_idx, b),
                         self.config.advice[0],
                         offset,
                         || Value::known(z[b]),
                     )?;
+                    // Chain the accumulator into z_cur.
+                    if b == 0 {
+                        region.constrain_equal(z_cur_cell.cell(), zero_ref.cell())?;
+                    } else if let Some(prev) = &prev_z_next {
+                        region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
+                    }
                     region.assign_fixed(
                         || "256",
                         self.config.fixed,
@@ -2732,7 +2764,7 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     region.constrain_equal(byte_cell.cell(), byte_copy.cell())?;
 
-                    let _z_next_cell = region.assign_advice(
+                    let z_next_cell = region.assign_advice(
                         || format!("z_next_{}_{}", limb_idx, b),
                         self.config.advice[2],
                         offset,
@@ -2740,9 +2772,13 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     self.config.s_add.enable(&mut region, offset)?;
                     offset += 1;
+
+                    prev_z_next = Some(z_next_cell);
                 }
 
-                // Constrain z_8 == original limb
+                // Constrain z_8 (running-sum terminal) == original limb.
+                // z_final is bound to BOTH the last z_next (the real terminal)
+                // AND the limb under test — the link that was missing before.
                 let limb_copy = region.assign_advice(
                     || format!("limb_final_{}", limb_idx),
                     self.config.advice[0],
@@ -2756,6 +2792,9 @@ impl<'a> Secp256k1Chip<'a> {
                     offset,
                     || Value::known(z[8]),
                 )?;
+                if let Some(last) = &prev_z_next {
+                    region.constrain_equal(z_final.cell(), last.cell())?;
+                }
                 region.constrain_equal(z_final.cell(), limb_copy.cell())?;
 
                 Ok(())

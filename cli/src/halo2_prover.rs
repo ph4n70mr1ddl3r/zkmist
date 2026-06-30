@@ -32,6 +32,104 @@ use crate::types::ProofFile;
 /// Run gen-production-verifier with --k 23 to regenerate the VK.
 const CIRCUIT_K: u32 = 23;
 
+// ── Pre-flight RAM check ───────────────────────────────────────────
+//
+// `create_proof` at k=23 builds a witness grid of 2^23 = 8.4M rows and peaks
+// near ~20 GiB RSS, on top of `keygen_vk`/`keygen_pk` transients and the
+// cached SRS params held in memory. On a memory-constrained host (e.g. a
+// 32 GiB WSL2 VM under host pressure) the prover silently thrashes into swap
+// for tens of minutes, then gets OOM-killed (SIGKILL): no panic, no error,
+// just a dead process and a missing output file. That failure mode cost a
+// 37-minute diagnosis once; this check turns it into a one-line message.
+//
+// It reads Linux /proc/meminfo `MemAvailable` (the kernel's best estimate of
+// memory usable without swapping) and hard-fails below a k-derived floor.
+// Override with ZKMIST_SKIP_RAM_CHECK=1 when you know better (e.g. you accept
+// thrashing on a huge swapfile). Non-Linux / unreadable meminfo is treated as
+// "can't check" and silently proceeds.
+
+/// Empirical minimum *available* RAM (GiB) needed to prove at `k`.
+///
+/// Anchored to the MEASURED VmPeak ≈ 49 GiB of the full ZKMist circuit at
+/// k=23 (2^23 rows; secp256k1-GLV + Keccak + Poseidon + 26-level Merkle). That
+/// peak is dominated by `keygen_vk`, NOT `create_proof`: synthesizing the full
+/// circuit and KZG-committing its fixed/permutation columns across 8.4M rows
+/// allocates far more than the ~20 GiB witness grid `create_proof` later adds.
+/// Extrapolated linearly in 2^k, plus ~3 GiB of headroom for the OS + agent.
+/// On a host below this floor the prover thrashes into swap for tens of
+/// minutes, then gets OOM-killed — which is what this guard prevents.
+pub fn min_required_ram_gib(k: u32) -> f64 {
+    let peak_gib = 49.0 * (1u64 << k) as f64 / (1u64 << 23) as f64;
+    peak_gib + 3.0
+}
+
+/// Read `MemAvailable` (KiB) from `/proc/meminfo`, or `None` if unavailable
+/// (non-Linux, restricted, etc.).
+fn read_mem_available_kib() -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            let n: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// Core decision logic, factored out for deterministic testing.
+///
+/// `avail_gib`: the host's available RAM in GiB, or `None` when it can't be
+/// measured (non-Linux, restricted `/proc/meminfo`, etc.). Honors
+/// `ZKMIST_SKIP_RAM_CHECK` to force-proceed past the check.
+fn preflight_ram_check_for(avail_gib: Option<f64>) -> Result<(), String> {
+    let k = CIRCUIT_K;
+    let min_gib = min_required_ram_gib(k);
+    let avail_gib = match avail_gib {
+        Some(v) => v,
+        None => return Ok(()), // can't measure — don't block
+    };
+
+    if std::env::var("ZKMIST_SKIP_RAM_CHECK").is_ok() {
+        eprintln!(
+            "  ⚠️  MemAvailable {:.1} GiB vs ~{:.1} GiB recommended for k={}, but \
+             ZKMIST_SKIP_RAM_CHECK is set — proceeding (may be OOM-killed).",
+            avail_gib, min_gib, k
+        );
+        return Ok(());
+    }
+
+    if avail_gib < min_gib {
+        return Err(format!(
+            "Insufficient RAM for a k={} Halo2-KZG proof: MemAvailable is {:.1} GiB but \
+             ~{:.1} GiB is needed (witness grid of 2^{} rows + keygen transients + SRS). \
+             Free host memory, raise the container/WSL RAM limit (e.g. .wslconfig `memory=`), \
+             or set ZKMIST_SKIP_RAM_CHECK=1 to proceed anyway (it will likely be \
+             OOM-killed after minutes of work).",
+            k, avail_gib, min_gib, k
+        ));
+    }
+
+    // Marginal zone: enough to start, but peak RSS may still exceed it under
+    // host pressure — exactly the silent-OOM failure mode this guard exists for.
+    if avail_gib < min_gib + 4.0 {
+        eprintln!(
+            "  ⚠️  Marginal RAM: MemAvailable {:.1} GiB vs ~{:.1} GiB recommended for k={}. \
+             Proving may be OOM-killed mid-way; if it dies silently, free memory or raise \
+             the RAM limit. Set ZKMIST_SKIP_RAM_CHECK=1 to suppress this warning.",
+            avail_gib, min_gib, k
+        );
+    }
+    Ok(())
+}
+
+/// Abort early if the host obviously lacks the RAM to finish a `k = CIRCUIT_K`
+/// proof; warn when it sits in the marginal zone. Public so other entry points
+/// (e.g. a future `bench`) can invoke the same gate.
+pub fn preflight_ram_check() -> Result<(), String> {
+    let avail_gib = read_mem_available_kib().map(|kib| kib as f64 / (1024.0 * 1024.0));
+    preflight_ram_check_for(avail_gib)
+}
+
 // ── KZG SRS loading ───────────────────────────────────────────────────
 //
 // Halo2-KZG commits against a Structured Reference String (SRS). The prover
@@ -245,6 +343,9 @@ pub fn generate_v2_proof(
     recipient: &[u8; 20],
     output_path: &Path,
 ) -> Result<[u8; 32], String> {
+    // Pre-flight: refuse to start if the host obviously can't hold the proof.
+    preflight_ram_check()?;
+
     // ── Compute public inputs natively ───────────────────────────────
     let root_fr = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(merkle_root));
 
@@ -596,6 +697,76 @@ mod tests {
             "error should point to the doc: {}",
             err
         );
+    }
+
+    // Serialize the preflight tests that touch the ZKMIST_SKIP_RAM_CHECK env
+    // var (process-global) so they can't race under cargo's parallel runner.
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// `min_required_ram_gib` anchors to the MEASURED ~49 GiB keygen peak at
+    /// k=23 (VmPeak observed in the wild) + 3 GiB headroom = 52 GiB, and scales
+    /// linearly in 2^k so a future k bump is caught too.
+    #[test]
+    fn test_min_required_ram_gib_anchors_and_scales() {
+        // k=23 → ~49 GiB peak + 3 GiB headroom = 52 GiB.
+        assert!((min_required_ram_gib(23) - 52.0).abs() < 1e-9);
+        // k=24 → ~98 GiB peak + 3 GiB headroom = 101 GiB.
+        assert!(
+            (min_required_ram_gib(24) - 101.0).abs() < 1e-9,
+            "k=24 floor must be ~101 GiB"
+        );
+        assert!(min_required_ram_gib(24) > min_required_ram_gib(23));
+    }
+
+    /// `read_mem_available_kib` returns a sane positive value on this Linux host
+    /// (and `None` only on exotic setups — never panics).
+    #[test]
+    fn test_read_mem_available_kib_present_on_linux() {
+        // This crate targets Linux; on a Linux host the value must parse and be
+        // a plausible amount of RAM (> 1 GiB).
+        if let Some(kib) = read_mem_available_kib() {
+            assert!(kib > 1_048_576, "MemAvailable implausibly small: {kib} KiB");
+        }
+    }
+
+    /// Below the floor → hard error naming k=23 and the override escape hatch.
+    #[test]
+    fn test_preflight_blocks_insufficient_ram() {
+        let _g = env_lock().lock().unwrap();
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
+        let err = preflight_ram_check_for(Some(8.0)).expect_err("must reject 8 GiB");
+        assert!(err.contains("Insufficient RAM"), "{err}");
+        assert!(err.contains("k=23"), "{err}");
+        assert!(err.contains("ZKMIST_SKIP_RAM_CHECK"), "{err}");
+    }
+
+    /// Well above the marginal ceiling → clean Ok, no warning.
+    #[test]
+    fn test_preflight_accepts_comfortable_ram() {
+        let _g = env_lock().lock().unwrap();
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
+        assert!(preflight_ram_check_for(Some(64.0)).is_ok());
+    }
+
+    /// `ZKMIST_SKIP_RAM_CHECK=1` forces Ok even on an absurdly small host.
+    #[test]
+    fn test_preflight_skip_override_forces_ok() {
+        let _g = env_lock().lock().unwrap();
+        std::env::set_var("ZKMIST_SKIP_RAM_CHECK", "1");
+        let r = preflight_ram_check_for(Some(1.0));
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
+        assert!(r.is_ok(), "override must allow even 1 GiB: {r:?}");
+    }
+
+    /// Unknown RAM (non-Linux / unreadable meminfo) → can't measure, proceed.
+    #[test]
+    fn test_preflight_unknown_ram_proceeds() {
+        let _g = env_lock().lock().unwrap();
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
+        assert!(preflight_ram_check_for(None).is_ok());
     }
 
     /// REAL end-to-end Halo2-KZG proof round-trip on the FULL ZKMist circuit.

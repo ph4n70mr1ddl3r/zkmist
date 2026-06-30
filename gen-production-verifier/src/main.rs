@@ -153,16 +153,30 @@ fn load_or_gen_params(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut output_dir = PathBuf::from("../contracts/src");
+    let default_output_dir = PathBuf::from("../contracts/src");
+    let mut output_dir = default_output_dir.clone();
+    // True only when --output was explicitly passed on the CLI. Required by the
+    // --allow-dev-emit guard below: a dev VK must NEVER silently overwrite the
+    // default contracts/src/ (it is forgeable — deploying it would brick the
+    // airdrop). Tracking the flag (rather than comparing path strings) is robust
+    // to `../contracts/src` vs `contracts/src` vs absolute-path spellings.
+    let mut output_set = false;
     let mut k: u32 = EXPECTED_K;
     let mut params_file: Option<PathBuf> = None;
     let mut emit = false;
+    // Escape hatch for toolchain validation only: allows --emit against a RANDOM
+    // dev SRS, but ONLY to a non-default --output dir (never contracts/src/).
+    // The emitted VK is forgeable and stamped DEV-ONLY. Use to validate the
+    // emit → forge build → on-chain round-trip path without a real PSE SRS;
+    // NEVER deploy or commit a dev-emit VK. See scripts/regenerate-vk.sh.
+    let mut allow_dev_emit = false;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--output" | "-o" => {
                 output_dir = PathBuf::from(&args[i + 1]);
+                output_set = true;
                 i += 2;
             }
             "--params-file" => {
@@ -181,10 +195,14 @@ fn main() {
                 emit = true;
                 i += 1;
             }
+            "--allow-dev-emit" => {
+                allow_dev_emit = true;
+                i += 1;
+            }
             "--help" | "-h" => {
                 eprintln!(
                     "Usage: gen-production-verifier [--output DIR] [--k N] \
-                     [--params-file PATH] [--emit]"
+                     [--params-file PATH] [--emit] [--allow-dev-emit]"
                 );
                 eprintln!(
                     "  Default (no --emit): runs keygen_vk on the real circuit and prints the"
@@ -193,6 +211,12 @@ fn main() {
                     "    VK fingerprint for cross-checking, but does NOT write the .sol files."
                 );
                 eprintln!("  --emit: also write Halo2Verifier.sol + Halo2VerifyingKey.sol.");
+                eprintln!(
+                    "  --allow-dev-emit: permit --emit against a dev SRS ONLY to a non-default"
+                );
+                eprintln!(
+                    "    --output dir (toolchain validation; output is forgeable, DEV-ONLY)."
+                );
                 return;
             }
             _ => {
@@ -327,23 +351,65 @@ fn main() {
     }
 
     if params_file.is_none() {
+        // Dev SRS. The default guard (no --allow-dev-emit) always refuses, so a
+        // dev VK can never silently overwrite contracts/src/. --allow-dev-emit is
+        // explicit opt-in for toolchain validation: the emitted VK is stamped
+        // DEV-ONLY + FORGEABLE in its banner so it cannot be mistaken for, or
+        // accidentally committed as, a production VK. See scripts/regenerate-vk.sh.
+        if !allow_dev_emit {
+            eprintln!();
+            eprintln!("❌ REFUSING --emit with a RANDOM dev SRS.");
+            eprintln!(
+                "   --emit requires --params-file <pinned PSE SRS> so the emitted VK matches"
+            );
+            eprintln!("   the prover. Emitting against a dev SRS would brick the airdrop (every");
+            eprintln!("   honest proof rejected on-chain).");
+            eprintln!("   For TOOLCHAIN VALIDATION ONLY (forgeable, never deploy/commit): pass");
+            eprintln!("   --allow-dev-emit AND a non-default --output DIR, e.g.");
+            eprintln!("     --allow-dev-emit --output /tmp/dev-vk");
+            std::process::exit(2);
+        }
+        // Enforce the promise in the --allow-dev-emit docstring: a dev VK must
+        // NEVER land in the default contracts/src/ — only an explicit,
+        // non-default --output dir. Without this, `--emit --allow-dev-emit`
+        // (no --output) silently overwrites the production-bound verifier
+        // stubs with a forgeable dev VK, which is exactly how the placeholder
+        // can get clobbered by accident.
+        if !output_set || output_dir == default_output_dir {
+            eprintln!();
+            eprintln!("❌ REFUSING dev-emit to the DEFAULT output dir ({}).", output_dir.display());
+            eprintln!("   --allow-dev-emit requires an explicit, non-default --output DIR so a");
+            eprintln!("   forgeable dev VK can never overwrite contracts/src/. Re-run with");
+            eprintln!("   e.g. --allow-dev-emit --output /tmp/dev-vk");
+            std::process::exit(2);
+        }
         eprintln!();
-        eprintln!("❌ REFUSING --emit with a RANDOM dev SRS.");
-        eprintln!("   --emit requires --params-file <pinned PSE SRS> so the emitted VK matches");
-        eprintln!("   the prover. Emitting against a dev SRS would brick the airdrop (every");
-        eprintln!("   honest proof rejected on-chain).");
-        std::process::exit(2);
+        eprintln!("⚠️⚠️⚠️  --allow-dev-emit: emitting a DEV VK.");
+        eprintln!("   This VK is FORGEABLE (random dev SRS). Toolchain validation ONLY.");
+        eprintln!(
+            "   Do NOT deploy, do NOT commit. Output dir: {}",
+            output_dir.display()
+        );
     }
 
     eprintln!("[4/4] Generating Solidity verifier (--emit)...");
     let gen = SolidityGenerator::new(&params, &vk, BatchOpenScheme::Bdfg21, 3);
     let (verifier, vk_sol) = gen.render_separately().expect("render failed");
 
-    let banner = "// ⚠️ AUTO-GENERATED by `gen-production-verifier --emit` from the REAL\n\
+    let is_dev = params_file.is_none();
+    let banner = if is_dev {
+        "// ⚠️⚠️⚠️ DEV-ONLY (toolchain validation) — emitted with --allow-dev-emit against\n\
+                  // a RANDOM dev KZG SRS. This VK is FORGEABLE: proofs against it verify\n\
+                  // but prove NOTHING. Do NOT deploy. Do NOT commit. Regenerate with a\n\
+                  // pinned PSE SRS (--params-file) for production.\n\
+                  // Auto-generated from zkmist_circuits::ZKMistV2Claim.\n\n"
+    } else {
+        "// ⚠️ AUTO-GENERATED by `gen-production-verifier --emit` from the REAL\n\
                   // zkmist_circuits::ZKMistV2Claim circuit. Do not edit by hand.\n\
                   // VK validity is gated on the pinned PSE KZG SRS (KZG_SRS_SHA256 in\n\
                   // cli/src/constants.rs); confirm via DEPLOYMENT.md Phase 3-4 before\n\
-                  // deploying.\n\n";
+                  // deploying.\n\n"
+    };
 
     std::fs::create_dir_all(&output_dir).ok();
     std::fs::write(
