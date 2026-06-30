@@ -517,6 +517,17 @@ impl Secp256k1Config {
         meta.enable_equality(range_check_advice);
 
         let fixed = meta.fixed_column();
+        // Enable equality on the fixed column so advice cells can be
+        // copy-constrained to fixed-column CONSTANTS. This is the ONLY sound
+        // way to bind an advice cell to a known constant: a fixed-column value
+        // is part of the preprocessed (verifier-known) circuit, so
+        // `constrain_equal(advice_cell, fixed_const_cell)` provably forces the
+        // advice cell to that constant. Binding to a *free advice* cell instead
+        // (the previous pattern) only proves two advice cells are equal — which
+        // is vacuous for a constant, since the prover controls both. See the
+        // 2026-07-01 bug-hunt: every `zero_ref` / `c_ref` / `p_ref` "constant"
+        // that lived in an un-gated advice column was forgeable.
+        meta.enable_equality(fixed);
         let range_check = RangeCheckConfig::configure(meta, range_check_advice);
 
         let s_mul = meta.selector();
@@ -661,6 +672,25 @@ pub struct Secp256k1Chip<'a> {
 impl<'a> Secp256k1Chip<'a> {
     pub fn new(config: &'a Secp256k1Config) -> Self {
         Self { config }
+    }
+
+    // ── Constant-binding helper (2026-07-01 bug-hunt) ──────────────────
+    //
+    // Returns a cell in the FIXED column carrying `val`. Because fixed-column
+    // values are baked into the preprocessed circuit (known to the verifier),
+    // `constrain_equal(advice_cell, fixed_const(...))` provably binds the
+    // advice cell to `val`. This is the sound replacement for the previous
+    // pattern of `assign_advice(advice[5/6], ZERO/const)` + `constrain_equal`,
+    // which left the "constant" free (the prover could set both cells to any
+    // equal value). The carry chains and modular reductions rely on these
+    // bindings; making them vacuous fully broke non-native arithmetic.
+    fn fixed_const(
+        &self,
+        region: &mut Region<Fr>,
+        row: usize,
+        val: Fr,
+    ) -> Result<AssignedCell<Fr, Fr>, Error> {
+        region.assign_fixed(|| "const", self.config.fixed, row, || Value::known(val))
     }
 
     // ── Constrained non-native field operations ───────────────────────
@@ -830,15 +860,12 @@ impl<'a> Secp256k1Chip<'a> {
                 // For each limb, apply carry-propagated addition gate
                 let mut carry_out_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
                 let mut raw_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
-                // Zero reference (advice[5] is free under s_add_carry). The
-                // bottom carry-in (i=0) MUST be constrained to 0, not merely
-                // witnessed, else a prover could inject value into the raw sum.
-                let zero_ref = region.assign_advice(
-                    || "fac_zero_ref",
-                    self.config.advice[5],
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
+                // Bottom carry-in (i=0) MUST be provably 0. Binding it to a FREE
+                // advice cell (the old `fac_zero_ref` in advice[5]) was vacuous —
+                // the prover could set both cells to a nonzero δ and inject value
+                // into the raw sum. Bind it instead to a FIXED-column 0 (a true
+                // circuit constant via `enable_equality(fixed)`).
+                let zero_ref = self.fixed_const(&mut region, 0, Fr::ZERO)?;
                 for i in 0..4 {
                     let a_val = a.limbs[i].value().copied();
                     let b_val = b.limbs[i].value().copied();
@@ -1224,18 +1251,18 @@ impl<'a> Secp256k1Chip<'a> {
                 let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
                 let mut out: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(n);
 
-                // Canonical ZERO reference cell. advice[5] is NOT queried by the
-                // s_add / s_add_carry gates (they use advice[0..5]), so it is free
-                // for this anchor. Both the unused `b` operand of the carry gate AND
-                // the bottom (k=0) carry-in MUST be constrained — not merely
-                // witnessed — to 0; otherwise a malicious prover could inject value
-                // into the integer the chain represents.
-                let zero_ref = region.assign_advice(
-                    || "cc_zero_ref",
-                    self.config.advice[5],
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
+                // Canonical ZERO reference — a FIXED-column 0, not a free advice
+                // cell. advice[5] is NOT queried by s_add / s_add_carry (they
+                // use advice[0..5]), so the old `cc_zero_ref` living there was a
+                // *free* cell: constrain_equal-ing the carry gate's `b` operand
+                // and the bottom carry-in to it proved only that two advice cells
+                // were equal, letting a malicious prover inject arbitrary value
+                // into the integer the chain represents (and thus forge any
+                // field_mul / field_add / reduction result). Binding to a
+                // fixed-column constant (via `enable_equality(fixed)`) makes the
+                // 0 a true verifier-known constant, so every dependent
+                // constrain_equal is now sound.
+                let zero_ref = self.fixed_const(&mut region, 0, Fr::ZERO)?;
 
                 for k in 0..n {
                     // ── Sum this column's terms into `col_sum` (s_add chain). ──
@@ -1348,16 +1375,12 @@ impl<'a> Secp256k1Chip<'a> {
                     prev_carry = Some(cout);
                 }
 
-                // Final carry-out must be 0. (Sound only if the caller supplied
-                // enough empty high columns that V fits; both callers do.)
+                // Final carry-out must be 0 (sound only if the caller supplied
+                // enough empty high columns that V fits; both callers do). Bind
+                // it DIRECTLY to the fixed-column 0 — the old code bound it to a
+                // fresh free advice `z` cell, which was vacuous.
                 if let Some(pc) = &prev_carry {
-                    let z = region.assign_advice(
-                        || "cc_final_zero",
-                        self.config.advice[0],
-                        offset,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    region.constrain_equal(pc.cell(), z.cell())?;
+                    region.constrain_equal(pc.cell(), zero_ref.cell())?;
                 }
                 Ok(out)
             },
@@ -1572,7 +1595,10 @@ impl<'a> Secp256k1Chip<'a> {
                 },
             )?;
         }
-        // S's high limb (index n) must be 0 (V < 2^(64·n)).
+        // S's high limb (index n) must be 0 (V < 2^(64·n)). Bind it to a
+        // FIXED-column 0 — the old code bound it to a free advice `z` cell,
+        // which was vacuous (the prover could set both to any equal value and
+        // hide overflow in the high limb).
         layouter.assign_region(
             || "s_high_zero",
             |mut region| {
@@ -1583,12 +1609,7 @@ impl<'a> Secp256k1Chip<'a> {
                     || s_limbs[n].value().copied(),
                 )?;
                 region.constrain_equal(s_limbs[n].cell(), a.cell())?;
-                let z = region.assign_advice(
-                    || "z",
-                    self.config.advice[1],
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
+                let z = self.fixed_const(&mut region, 0, Fr::ZERO)?;
                 region.constrain_equal(a.cell(), z.cell())?;
                 Ok(())
             },
@@ -1601,22 +1622,16 @@ impl<'a> Secp256k1Chip<'a> {
         let canon_lo_cells: Vec<AssignedCell<Fr, Fr>> = layouter.assign_region(
             || "canonicalize_lt_p",
             |mut region| {
-                // Reference constants (advice[5], advice[6] are not queried by
-                // s_add_carry, which uses advice[0..5]). The `b` operand and the
-                // bottom carry-in are CONSTRAINED to these — not merely
-                // witnessed — so a prover cannot inject value.
-                let zero_ref = region.assign_advice(
-                    || "canon_zero",
-                    self.config.advice[5],
-                    4,
-                    || Value::known(Fr::ZERO),
-                )?;
-                let c_ref = region.assign_advice(
-                    || "canon_C",
-                    self.config.advice[6],
-                    4,
-                    || Value::known(Fr::from(C_LIMB0)),
-                )?;
+                // Reference constants in the FIXED column (advice[5], advice[6]
+                // are not queried by s_add_carry, which uses advice[0..5], so
+                // the old advice-resident `canon_zero` / `canon_C` were FREE
+                // — binding the `b` operand and bottom carry-in to them let a
+                // prover inject value and falsely satisfy `result + C < 2^256`,
+                // defeating the `result < p` proof). Each fixed (column,row)
+                // holds one value, so the distinct constants 0 and C occupy
+                // distinct rows.
+                let zero_ref = self.fixed_const(&mut region, 4, Fr::ZERO)?;
+                let c_ref = self.fixed_const(&mut region, 5, Fr::from(C_LIMB0))?;
                 let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
                 let mut lo_cells: Vec<AssignedCell<Fr, Fr>> = Vec::with_capacity(4);
                 for i in 0..4usize {
@@ -1679,14 +1694,11 @@ impl<'a> Secp256k1Chip<'a> {
                     )?;
                     self.config.s_add_carry.enable(&mut region, i)?;
                     if i == 3 {
-                        // final carry == 0  ⟹  result + C < 2^256  ⟹  result < p
-                        let z = region.assign_advice(
-                            || "cz",
-                            self.config.advice[0],
-                            4,
-                            || Value::known(Fr::ZERO),
-                        )?;
-                        region.constrain_equal(cout.cell(), z.cell())?;
+                        // final carry == 0  ⟹  result + C < 2^256  ⟹  result < p.
+                        // Bind DIRECTLY to the fixed-column `zero_ref` — the old
+                        // code bound it to a fresh free advice `cz` cell, which
+                        // was vacuous (a nonzero final carry could hide there).
+                        region.constrain_equal(cout.cell(), zero_ref.cell())?;
                     } else {
                         prev_carry = Some(cout);
                     }
@@ -1767,12 +1779,8 @@ impl<'a> Secp256k1Chip<'a> {
         layouter.assign_region(
             || "secp_neg_b_proof",
             |mut region| {
-                let zero_ref = region.assign_advice(
-                    || "nsub_zero",
-                    self.config.advice[5],
-                    0,
-                    || Value::known(Fr::ZERO),
-                )?;
+                // FIXED-column 0 anchor (advice[5] was free under s_add_carry).
+                let zero_ref = self.fixed_const(&mut region, 4, Fr::ZERO)?;
                 let mut prev_carry: Option<AssignedCell<Fr, Fr>> = None;
                 for i in 0..4usize {
                     let b_val = b.limbs[i].value().copied();
@@ -1827,24 +1835,20 @@ impl<'a> Secp256k1Chip<'a> {
                         || hi,
                     )?;
                     self.config.s_add_carry.enable(&mut region, i)?;
-                    // Force the result limb to equal the secp prime limb SECP_P[i]
-                    // (advice[6] is free under s_add_carry, which uses advice[0..5]).
-                    let p_ref = region.assign_advice(
-                        || format!("nsub_pref_{}", i),
-                        self.config.advice[6],
-                        i,
-                        || Value::known(Fr::from(SECP_P[i])),
-                    )?;
+                    // Force the result limb to equal the secp prime limb
+                    // SECP_P[i] via a FIXED-column constant (advice[6] was free
+                    // under s_add_carry, so the old `p_ref` advice cell bound
+                    // r_cell only to another prover-controlled cell — `neg_b` was
+                    // unconstrained and `field_sub` returned `a + <arbitrary>`
+                    // mod p, fully breaking scalar multiplication).
+                    let p_ref =
+                        self.fixed_const(&mut region, 5 + i, Fr::from(SECP_P[i]))?;
                     region.constrain_equal(r_cell.cell(), p_ref.cell())?;
                     if i == 3 {
-                        // final carry == 0  ⟹  b + neg_b == p (no overflow)
-                        let z = region.assign_advice(
-                            || "nsub_final_zero",
-                            self.config.advice[0],
-                            4,
-                            || Value::known(Fr::ZERO),
-                        )?;
-                        region.constrain_equal(cout.cell(), z.cell())?;
+                        // final carry == 0  ⟹  b + neg_b == p (no overflow).
+                        // Bind DIRECTLY to the fixed-column `zero_ref` — the
+                        // old free-advice `z` anchor was vacuous.
+                        region.constrain_equal(cout.cell(), zero_ref.cell())?;
                     } else {
                         prev_carry = Some(cout);
                     }
@@ -2999,13 +3003,11 @@ impl<'a> Secp256k1Chip<'a> {
                 self.config.s_add.enable(&mut region, offset)?;
                 offset += 1;
 
-                // Constrain diff2 = 0
-                let zero = region.assign_advice(
-                    || "zero",
-                    self.config.advice[0],
-                    offset,
-                    || Value::known(Fr::ZERO),
-                )?;
+                // Constrain diff2 = 0. Bind to a FIXED-column 0 (a free-advice
+                // `zero` cell would make this vacuous — the same bug class as
+                // the carry chains). Note: `verify_product` is currently
+                // dead code; this keeps it sound if ever revived.
+                let zero = self.fixed_const(&mut region, offset, Fr::ZERO)?;
                 region.constrain_equal(diff2.cell(), zero.cell())?;
 
                 Ok(())

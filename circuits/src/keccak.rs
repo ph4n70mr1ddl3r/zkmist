@@ -501,12 +501,22 @@ impl<'a> KeccakChip<'a> {
     }
 
     /// ι step: XOR lane[0] (i.e. A[0,0]) with the round constant.
+    ///
+    /// `one_cell` is a PROVEN constant-1 cell (created once by
+    /// `hash_pubkey_to_address` via `decompose_byte(1)` — the `s_byte_decomp`
+    /// gate forces its bit[0] to 1). For each set round-constant bit we XOR the
+    /// state bit with this proven 1, yielding a sound `NOT`. The previous code
+    /// XORed with a *free* advice "one" cell (advice[4], read by no gate), so a
+    /// malicious prover could set it to any value and deviate the in-circuit
+    /// Keccak output from the true `keccak256(pub_x||pub_y)` — decoupling the
+    /// Merkle leaf (and thus the claimed address) from the bound public key.
     fn iota_step(
         &self,
         region: &mut Region<Fr>,
         offset: &mut usize,
         state: &mut Vec<Vec<AssignedCell<Fr, Fr>>>,
         round: usize,
+        one_cell: &AssignedCell<Fr, Fr>,
     ) -> Result<(), Error> {
         let rc = RC[round];
         let rc_bits = u64_to_bits(rc);
@@ -514,21 +524,10 @@ impl<'a> KeccakChip<'a> {
         let mut new_lane = Vec::with_capacity(64);
         for i in 0..64 {
             if rc_bits[i] {
-                // Bit is 1: XOR with a constant 1 cell
-                // We need an AssignedCell with value Fr::ONE
-                // Assign constant 1 to advice[4] (not advice[0]) to avoid
-                // conflicting with xor_pair which copies `a` into advice[0].
-                let one = region.assign_advice(
-                    || "iota_one",
-                    self.config.advice[4],
-                    *offset,
-                    || Value::known(Fr::ONE),
-                )?;
-                // Bool-constrain the one cell
-                // (One is always 1, so the constraint is trivially satisfied.
-                //  We rely on the fact that XOR with a hard-coded 1 from advice
-                //  is sound when the other operand is already boolean-constrained.)
-                let out = self.xor_pair(region, *offset, &lane[i], &one)?;
+                // Bit is 1: XOR the state bit with the PROVEN constant-1 cell
+                // (out = a XOR 1 = NOT a). The operand is copy-constrained to
+                // `one_cell`, which `s_byte_decomp` forces to exactly 1.
+                let out = self.xor_pair(region, *offset, &lane[i], one_cell)?;
                 new_lane.push(out);
                 *offset += 1;
             } else {
@@ -666,6 +665,16 @@ impl<'a> KeccakChip<'a> {
                 let (mut state, input_byte_bits) =
                     self.build_initial_state(&mut region, &mut offset, pub_x, pub_y)?;
 
+                // Proven constant-1 cell for the ι step (2026-07-01 bug-hunt).
+                // `decompose_byte(1)` enables `s_byte_decomp`, which forces 8
+                // boolean bits whose weighted sum is the fixed byte value 1 —
+                // the unique solution is bit[0]=1, rest 0. So `one_bits[0]` is
+                // PROVABLY 1, and XOR-ing a state bit with it computes a sound
+                // NOT. The old `iota_step` used a free advice "one" cell.
+                let one_bits = self.decompose_byte(&mut region, offset, 1)?;
+                let one_cell = one_bits[0].clone();
+                offset += 1;
+
                 // Step 2: Apply 24 rounds of Keccak-f
                 for round in 0..ROUNDS {
                     // θ step
@@ -675,7 +684,7 @@ impl<'a> KeccakChip<'a> {
                     // χ step
                     state = self.chi_step(&mut region, &mut offset, &state)?;
                     // ι step
-                    self.iota_step(&mut region, &mut offset, &mut state, round)?;
+                    self.iota_step(&mut region, &mut offset, &mut state, round, &one_cell)?;
                 }
 
                 // Step 3: Extract hash from first 4 lanes (32 bytes = 256 bits)

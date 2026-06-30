@@ -175,18 +175,26 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// The digest moved from `f8f4b46128dd613f` to `3905c7141112d7a6`. The fixes
 /// also shaved ~0.4M rows, so the circuit still fits k=23.
 ///
-/// Hardened again (2026-07-01 bug-hunt, follow-on) — a FOURTH hole of the
-/// same class, missed by the first pass:
-///   • `Secp256k1Chip::conditional_select_field` — `one_minus_sel` was bound
-///     only by `sel + one_minus_sel = one_cell` via `s_add`, but `one_cell`
-///     was a *free* advice cell, so the select output was forgeable. This
-///     gadget drives every step of `scalar_mul`, so the hole decoupled the
-///     secp256k1 scalar from the multiplied point — the same unlimited-claims
-///     / double-spend impact as the `accumulate_weighted_bits` hole. Fixed by
-///     rewriting the select as the constant-free form `result = b + sel·(a−b)`
-///     (only `s_add`/`s_mul`/`s_bool`, every operand copy-constrained). This
-///     is a witness-only change, so **the digest is unchanged**
-///     (`3905c7141112d7a6`); it also drops one row per call (~768 rows total).
+/// The digest moved from `3905c7141112d7a6` to `b8022d1afb857964` after the
+/// 2026-07-01 follow-on bug-hunt that closed a SYSTEMIC class of "free
+/// constant cell" soundness holes: the carry-chain / modular-reduction /
+/// field-sub helpers bound their `0` / `C` / `SECP_P[i]` "constants" via
+/// `constrain_equal` to cells living in advice columns that the gates never
+/// read (advice[5], advice[6]). That binding is vacuous — `constrain_equal`
+/// between two advice cells only proves they are EQUAL, not that they equal a
+/// constant — so a malicious prover could inject arbitrary value into every
+/// non-native field operation (`field_mul`, `field_add_carried`,
+/// `field_sub`, `reduce_canonical_mod_p`, `carry_chain_columns`), fully
+/// forging `scalar_mul`'s output and thus the claimed address (unlimited
+/// claims / theft of every allocation). The fix `enable_equality`s the secp
+/// `fixed` column and binds every constant to a fixed-column cell (a true
+/// verifier-known constant). The keccak `iota` round-constant injection had a
+/// related free-"one" cell, fixed by deriving a proven-1 from `s_byte_decomp`
+/// (a witness-only change, but `enable_equality(fixed)` moved the digest).
+///
+/// (Earlier in the same follow-on, `conditional_select_field` was rewritten
+/// to the constant-free form `result = b + sel·(a−b)` — that part is
+/// witness-only and did not move the digest.)
 ///
 /// To regenerate after any future `configure()` change: run
 /// `cargo test -p zkmist-circuits test_circuit_constraint_system_digest --
@@ -194,12 +202,11 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// `gen-production-verifier`, then commit. (Running that single test is
 /// cheap; it does not invoke the expensive k=23 MockProver/KZG paths.)
 ///
-/// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` carries this same
-/// digest (`3905c7141112d7a6`), imported from here, so both sides agree by
-/// construction. The generator's runtime parity assert re-validates it under
-/// the PSE halo2 git fork when built in an environment with
-/// `halo2-solidity-verifier` present.
-pub const EXPECTED_CS_DIGEST: &str = "3905c7141112d7a6";
+/// ✅ SYNCED (2026): `gen-production-verifier/src/main.rs` imports this same
+/// constant, so both sides agree by construction. The generator's runtime
+/// parity assert re-validates it under the PSE halo2 git fork when built in an
+/// environment with `halo2-solidity-verifier` present.
+pub const EXPECTED_CS_DIGEST: &str = "b8022d1afb857964";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each
 /// already decomposed into 8 boolean bits by `build_initial_state`) to equal a
