@@ -13,10 +13,13 @@
 # Prerequisites:
 #   - Rust (stable) with cargo
 #   - ~16-20 GiB RAM for proof generation (measured peak ~19.5 GiB RSS at k=23)
-#   - First proof is slow: cold KZG params generation for 16M G1 points was
-#     measured to exceed 8 minutes. Subsequent runs reuse ~/.zkmist/cache/.
-#     ⚠️ The prover currently uses a RANDOM SRS (Params::new) — dev/test only;
-#     mainnet must load the Ethereum KZG ceremony SRS (see readiness checker).
+#   - The bench step proves against a RANDOM dev SRS (ZKMIST_DEV_SRS=1, set
+#     automatically below) so it runs without the pinned PSE ceremony SRS.
+#     That SRS is forgeable, so the bench validates the proving CODE PATH and
+#     proof SIZE only — never soundness. Mainnet MUST pin the real PSE SRS
+#     (KZG_SRS_SHA256 in cli/src/constants.rs); the readiness checker enforces
+#     this. The first run generates the dev SRS (2^23 G1 points, ~8 min cold;
+#     cached under ~/.zkmist/cache/ thereafter).
 #
 # Usage:
 #   ./scripts/e2e-test.sh
@@ -88,9 +91,16 @@ echo ""
 
 # ── Step 4: Run benchmark (generates real proof) ────────────────────
 echo "[4/6] Generating Halo2-KZG proof (benchmark mode)..."
-echo "      First run generates 16M KZG G1 points (measured >8 min cold; cached after)..."
+echo "      Uses a RANDOM dev SRS (ZKMIST_DEV_SRS=1) — validates proving code path"
+echo "      and proof SIZE only, NOT soundness. First run generates the dev SRS"
+echo "      (~8 min cold; cached after)."
 START=$(date +%s)
-BENCH_OUTPUT=$(cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4 2>&1) || true
+# ZKMIST_DEV_SRS=1: the prover now REQUIRES a pinned PSE SRS
+# (KZG_SRS_SHA256) in production and falls back to a random dev SRS ONLY under
+# this gate. Without it `bench` errors with "No KZG SRS configured" before ever
+# proving — so this gate is what lets the benchmark actually produce a proof.
+# The dev SRS is forgeable; fine for a timing/size benchmark, NEVER for mainnet.
+BENCH_OUTPUT=$(ZKMIST_DEV_SRS=1 cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4 2>&1) || true
 ELAPSED=$(($(date +%s) - START))
 
 echo "$BENCH_OUTPUT" | grep -E "Benchmark|Total|Proof size|Proof in range|under|exceeds|expected"

@@ -86,10 +86,15 @@ enum Commands {
     },
 
     /// Benchmark proving pipeline: times key generation and proof creation.
-    /// Generates a small Merkle tree and runs the proving pipeline without
-    /// writing to disk. Useful for measuring proving time on reference hardware.
+    /// Runs the proving pipeline without writing to disk. Useful for measuring
+    /// proving time on reference hardware.
+    ///
+    /// The proof itself always uses a full-depth (TREE_DEPTH=26) Merkle path,
+    /// because the circuit always iterates 0..TREE_DEPTH; `--tree-depth` only
+    /// scales an additional informational dense-tree-build timing line.
     Bench {
-        /// Tree depth for the benchmark (default: 4)
+        /// Tree depth for the dense Merkle-build timing benchmark (default: 4).
+        /// Does NOT change the proof, which is always full-depth (TREE_DEPTH=26).
         #[arg(long, default_value = "4")]
         tree_depth: usize,
     },

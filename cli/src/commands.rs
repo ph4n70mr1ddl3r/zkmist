@@ -487,7 +487,7 @@ pub fn cmd_submit(
 ///   5. Local verification
 pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
     use zkmist_circuits::merkle::TREE_DEPTH;
-    use zkmist_merkle_tree::build_tree_streaming_with_depth;
+    use zkmist_merkle_tree::{build_single_leaf_proof, build_tree_streaming_with_depth};
 
     let depth = tree_depth.clamp(1, 26);
 
@@ -509,19 +509,41 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
 
     // Phase 1: Build Merkle tree
     eprintln!();
-    eprintln!("[1/4] Building Merkle tree (depth={})...", depth);
+    eprintln!(
+        "[1/4] Building Merkle tree (dense build depth={})...",
+        depth
+    );
     let t1 = std::time::Instant::now();
+    // INFORMATIONAL dense-tree-construction benchmark only: times a streaming
+    // build at the caller-requested `depth` so Merkle-build scalability can be
+    // measured. Its output is intentionally NOT used for the proof — see below.
     let addresses = vec![address];
-    let (root_ark, proof) = build_tree_streaming_with_depth(&addresses, depth, Some(0));
-    let (siblings_ark, path_indices_u8) = proof.expect("proof extraction failed");
-    eprintln!("      ✓ Tree built ({:.2}s)", t1.elapsed().as_secs_f64());
+    let (_dense_root, _dense_proof) = build_tree_streaming_with_depth(&addresses, depth, Some(0));
 
-    // Pad siblings to TREE_DEPTH
+    // Build the VALID full-depth Merkle proof the circuit requires.
+    //
+    // The circuit ALWAYS iterates 0..TREE_DEPTH (26 levels), so the proof MUST
+    // be a full-depth path. The previous code built a depth-`depth` tree and
+    // zero-padded the siblings to TREE_DEPTH — but a depth-`depth` root is NOT
+    // equal to the depth-26 root the circuit computes over the padded path
+    // (the extra levels hash `poseidon(node, Fr(0))`, not the padding sentinel),
+    // so the circuit's root-binding constraint `constrain_instance(computed,
+    // instance)` was unsatisfiable and `generate_v2_proof` ALWAYS failed for
+    // any `depth < 26` (i.e. the documented default and every e2e-test.sh
+    // invocation). `build_single_leaf_proof` yields the O(depth) full-depth
+    // path the circuit expects — the same builder the E2E circuit test and
+    // `gen-roundtrip-fixture` use — so the emitted proof verifies.
+    let (root_ark, siblings_ark, path_indices_u8) = build_single_leaf_proof(&address, TREE_DEPTH);
+    let tree_build_time = t1.elapsed();
+    eprintln!(
+        "      ✓ Merkle proof built ({:.2}s)",
+        tree_build_time.as_secs_f64()
+    );
+
     let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
     let mut path_arr = [0u8; TREE_DEPTH];
-    let copy_len = siblings_ark.len().min(TREE_DEPTH);
-    sibling_arr[..copy_len].copy_from_slice(&siblings_ark[..copy_len]);
-    path_arr[..copy_len].copy_from_slice(&path_indices_u8[..copy_len]);
+    sibling_arr.copy_from_slice(&siblings_ark);
+    path_arr.copy_from_slice(&path_indices_u8);
 
     // Phase 2-4: Proving pipeline via halo2_prover
     eprintln!("[2/4] Running proving pipeline...");
@@ -559,7 +581,10 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
     eprintln!("  Benchmark Results");
     eprintln!("══════════════════════════════════════════════════════");
     eprintln!("  Total proving time:  {:.2}s", total_time.as_secs_f64());
-    eprintln!("  Tree build time:     {:.2}s", t1.elapsed().as_secs_f64());
+    eprintln!(
+        "  Tree build time:     {:.2}s",
+        tree_build_time.as_secs_f64()
+    );
     eprintln!("  Proof size:          {} bytes", proof_bytes.len());
     eprintln!(
         "  Proof in range:      {}",
