@@ -101,10 +101,10 @@ contract RealRoundtrip is Test {
         bytes32 nullifier = vm.parseJsonBytes32(_fixtureJson, ".nullifier");
         address recipient = vm.parseJsonAddress(_fixtureJson, ".recipient");
 
-        // Sanity: the proof length must match Halo2Verifier's hardcoded 5632.
+        // Sanity: the proof length must match Halo2Verifier's hardcoded 5888.
         // (The contract re-checks this authoritatively; this gives a clearer
         // failure than the verifier's boolean return.)
-        assertEq(proof.length, 5632, "proof length != 5632 (Halo2Verifier expects 0x1600)");
+        assertEq(proof.length, 5888, "proof length != 5888 (Halo2Verifier expects 0x1700)");
         assertNotEq(recipient, address(0), "fixture recipient is zero");
 
         // Pre-conditions the contract checks before the expensive pairing.

@@ -884,10 +884,10 @@ mod tests {
     // After the SRS-loading rewrite the prover LOADS a transcript in
     // production and only falls back to Params::new behind an explicit
     // ZKMIST_DEV_SRS gate. So uses_random_srs() must be FALSE on the real
-    // prover now. The remaining blocker is that the trust root is not yet
-    // pinned (KZG_SRS_SHA256 empty) — pinned by
-    // test_real_committed_kzg_srs_hash_is_placeholder, which flips to
-    // equality once the deployer verifies and sets the hash.
+    // prover now. The trust root IS now pinned (KZG_SRS_SHA256 set) — guarded
+    // by test_real_committed_kzg_srs_hash_is_pinned, which asserts the hash
+    // stays a well-formed 64-hex value (a change requires regenerating the VK
+    // and rerunning the on-chain round-trip; see docs/kzg-srs.md §2.2).
     #[test]
     fn test_real_committed_prover_srs_is_dev_gated() {
         let prover_path = repo_root().join("cli/src/halo2_prover.rs");
@@ -905,16 +905,29 @@ mod tests {
     }
 
     #[test]
-    fn test_real_committed_kzg_srs_hash_is_placeholder() {
-        // CURRENT state: trust root not pinned. When the deployer obtains,
-        // independently verifies, and sets KZG_SRS_SHA256, flip this to assert
-        // a 64-hex-char value and confirm the readiness [1d/8] check passes.
+    fn test_real_committed_kzg_srs_hash_is_pinned() {
+        // Trust root is now pinned. This tripwire guards against two silent
+        // regressions: (a) KZG_SRS_SHA256 being cleared back to empty, and
+        // (b) it being repinned to a malformed value. Repinning to a DIFFERENT
+        // digest also requires regenerating Halo2VerifyingKey.sol (via
+        // gen-production-verifier --emit) and rerunning ZKM.realroundtrip.t.sol
+        // — see docs/kzg-srs.md §2.2 (provenance must be re-confirmed).
         let constants_path = repo_root().join("cli/src/constants.rs");
-        let hash = extract_constant(&constants_path, "KZG_SRS_SHA256");
+        let hash = extract_constant(&constants_path, "KZG_SRS_SHA256")
+            .expect("KZG_SRS_SHA256 must be pinned (readiness [1d/8] fails without it)");
         assert_eq!(
-            hash, None,
-            "KZG_SRS_SHA256 is now set — update this test to assert a 64-hex-char \
-             value and confirm readiness [1d/8] passes"
+            hash.len(),
+            64,
+            "KZG_SRS_SHA256 must be a 64-char SHA-256 digest"
+        );
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "KZG_SRS_SHA256 must be lowercase hex, got: {hash}"
+        );
+        assert_eq!(
+            hash,
+            hash.to_ascii_lowercase(),
+            "KZG_SRS_SHA256 must be lowercase"
         );
     }
 
@@ -954,9 +967,9 @@ mod tests {
     //
     // Reads the actual Halo2VerifyingKey.sol and cli/src/halo2_prover.rs so the
     // parsers are validated against the real file format (not just fixtures).
-    // It also pins the CURRENT deployment blocker: the placeholder VK says
-    // k=21 while the prover pins k=24. When the VK is regenerated for real,
-    // flip the vk_k expectation to Some(24) and the final assert to equality.
+    // VK and prover are both regenerated/pinned at k=23; this now asserts they
+    // AGREE (a future circuit rewrite that moves k must update both in
+    // lockstep, or this fails — preventing a silent verifier/prover k drift).
     #[test]
     fn test_real_committed_files_k_values() {
         let vk_path = repo_root().join("contracts/src/Halo2VerifyingKey.sol");
@@ -973,20 +986,21 @@ mod tests {
         let vk_k = vk_k.expect("VK k line should parse");
         let prover_k = prover_k.expect("prover CIRCUIT_K should parse");
 
-        // Documented current state: placeholder VK at k=21, prover at k=23.
-        // (When the VK is regenerated at k=23, flip the vk_k expectation to 23
-        // and assert equality instead of the mismatch below.)
+        // VK and prover are both at k=23. Both equality checks below MUST hold;
+        // if either moves, the circuit was changed and the VK must be
+        // regenerated (gen-production-verifier --emit) before this passes again.
         assert_eq!(
             prover_k, 23,
-            "prover CIRCUIT_K moved — update CIRCUIT_K doc/CI"
+            "prover CIRCUIT_K moved — update CIRCUIT_K doc/CI and regenerate the VK"
         );
         assert_eq!(
-            vk_k, 21,
-            "VK k changed — if regenerated to 23, flip this test to assert equality"
+            vk_k, 23,
+            "VK k moved — regenerate Halo2VerifyingKey.sol at the prover's k"
         );
-        assert_ne!(
+        assert_eq!(
             vk_k, prover_k,
-            "still mismatched until Halo2VerifyingKey.sol is regenerated at k=23"
+            "VK k and prover k drifted out of sync — proofs would verify against a \
+             different domain than the prover committed to (on-chain failure)"
         );
     }
 }

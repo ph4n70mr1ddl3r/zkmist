@@ -182,7 +182,7 @@ zkmist/
 | **Claim** | **~350-400K** | **~$0.10-0.12** |
 | **Full Deploy (3 contracts)** | **~2.1M** | **~$0.50** |
 
-> **Note:** Halo2-KZG proofs are ~5.6 KB (5632 bytes). The verifier performs
+> **Note:** Halo2-KZG proofs are ~5.8 KB (5888 bytes). The verifier performs
 > full BN254 pairing verification via the `ecPairing` precompile (address `0x08`).
 
 ### Test

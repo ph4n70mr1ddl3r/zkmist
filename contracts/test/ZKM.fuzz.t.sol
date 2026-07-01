@@ -107,13 +107,13 @@ contract ZKMV2FuzzTest is Test {
         }
     }
 
-    /// @dev Exact proof length is enforced: only PROOF_LENGTH (5632) is accepted.
+    /// @dev Exact proof length is enforced: only PROOF_LENGTH (5888) is accepted.
     function testFuzz_proof_length_bounds(uint16 proofLength) public {
         bytes memory fakeProof = new bytes(proofLength);
         bytes32 nullifier = bytes32(uint256(1));
         address recipient = address(0xB0B);
 
-        if (proofLength != 5632) {
+        if (proofLength != 5888) {
             vm.expectRevert("Invalid proof length");
             airdrop.claim(fakeProof, nullifier, recipient);
         } else {

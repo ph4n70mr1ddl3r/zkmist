@@ -23,16 +23,16 @@ contract ZKMAirdrop {
 
     /// @notice Exact Halo2-KZG proof byte length.
     /// @dev This is the authoritative length enforced inside `Halo2Verifier.sol`
-    ///      (`eq(0x1600, calldataload(PROOF_LEN_CPTR))`, where 0x1600 = 5632) and
+    ///      (`eq(0x1700, calldataload(PROOF_LEN_CPTR))`, where 0x1700 = 5888) and
     ///      is fixed by the circuit's commitment structure. A pre-check here gives
     ///      a clearer revert than the verifier's boolean return. If the circuit is
     ///      ever regenerated such that the length changes, the verifier's hardcoded
-    ///      `0x1600` changes too (and the VK digest changes, invalidating all prior
+    ///      `0x1700` changes too (and the VK digest changes, invalidating all prior
     ///      proofs), so this constant MUST be updated in lockstep with
     ///      `Halo2Verifier.sol`. There is intentionally no "tolerance range": a
     ///      proof whose length differs is for a different circuit and must be
     ///      rejected.
-    uint256 public constant PROOF_LENGTH = 5632;
+    uint256 public constant PROOF_LENGTH = 5888;
 
     uint256 public totalClaims;
     mapping(bytes32 => bool) public usedNullifiers;

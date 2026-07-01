@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn test_proof_byte_length_validation() {
         // Valid range: [4000, 8000] bytes (matches Halo2Verifier.sol proof size)
-        let valid_proofs = vec![4000, 5000, 5632, 8000];
+        let valid_proofs = vec![4000, 5000, 5888, 8000];
         for len in valid_proofs {
             let hex_len = len * 2;
             let proof_hex = "a".repeat(hex_len);

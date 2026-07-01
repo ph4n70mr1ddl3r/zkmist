@@ -125,7 +125,7 @@ contract ZKMV2Test is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
 
-        bytes memory validLengthProof = new bytes(5632);
+        bytes memory validLengthProof = new bytes(5888);
         bytes32 nullifier = bytes32(uint256(1));
         address recipient = address(0xB0B);
 
@@ -145,12 +145,12 @@ contract ZKMV2Test is Test {
 
     function test_airdrop_constants() public {
         airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
-        assertEq(airdrop.PROOF_LENGTH(), 5632);
+        assertEq(airdrop.PROOF_LENGTH(), 5888);
     }
 
     function test_airdrop_claim_rejects_zero_recipient() public {
         airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
-        bytes memory fakeProof = new bytes(5632);
+        bytes memory fakeProof = new bytes(5888);
         vm.expectRevert("Recipient cannot be zero");
         airdrop.claim(fakeProof, bytes32(uint256(1)), address(0));
     }

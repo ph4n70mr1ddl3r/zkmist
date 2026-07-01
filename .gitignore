@@ -37,6 +37,15 @@ desktop.ini
 # proof cache, guest ELF binary). Lives in the user's home directory.
 .zkmist/
 
+# ── KZG SRS / Powers-of-Tau ceremony transcripts ───────────────────────
+# Multi-GB binary trust-root artifacts that must NEVER be committed. The
+# deployer obtains & verifies them locally (docs/kzg-srs.md); the pinned
+# SHA-256 in cli/src/constants.rs is the only thing stored in-repo.
+# `ppot_*.ptau` = raw MPC transcript; `.srs-work/` = scratch dir for the
+# PSE halo2-kzg-srs converter + downloaded transcript.
+*.ptau
+.srs-work/
+
 # ── Proof files ─────────────────────────────────────────────────────────
 # Contain user-specific nullifiers and serialized receipts.
 zkmist_proof_*.json

@@ -6,7 +6,7 @@
 #
 # What it does:
 #   1. Generates a proof using `zkmist bench` (small Merkle tree, fast)
-#   2. Validates proof size matches the Halo2Verifier's expected length (5632 bytes)
+#   2. Validates proof size matches the Halo2Verifier's expected length (5888 bytes)
 #   3. Verifies the proof cryptographically (local verification)
 #   4. Reports timing for each phase
 #
@@ -110,10 +110,10 @@ if echo "$BENCH_OUTPUT" | grep -q "Proof in range.*YES"; then
 else
     PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
     if [ -n "$PROOF_SIZE" ]; then
-        # Production Halo2-KZG proofs are 5632 bytes (0x1600); the CLI's
+        # Production Halo2-KZG proofs are 5888 bytes (0x1700); the CLI's
         # PROOF_LENGTH_MIN/MAX acceptance window is [4000, 8000]. The old
         # [400, 1200] window was a stale leftover from the placeholder verifier
-        # and would have wrongly failed every real 5632-byte proof.
+        # and would have wrongly failed every real 5888-byte proof.
         if [ "$PROOF_SIZE" -ge 4000 ] && [ "$PROOF_SIZE" -le 8000 ]; then
             pass "Proof size ($PROOF_SIZE bytes) in bench range"
         else

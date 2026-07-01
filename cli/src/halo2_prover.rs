@@ -910,11 +910,11 @@ mod tests {
                 .expect("parse proof file");
         let proof_bytes = hex::decode(&proof_file.proof).expect("decode proof hex");
         eprintln!(
-            "        proof bytes: {} (production expects {} = 0x1600)",
+            "        proof bytes: {} (production expects {} = 0x1700)",
             proof_bytes.len(),
             PROOF_LENGTH_EXPECTED
         );
-        // The on-chain verifier hardcodes an EXACT length (0x1600 = 5632); a
+        // The on-chain verifier hardcodes an EXACT length (0x1700 = 5888); a
         // proof whose length differs is rejected. Confirm we land in range.
         assert!(
             proof_bytes.len() >= PROOF_LENGTH_MIN && proof_bytes.len() <= PROOF_LENGTH_MAX,

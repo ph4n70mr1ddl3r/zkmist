@@ -51,7 +51,7 @@ pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 ///
 /// This is a NON-authoritative sanity check on loaded proof files only — it
 /// rejects obvious garbage before submitting. The authoritative check is the
-/// EXACT length `eq(0x1600, ...)` (= 5632 bytes) hardcoded in
+/// EXACT length `eq(0x1700, ...)` (= 5888 bytes) hardcoded in
 /// `Halo2Verifier.sol`, which rejects any proof whose length differs. The
 /// range below is deliberately wide so it never rejects a legitimate proof;
 /// it only catches truncated/corrupt files. See `PROOF_LENGTH_EXPECTED` for
@@ -59,10 +59,10 @@ pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 pub const PROOF_LENGTH_MIN: usize = 4000;
 pub const PROOF_LENGTH_MAX: usize = 8000;
 
-/// Exact proof byte length enforced by `Halo2Verifier.sol` (`0x1600`).
+/// Exact proof byte length enforced by `Halo2Verifier.sol` (`0x1700`).
 /// Single source of truth — keep in lockstep with the contract's
 /// `PROOF_LENGTH` constant and the generated verifier's hardcoded check.
-pub const PROOF_LENGTH_EXPECTED: usize = 5632;
+pub const PROOF_LENGTH_EXPECTED: usize = 5888;
 
 /// Proof format version.
 pub const PROOF_FORMAT_VERSION: u64 = 2;
@@ -77,10 +77,16 @@ pub const PROOF_FORMAT_VERSION: u64 = 2;
 // size. The file must be in halo2_proofs 0.3.0 params format (the same format
 // `Params::read`/`Params::write` use).
 //
-// ⚠️  PLACEHOLDER — the deployer MUST set these to a verified PSE halo2
-// params file BEFORE mainnet. See docs/kzg-srs.md for how to obtain,
-// independently verify, and publish the file. The readiness checker fails
-// (check [1d/8]) until KZG_SRS_SHA256 is non-empty.
+// ⚠️  PINNED (round-trip-pending): KZG_SRS_SHA256 / KZG_SRS_URL are set to
+// the k=23 PSE halo2 params converted locally from ppot_0080_23.ptau. The
+// pinned hash matches the prover's SRS (verified against
+// ~/.zkmist/cache/v2_params_k23.bin), but two mainnet blockers remain:
+//   1. the ptau transcript's provenance vs the PSE ceremony's PUBLISHED
+//      digest is not yet independently confirmed (docs/kzg-srs.md §2.2);
+//   2. the on-chain real-KZG round-trip (ZKM.realroundtrip.t.sol) has not
+//      yet passed against this VK.
+// Readiness check [1d/8] passes (constants non-empty); [1c/8] still flags
+// the unconfirmed provenance. See SECURITY.md for the full blocker list.
 //
 // Why a claimant trusts this and NOT the deployer: each claimant downloads
 // the file themselves and verifies its SHA-256 against KZG_SRS_SHA256. The
@@ -88,6 +94,10 @@ pub const PROOF_FORMAT_VERSION: u64 = 2;
 // hash differently), and cannot forge proofs because they do not know the
 // PSE ceremony's trapdoor. This is the only trust root in the system.
 /// URL the claimant downloads the pinned PSE halo2 KZG SRS from (production).
-pub const KZG_SRS_URL: &str = "";
+/// NOTE: round-trip validation only — derived from ppot_0080_23.ptau (PSE
+/// perpetual-powers-of-tau). Provenance (final beaconed transcript) still
+/// unconfirmed; see docs/kzg-srs.md §2.2 before mainnet.
+pub const KZG_SRS_URL: &str =
+    "https://github.com/ph4n70mr1ddl3r/zkmist/releases/download/srs-v1/params-k23.bin";
 /// SHA-256 of the pinned PSE halo2 KZG SRS file (lowercase hex, no `0x`).
-pub const KZG_SRS_SHA256: &str = "";
+pub const KZG_SRS_SHA256: &str = "fbf3a497b2e2455f72647da0094389b49bd0726c44f28cbbff169ff9d254efed";

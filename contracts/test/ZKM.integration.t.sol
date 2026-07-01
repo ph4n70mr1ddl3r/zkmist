@@ -83,7 +83,7 @@ contract ZKMV2Integration is Test {
 
     function test_integration_airdrop_rejects_zero_recipient() public {
         // Zero recipient is rejected by the airdrop contract (not verifier)
-        bytes memory fakeProof = new bytes(5632);
+        bytes memory fakeProof = new bytes(5888);
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), address(0), MERKLE_ROOT);
@@ -95,7 +95,7 @@ contract ZKMV2Integration is Test {
         // The production verifier performs real KZG pairing verification.
         // A garbage proof should be rejected at the verifier level (not airdrop level).
         Halo2VerifyingKey vk = new Halo2VerifyingKey();
-        bytes memory garbageProof = new bytes(0x1600); // correct length for verifier
+        bytes memory garbageProof = new bytes(0x1700); // correct length for verifier
         uint256[] memory instances = new uint256[](3);
         instances[0] = uint256(MERKLE_ROOT);
         instances[1] = uint256(bytes32(uint256(1)));
