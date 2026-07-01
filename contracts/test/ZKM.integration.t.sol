@@ -160,6 +160,34 @@ contract ZKMV2Integration is Test {
         assertEq(address(a.verifier()), address(verifier));
     }
 
+    /// @notice Regression guard for the Deploy.s.sol nonce-prediction bug.
+    /// @dev The deploy script deploys verifier → vk → token → airdrop (4 CREATEs)
+    ///      and must predict the airdrop address to bake it into ZKMToken's
+    ///      IMMUTABLE minter. The nonce must be captured BEFORE any deployment
+    ///      and the airdrop predicted at `nonce + 3`. An earlier version read
+    ///      the nonce AFTER verifier+vk (already advanced by 2) yet still used
+    ///      `nonce + 3`, predicting an address nobody controls and reverting
+    ///      the post-deploy `token.minter() == address(airdrop)` check — a
+    ///      hard deployment blocker. This test locks the corrected pattern.
+    function test_integration_deploy_nonce_prediction_matches_script() public {
+        vm.startPrank(DEPLOYER);
+
+        // Capture the nonce BEFORE any contract is deployed (Deploy.s.sol fix).
+        uint256 deployNonce = vm.getNonce(DEPLOYER);
+
+        // Mirror Deploy.s.sol Steps 1–5 exactly: verifier, vk, token, airdrop.
+        Halo2Verifier v = new Halo2Verifier();
+        Halo2VerifyingKey vk = new Halo2VerifyingKey();
+        address predictedAirdrop = vm.computeCreateAddress(DEPLOYER, deployNonce + 3);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), address(vk), MERKLE_ROOT);
+
+        vm.stopPrank();
+
+        // The token's immutable minter MUST be the actually-deployed airdrop.
+        assertEq(t.minter(), address(a), "Deploy.s.sol nonce prediction broken");
+    }
+
     // ── Token edge cases ────────────────────────────────────────────
 
     function test_integration_token_rejects_mint_to_zero() public {

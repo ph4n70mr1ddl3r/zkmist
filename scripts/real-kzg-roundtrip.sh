@@ -82,8 +82,12 @@ say "Generating real-KZG proof fixture → $FIXTURE (heavy ~3 min / ~20 GiB at k
 cargo run --release -p zkmist-cli -- gen-roundtrip-fixture --out "$FIXTURE"
 [[ -f "$FIXTURE" ]] || die "fixture was not written"
 
-PROOF_BYTES=$(( $(grep -oP '"proof":\s*"0x\K[0-9a-f]+' "$FIXTURE" | head -1 | wc -c) / 2 - 1 ))
-say "Fixture ready (proof ≈ ${PROOF_BYTES} bytes; Halo2Verifier expects 5632)."
+# Proof length in bytes = hex chars / 2 (strip the leading 0x captured away
+# by the \K lookbehind). ${#PROOF_HEX} counts chars with no trailing newline,
+# so this is exact (the prior `wc -c)/2 - 1` was off-by-one: wc adds a newline).
+PROOF_HEX="$(grep -oP '"proof":\s*"0x\K[0-9a-f]+' "$FIXTURE" | head -1)"
+PROOF_BYTES=$(( ${#PROOF_HEX} / 2 ))
+say "Fixture ready (proof = ${PROOF_BYTES} bytes; Halo2Verifier expects 5632)."
 
 # ── 3. Run the on-chain round-trip in the EVM ─────────────────────────────
 say "Running RealRoundtrip Forge test (RUN_REAL_ROUNDTRIP=1)..."

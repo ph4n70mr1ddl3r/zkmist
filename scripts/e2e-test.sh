@@ -100,10 +100,14 @@ if echo "$BENCH_OUTPUT" | grep -q "Proof in range.*YES"; then
 else
     PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
     if [ -n "$PROOF_SIZE" ]; then
-        if [ "$PROOF_SIZE" -ge 400 ] && [ "$PROOF_SIZE" -le 1200 ]; then
+        # Production Halo2-KZG proofs are 5632 bytes (0x1600); the CLI's
+        # PROOF_LENGTH_MIN/MAX acceptance window is [4000, 8000]. The old
+        # [400, 1200] window was a stale leftover from the placeholder verifier
+        # and would have wrongly failed every real 5632-byte proof.
+        if [ "$PROOF_SIZE" -ge 4000 ] && [ "$PROOF_SIZE" -le 8000 ]; then
             pass "Proof size ($PROOF_SIZE bytes) in bench range"
         else
-            fail "Proof size ($PROOF_SIZE bytes) outside expected bench range"
+            fail "Proof size ($PROOF_SIZE bytes) outside expected range [4000, 8000]"
         fi
     else
         warn "Could not determine proof size"

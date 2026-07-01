@@ -65,6 +65,13 @@ contract Deploy is Script {
         // Validate deployer has enough ETH for gas
         require(deployer.balance >= MIN_DEPLOYER_BALANCE, "Insufficient ETH for deployment");
 
+        // Capture the deployer nonce BEFORE any contract is deployed so the
+        // airdrop address can be predicted deterministically in Step 3.
+        // Reading it later would be off-by-N: each `new` advances the nonce,
+        // and the token's immutable minter would point at an address nobody
+        // controls, reverting the post-deploy `token.minter() == address(airdrop)`.
+        uint256 deployNonce = vm.getNonce(deployer);
+
         // ── Step 1: Deploy Halo2Verifier ──────────────────────────────
         console.log("Step 1: Deploying Halo2Verifier...");
         Halo2Verifier verifier = new Halo2Verifier();
@@ -77,12 +84,13 @@ contract Deploy is Script {
         console.log("  Halo2VerifyingKey:", address(vk));
 
         // ── Step 3: Predict airdrop address ───────────────────────────
-        uint256 nonce = vm.getNonce(deployer);
-        // verifier at nonce, vk at nonce+1, token at nonce+2, airdrop at nonce+3
-        address predictedAirdrop = vm.computeCreateAddress(deployer, nonce + 3);
+        // `deployNonce` was captured before ANY deployment, so the four
+        // contracts land at deployNonce (verifier), +1 (vk), +2 (token),
+        // +3 (airdrop). The four CREATE addresses are then fully determined.
+        address predictedAirdrop = vm.computeCreateAddress(deployer, deployNonce + 3);
         console.log("");
         console.log("Step 3: Predicting addresses...");
-        console.log("  Current nonce:", nonce);
+        console.log("  Current nonce:", deployNonce);
         console.log("  Predicted airdrop:", predictedAirdrop);
 
         // ── Step 4: Deploy ZKMToken ──────────────────────────────────
