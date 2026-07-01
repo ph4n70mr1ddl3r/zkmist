@@ -2176,29 +2176,12 @@ impl<'a> Secp256k1Chip<'a> {
         // Negate P255's Y coordinate: -P255 = (P255.x, p - P255.y, P255.z)
         let neg_p255_y_native = p255.y.neg();
         let neg_p255_y_limbs = neg_p255_y_native.to_bn254_limbs();
-        let neg_p255_y = layouter.assign_region(
-            || "neg_p255_y",
-            |mut region| {
-                let mut cells = Vec::with_capacity(4);
-                for (i, l) in neg_p255_y_limbs.iter().enumerate() {
-                    let cell = region.assign_advice(
-                        || format!("neg_p255_y_{}", i),
-                        self.config.advice[i],
-                        0,
-                        || Value::known(*l),
-                    )?;
-                    cells.push(cell);
-                }
-                Ok(AssignedFieldElement {
-                    limbs: [
-                        cells[0].clone(),
-                        cells[1].clone(),
-                        cells[2].clone(),
-                        cells[3].clone(),
-                    ],
-                })
-            },
-        )?;
+        // SOUND: `−P255.y = p − P255.y` is a fixed constant (P255 is now bound
+        // to fixed-column constants above). Binding it the same way prevents a
+        // prover from freely choosing the Y coordinate of the MSB-correction
+        // subtraction point, which would decouple `scalar_mul`'s output from
+        // the honest `k·G`.
+        let neg_p255_y = self.assign_field_constant(layouter, &neg_p255_y_limbs, "neg_p255_y")?;
 
         let neg_p255 = AssignedPoint {
             x: p255_assigned.x.clone(),
@@ -2432,7 +2415,14 @@ impl<'a> Secp256k1Chip<'a> {
     }
 
     /// Assign a native affine point as constant cells (Z = 1).
-    fn assign_affine_constant(
+    /// Assign a KNOWN affine point (e.g. the secp256k1 generator `G` or the
+    /// `P255 = 2^255·G` MSB-correction constant) with its coordinates SOUNDLY
+    /// bound to fixed-column constants.
+    ///
+    /// Public so the top-level circuit can assign the generator through the
+    /// same sound path used for `P255` (see the bug-hunt note on
+    /// [`assign_field_constant`](Self::assign_field_constant)).
+    pub fn assign_affine_constant(
         &self,
         layouter: &mut impl Layouter<Fr>,
         point: &NativePoint,
@@ -2449,8 +2439,27 @@ impl<'a> Secp256k1Chip<'a> {
         Ok(AssignedPoint { x, y, z })
     }
 
-    /// Assign 4 limbs as a constant field element in a new region.
-    fn assign_field_constant(
+    /// Assign 4 limbs as a constant field element in a new region, each limb
+    /// SOUNDLY bound to a fixed-column constant.
+    ///
+    /// # Soundness (bug-hunt)
+    ///
+    /// The previous version used a bare `assign_advice` with no constraint,
+    /// leaving the limb prover-controlled. This helper assigns the coordinates
+    /// of the secp256k1 generator `G` and the `P255` MSB-correction constant —
+    /// both BASE POINTS of the constrained `scalar_mul`. A prover-controlled
+    /// base point fully breaks the claim: choosing `G' = (1/k)·P_target` makes
+    /// `scalar_mul(k, G') = P_target`, so `constrain_affine` then binds that to
+    /// ANY eligible address's public key (recoverable from on-chain activity)
+    /// WITHOUT knowledge of its private key, while the nullifier `poseidon(k,
+    /// domain)` is fresh for every distinct `k` ⟹ unlimited theft. Binding each
+    /// limb to a fixed-column cell (verifier-known, baked into the preprocessed
+    /// circuit) makes the base point a true circuit constant — the same
+    /// `fixed_const` + `constrain_equal` pattern used for `zero_ref` / `p_ref`.
+    ///
+    /// This is synthesize-only (adds copy constraints), so the constraint-system
+    /// digest (`EXPECTED_CS_DIGEST`) is unchanged.
+    pub(crate) fn assign_field_constant(
         &self,
         layouter: &mut impl Layouter<Fr>,
         limbs: &[Fr; 4],
@@ -2467,6 +2476,12 @@ impl<'a> Secp256k1Chip<'a> {
                         0,
                         || Value::known(*l),
                     )?;
+                    // Bind the limb to a fixed-column constant (one value per
+                    // (column,row); the 4 limbs occupy fixed rows 0..3, distinct
+                    // from the advice cells which all live at row 0 in columns
+                    // 0..3).
+                    let fc = self.fixed_const(&mut region, i, *l)?;
+                    region.constrain_equal(cell.cell(), fc.cell())?;
                     cells.push(cell);
                 }
                 Ok(AssignedFieldElement {
@@ -3119,33 +3134,13 @@ impl<'a> Secp256k1Chip<'a> {
         let z2 = self.field_mul(layouter, &point.z, &point.z)?;
         let z4 = self.field_mul(layouter, &z2, &z2)?;
         let z6 = self.field_mul(layouter, &z4, &z2)?;
-        // 7·Z⁶
-        let seven = AssignedFieldElement {
-            limbs: {
-                let seven_native = NativeSecpField::from_u64(7);
-                let seven_limbs = seven_native.to_bn254_limbs();
-                let mut limbs = Vec::new();
-                for (i, l) in seven_limbs.iter().enumerate() {
-                    let cell = layouter.assign_region(
-                        || format!("seven_limb_{}", i),
-                        |mut region| {
-                            region.assign_advice(
-                                || "seven",
-                                self.config.advice[0],
-                                0,
-                                || Value::known(*l),
-                            )
-                        },
-                    )?;
-                    limbs.push(cell);
-                }
-                [
-                    limbs[0].clone(),
-                    limbs[1].clone(),
-                    limbs[2].clone(),
-                    limbs[3].clone(),
-                ]
-            },
+        // 7·Z⁶  — the curve constant `7` is SOUNDLY bound to a fixed-column
+        // constant via `assign_field_constant` (a bare advice cell would make
+        // `check_on_curve` vacuous: a prover could set it to `(Y²−X³)/Z⁶` and
+        // pass ANY point, defeating this defense-in-depth on-curve check).
+        let seven = {
+            let seven_limbs = NativeSecpField::from_u64(7).to_bn254_limbs();
+            self.assign_field_constant(layouter, &seven_limbs, "seven")?
         };
         let seven_z6 = self.field_mul(layouter, &seven, &z6)?;
         // X³ + 7·Z⁶

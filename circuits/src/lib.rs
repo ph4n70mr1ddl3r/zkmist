@@ -429,70 +429,13 @@ impl Circuit<Fr> for ZKMistV2Claim {
             )?
         };
 
-        // Assign generator point
+        // Assign the secp256k1 generator G as a SOUND circuit constant.
+        // `assign_affine_constant` binds every coordinate limb to a fixed-column
+        // constant (verifier-known) — a bare `assign_advice` would leave G
+        // prover-controlled, letting a malicious prover substitute an arbitrary
+        // base point and claim any eligible address without its private key.
         let g = NativePoint::GENERATOR;
-        let g_assigned = layouter.assign_region(
-            || "generator",
-            |mut region| {
-                let g_x_limbs = g.x.to_bn254_limbs();
-                let g_y_limbs = g.y.to_bn254_limbs();
-                let mut x_a = Vec::new();
-                for (i, l) in g_x_limbs.iter().enumerate() {
-                    x_a.push(region.assign_advice(
-                        || "gx",
-                        config.advice[i],
-                        0,
-                        || Value::known(*l),
-                    )?);
-                }
-                let mut y_a = Vec::new();
-                for (i, l) in g_y_limbs.iter().enumerate() {
-                    y_a.push(region.assign_advice(
-                        || "gy",
-                        config.advice[i],
-                        1,
-                        || Value::known(*l),
-                    )?);
-                }
-                // Z = 1 for affine generator
-                let mut z_a = Vec::new();
-                for i in 0..4 {
-                    let v = if i == 0 { Fr::ONE } else { Fr::ZERO };
-                    z_a.push(region.assign_advice(
-                        || "gz",
-                        config.advice[i],
-                        2,
-                        || Value::known(v),
-                    )?);
-                }
-                Ok(crate::secp256k1::AssignedPoint {
-                    x: crate::secp256k1::AssignedFieldElement {
-                        limbs: [
-                            x_a[0].clone(),
-                            x_a[1].clone(),
-                            x_a[2].clone(),
-                            x_a[3].clone(),
-                        ],
-                    },
-                    y: crate::secp256k1::AssignedFieldElement {
-                        limbs: [
-                            y_a[0].clone(),
-                            y_a[1].clone(),
-                            y_a[2].clone(),
-                            y_a[3].clone(),
-                        ],
-                    },
-                    z: crate::secp256k1::AssignedFieldElement {
-                        limbs: [
-                            z_a[0].clone(),
-                            z_a[1].clone(),
-                            z_a[2].clone(),
-                            z_a[3].clone(),
-                        ],
-                    },
-                })
-            },
-        )?;
+        let g_assigned = secp_chip.assign_affine_constant(&mut layouter, &g, "generator")?;
 
         // Scalar bits for multiplication — assigned as boolean cells ONCE and
         // shared between the scalar multiplication and the nullifier binding
@@ -1413,69 +1356,12 @@ mod tests {
                     },
                 )?;
 
-                // Assign generator point
+                // Assign the secp256k1 generator as a SOUND circuit constant
+                // (limbs bound to fixed-column constants) — a bare
+                // assign_advice would leave it prover-controlled.
                 let g = crate::secp256k1::NativePoint::GENERATOR;
-                let g_assigned = layouter.assign_region(
-                    || "generator",
-                    |mut region| {
-                        let g_x_limbs = g.x.to_bn254_limbs();
-                        let g_y_limbs = g.y.to_bn254_limbs();
-                        let mut x_a = Vec::new();
-                        for (i, l) in g_x_limbs.iter().enumerate() {
-                            x_a.push(region.assign_advice(
-                                || "gx",
-                                config.advice[i],
-                                0,
-                                || Value::known(*l),
-                            )?);
-                        }
-                        let mut y_a = Vec::new();
-                        for (i, l) in g_y_limbs.iter().enumerate() {
-                            y_a.push(region.assign_advice(
-                                || "gy",
-                                config.advice[i],
-                                1,
-                                || Value::known(*l),
-                            )?);
-                        }
-                        let mut z_a = Vec::new();
-                        for i in 0..4 {
-                            let v = if i == 0 { Fr::ONE } else { Fr::ZERO };
-                            z_a.push(region.assign_advice(
-                                || "gz",
-                                config.advice[i],
-                                2,
-                                || Value::known(v),
-                            )?);
-                        }
-                        Ok(crate::secp256k1::AssignedPoint {
-                            x: crate::secp256k1::AssignedFieldElement {
-                                limbs: [
-                                    x_a[0].clone(),
-                                    x_a[1].clone(),
-                                    x_a[2].clone(),
-                                    x_a[3].clone(),
-                                ],
-                            },
-                            y: crate::secp256k1::AssignedFieldElement {
-                                limbs: [
-                                    y_a[0].clone(),
-                                    y_a[1].clone(),
-                                    y_a[2].clone(),
-                                    y_a[3].clone(),
-                                ],
-                            },
-                            z: crate::secp256k1::AssignedFieldElement {
-                                limbs: [
-                                    z_a[0].clone(),
-                                    z_a[1].clone(),
-                                    z_a[2].clone(),
-                                    z_a[3].clone(),
-                                ],
-                            },
-                        })
-                    },
-                )?;
+                let g_assigned =
+                    secp_chip.assign_affine_constant(&mut layouter, &g, "generator")?;
 
                 // Scalar multiplication (bits assigned as constrained boolean
                 // cells, matching the production circuit's scalar/nullifier binding).
