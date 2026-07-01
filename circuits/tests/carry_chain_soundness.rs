@@ -33,7 +33,9 @@ use ff::Field;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     dev::MockProver,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Instance, Selector},
+    plonk::{
+        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Instance, Selector,
+    },
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
@@ -75,7 +77,12 @@ fn configure(meta: &mut ConstraintSystem<Fr>) -> Cfg {
         let cout = m.query_advice(advice[4], Rotation::cur());
         vec![sel * (a + b + cin - r - cout * Expression::Constant(two_pow64()))]
     });
-    Cfg { advice, fixed, s, inst }
+    Cfg {
+        advice,
+        fixed,
+        s,
+        inst,
+    }
 }
 
 /// `bind_to_fixed`: the FIXED pattern binds `b` to a fixed-column 0.
@@ -92,31 +99,64 @@ impl Circuit<Fr> for CarryCircuit {
     type Config = Cfg;
     type FloorPlanner = SimpleFloorPlanner;
     fn without_witnesses(&self) -> Self {
-        CarryCircuit { col_sum: Fr::ZERO, b_inject: Fr::ZERO, result: Fr::ZERO, cout: Fr::ZERO, bind_to_fixed: true }
+        CarryCircuit {
+            col_sum: Fr::ZERO,
+            b_inject: Fr::ZERO,
+            result: Fr::ZERO,
+            cout: Fr::ZERO,
+            bind_to_fixed: true,
+        }
     }
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
         configure(meta)
     }
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
-        let res = layouter.assign_region(|| "carry", |mut region| {
-            let _a = region.assign_advice(|| "a", config.advice[0], 0, || Value::known(self.col_sum))?;
-            let b = region.assign_advice(|| "b", config.advice[1], 0, || Value::known(self.b_inject))?;
-            if self.bind_to_fixed {
-                // FIXED: bind b to a fixed-column 0 (a true circuit constant).
-                let zero = region.assign_fixed(|| "f0", config.fixed, 0, || Value::known(Fr::ZERO))?;
-                region.constrain_equal(b.cell(), zero.cell())?;
-            } else {
-                // BUGGY: bind b to a free advice cell (vacuous for a constant).
-                let zero_ref =
-                    region.assign_advice(|| "zero_ref", config.advice[0], 1, || Value::known(self.b_inject))?;
-                region.constrain_equal(b.cell(), zero_ref.cell())?;
-            }
-            region.assign_advice(|| "cin", config.advice[2], 0, || Value::known(Fr::ZERO))?;
-            let r = region.assign_advice(|| "r", config.advice[3], 0, || Value::known(self.result))?;
-            region.assign_advice(|| "cout", config.advice[4], 0, || Value::known(self.cout))?;
-            config.s.enable(&mut region, 0)?;
-            Ok(r)
-        })?;
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
+        let res = layouter.assign_region(
+            || "carry",
+            |mut region| {
+                let _a = region.assign_advice(
+                    || "a",
+                    config.advice[0],
+                    0,
+                    || Value::known(self.col_sum),
+                )?;
+                let b = region.assign_advice(
+                    || "b",
+                    config.advice[1],
+                    0,
+                    || Value::known(self.b_inject),
+                )?;
+                if self.bind_to_fixed {
+                    // FIXED: bind b to a fixed-column 0 (a true circuit constant).
+                    let zero =
+                        region.assign_fixed(|| "f0", config.fixed, 0, || Value::known(Fr::ZERO))?;
+                    region.constrain_equal(b.cell(), zero.cell())?;
+                } else {
+                    // BUGGY: bind b to a free advice cell (vacuous for a constant).
+                    let zero_ref = region.assign_advice(
+                        || "zero_ref",
+                        config.advice[0],
+                        1,
+                        || Value::known(self.b_inject),
+                    )?;
+                    region.constrain_equal(b.cell(), zero_ref.cell())?;
+                }
+                region.assign_advice(|| "cin", config.advice[2], 0, || Value::known(Fr::ZERO))?;
+                let r = region.assign_advice(
+                    || "r",
+                    config.advice[3],
+                    0,
+                    || Value::known(self.result),
+                )?;
+                region.assign_advice(|| "cout", config.advice[4], 0, || Value::known(self.cout))?;
+                config.s.enable(&mut region, 0)?;
+                Ok(r)
+            },
+        )?;
         layouter.constrain_instance(res.cell(), config.inst, 0)?;
         Ok(())
     }
@@ -153,7 +193,11 @@ fn carry_zero_binding_rejects_value_injection() {
     };
     let prover = MockProver::run(5, &circuit, vec![vec![Fr::from(105u64)]]).unwrap();
     let res = prover.verify();
-    assert!(res.is_err(), "fixed carry chain MUST reject value injection: {:?}", res);
+    assert!(
+        res.is_err(),
+        "fixed carry chain MUST reject value injection: {:?}",
+        res
+    );
 }
 
 #[test]
@@ -169,7 +213,9 @@ fn carry_zero_binding_bug_accepted_when_free() {
         bind_to_fixed: false,
     };
     let prover = MockProver::run(5, &circuit, vec![vec![Fr::from(105u64)]]).unwrap();
-    prover.verify().expect("the free-advice binding MUST be vacuous (bug present)");
+    prover
+        .verify()
+        .expect("the free-advice binding MUST be vacuous (bug present)");
 }
 
 // ── Non-zero constant (the reduction constant C and SECP_P limbs) ────────
@@ -189,7 +235,11 @@ impl Circuit<Fr> for ConstCircuit {
     type Config = Cfg;
     type FloorPlanner = SimpleFloorPlanner;
     fn without_witnesses(&self) -> Self {
-        ConstCircuit { advice_val: Fr::ZERO, const_val: Fr::ZERO, bind_to_fixed: true }
+        ConstCircuit {
+            advice_val: Fr::ZERO,
+            const_val: Fr::ZERO,
+            bind_to_fixed: true,
+        }
     }
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
         // Reuse a simpler gate: force advice[0] == const via the binding only
@@ -209,28 +259,48 @@ impl Circuit<Fr> for ConstCircuit {
             let a = m.query_advice(advice[0], Rotation::cur());
             vec![sel * (a.clone() - a)] // trivial; the binding does the work
         });
-        Cfg { advice, fixed, s, inst }
+        Cfg {
+            advice,
+            fixed,
+            s,
+            inst,
+        }
     }
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
-        let res = layouter.assign_region(|| "const", |mut region| {
-            let a =
-                region.assign_advice(|| "a", config.advice[0], 0, || Value::known(self.advice_val))?;
-            if self.bind_to_fixed {
-                let c =
-                    region.assign_fixed(|| "c", config.fixed, 0, || Value::known(self.const_val))?;
-                region.constrain_equal(a.cell(), c.cell())?;
-            } else {
-                let c = region.assign_advice(
-                    || "c",
-                    config.advice[1],
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
+        let res = layouter.assign_region(
+            || "const",
+            |mut region| {
+                let a = region.assign_advice(
+                    || "a",
+                    config.advice[0],
                     0,
-                    || Value::known(self.const_val),
+                    || Value::known(self.advice_val),
                 )?;
-                region.constrain_equal(a.cell(), c.cell())?;
-            }
-            config.s.enable(&mut region, 0)?;
-            Ok(a)
-        })?;
+                if self.bind_to_fixed {
+                    let c = region.assign_fixed(
+                        || "c",
+                        config.fixed,
+                        0,
+                        || Value::known(self.const_val),
+                    )?;
+                    region.constrain_equal(a.cell(), c.cell())?;
+                } else {
+                    let c = region.assign_advice(
+                        || "c",
+                        config.advice[1],
+                        0,
+                        || Value::known(self.const_val),
+                    )?;
+                    region.constrain_equal(a.cell(), c.cell())?;
+                }
+                config.s.enable(&mut region, 0)?;
+                Ok(a)
+            },
+        )?;
         layouter.constrain_instance(res.cell(), config.inst, 0)?;
         Ok(())
     }
@@ -246,7 +316,10 @@ fn nonzero_const_fixed_binding_rejects_mismatch() {
         bind_to_fixed: true,
     };
     let prover = MockProver::run(5, &circuit, vec![vec![Fr::from(5u64)]]).unwrap();
-    assert!(prover.verify().is_err(), "fixed-column constant MUST reject a mismatch");
+    assert!(
+        prover.verify().is_err(),
+        "fixed-column constant MUST reject a mismatch"
+    );
 }
 
 #[test]
@@ -260,5 +333,7 @@ fn nonzero_const_free_advice_binding_accepts_anything() {
         bind_to_fixed: false,
     };
     let prover = MockProver::run(5, &circuit, vec![vec![Fr::from(7u64)]]).unwrap();
-    prover.verify().expect("free-advice constant binding is vacuous (bug present)");
+    prover
+        .verify()
+        .expect("free-advice constant binding is vacuous (bug present)");
 }

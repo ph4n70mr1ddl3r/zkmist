@@ -160,7 +160,12 @@ pub fn cond_swap(
         offset + 1,
         || one_minus_sel_val,
     )?;
-    region.assign_fixed(|| "one_const", config.fixed, offset + 1, || Value::known(Fr::ONE))?;
+    region.assign_fixed(
+        || "one_const",
+        config.fixed,
+        offset + 1,
+        || Value::known(Fr::ONE),
+    )?;
     config.s_sum_fixed.enable(region, offset + 1)?;
 
     // Row 2: sel * b = sel_b

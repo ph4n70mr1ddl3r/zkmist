@@ -377,7 +377,10 @@ fn main() {
         // can get clobbered by accident.
         if !output_set || output_dir == default_output_dir {
             eprintln!();
-            eprintln!("❌ REFUSING dev-emit to the DEFAULT output dir ({}).", output_dir.display());
+            eprintln!(
+                "❌ REFUSING dev-emit to the DEFAULT output dir ({}).",
+                output_dir.display()
+            );
             eprintln!("   --allow-dev-emit requires an explicit, non-default --output DIR so a");
             eprintln!("   forgeable dev VK can never overwrite contracts/src/. Re-run with");
             eprintln!("   e.g. --allow-dev-emit --output /tmp/dev-vk");

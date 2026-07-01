@@ -412,9 +412,14 @@ pub fn generate_v2_proof(
 
     eprintln!("      [1/5] Loading KZG parameters (k={})...", k);
     let params = load_or_download_params(k)?;
+    // Capture each phase's duration IMMEDIATELY so the post-save breakdown
+    // reports the phase in isolation rather than `*_start.elapsed()` measured
+    // again at the end (which would span every later phase — e.g. the old
+    // `keygen` value silently included prove + verify + save).
+    let params_time = start.elapsed();
     eprintln!(
         "      [1/5] KZG params ready ({:.1}s)",
-        start.elapsed().as_secs_f64()
+        params_time.as_secs_f64()
     );
 
     eprintln!("      [2/5] Generating verification key...");
@@ -422,9 +427,10 @@ pub fn generate_v2_proof(
     let vk = keygen_vk(&params, &circuit).map_err(|e| format!("VK generation failed: {:?}", e))?;
     let pk =
         keygen_pk(&params, vk, &circuit).map_err(|e| format!("PK generation failed: {:?}", e))?;
+    let keygen_time = vk_start.elapsed();
     eprintln!(
         "      [2/5] VK/PK generated ({:.1}s)",
-        vk_start.elapsed().as_secs_f64()
+        keygen_time.as_secs_f64()
     );
 
     let public_inputs = [root_fr, nullifier_fr, recipient_fr];
@@ -466,9 +472,10 @@ pub fn generate_v2_proof(
         &mut read_transcript,
     )
     .map_err(|e| format!("Local verification failed: {:?}", e))?;
+    let verify_time = verify_start.elapsed();
     eprintln!(
         "      [4/5] Proof verified locally ({:.1}s)",
-        verify_start.elapsed().as_secs_f64()
+        verify_time.as_secs_f64()
     );
 
     // ── Save proof file ─────────────────────────────────────────────
@@ -497,10 +504,10 @@ pub fn generate_v2_proof(
     );
     eprintln!(
         "      Breakdown: params={:.1}s, keygen={:.1}s, prove={:.1}s, verify={:.1}s",
-        0.0, // params time included in start
-        vk_start.elapsed().as_secs_f64(),
+        params_time.as_secs_f64(),
+        keygen_time.as_secs_f64(),
         prove_time.as_secs_f64(),
-        verify_start.elapsed().as_secs_f64(),
+        verify_time.as_secs_f64(),
     );
 
     Ok(nullifier_bytes)

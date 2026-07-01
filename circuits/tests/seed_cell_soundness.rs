@@ -13,7 +13,9 @@ use ff::Field;
 use halo2_proofs::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
     dev::MockProver,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Instance, Selector},
+    plonk::{
+        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Instance, Selector,
+    },
     poly::Rotation,
 };
 use halo2curves::bn256::Fr;
@@ -66,7 +68,13 @@ fn acc_configure(meta: &mut ConstraintSystem<Fr>) -> AccCfg {
         let c = m.query_advice(advice[2], Rotation::cur());
         vec![s * (a + b - c)]
     });
-    AccCfg { advice, fixed, s_bool, s_mul_fixed, s_add }
+    AccCfg {
+        advice,
+        fixed,
+        s_bool,
+        s_mul_fixed,
+        s_add,
+    }
 }
 
 struct AccCircuit {
@@ -84,7 +92,13 @@ impl Circuit<Fr> for AccCircuit {
     type Config = (AccCfg, Column<Instance>);
     type FloorPlanner = SimpleFloorPlanner;
     fn without_witnesses(&self) -> Self {
-        AccCircuit { bits: [Fr::ZERO; 2], weights: [Fr::ZERO; 2], malicious: false, delta: Fr::ZERO, target: Fr::ZERO }
+        AccCircuit {
+            bits: [Fr::ZERO; 2],
+            weights: [Fr::ZERO; 2],
+            malicious: false,
+            delta: Fr::ZERO,
+            target: Fr::ZERO,
+        }
     }
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
         let cfg = acc_configure(meta);
@@ -92,45 +106,95 @@ impl Circuit<Fr> for AccCircuit {
         meta.enable_equality(inst);
         (cfg, inst)
     }
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
         let (cfg, inst) = config;
-        let acc = layouter.assign_region(|| "acc", |mut region| {
-            let mut offset = 0usize;
-            // FIXED seed: acc = bit[0]·weight[0] (s_mul_fixed + s_bool).
-            // In the malicious case we try to inject `delta` here (the old bug);
-            // the gate forces advice[1] = bit[0]·weight[0], so delta ≠ that is
-            // rejected.
-            let seed_witness = if self.malicious {
-                self.delta
-            } else {
-                self.bits[0] * self.weights[0]
-            };
-            region.assign_advice(|| "seed_bit", cfg.advice[0], offset, || Value::known(self.bits[0]))?;
-            region.assign_fixed(|| "seed_w", cfg.fixed, offset, || Value::known(self.weights[0]))?;
-            let mut acc = region.assign_advice(|| "seed", cfg.advice[1], offset, || Value::known(seed_witness))?;
-            cfg.s_bool.enable(&mut region, offset)?;
-            cfg.s_mul_fixed.enable(&mut region, offset)?;
-            offset += 1;
-            for i in 1..2 {
-                let partial_val = self.bits[i] * self.weights[i];
-                region.assign_advice(|| "bit", cfg.advice[0], offset, || Value::known(self.bits[i]))?;
-                region.assign_fixed(|| "w", cfg.fixed, offset, || Value::known(self.weights[i]))?;
-                let partial = region.assign_advice(|| "p", cfg.advice[1], offset, || Value::known(partial_val))?;
+        let acc = layouter.assign_region(
+            || "acc",
+            |mut region| {
+                let mut offset = 0usize;
+                // FIXED seed: acc = bit[0]·weight[0] (s_mul_fixed + s_bool).
+                // In the malicious case we try to inject `delta` here (the old bug);
+                // the gate forces advice[1] = bit[0]·weight[0], so delta ≠ that is
+                // rejected.
+                let seed_witness = if self.malicious {
+                    self.delta
+                } else {
+                    self.bits[0] * self.weights[0]
+                };
+                region.assign_advice(
+                    || "seed_bit",
+                    cfg.advice[0],
+                    offset,
+                    || Value::known(self.bits[0]),
+                )?;
+                region.assign_fixed(
+                    || "seed_w",
+                    cfg.fixed,
+                    offset,
+                    || Value::known(self.weights[0]),
+                )?;
+                let mut acc = region.assign_advice(
+                    || "seed",
+                    cfg.advice[1],
+                    offset,
+                    || Value::known(seed_witness),
+                )?;
                 cfg.s_bool.enable(&mut region, offset)?;
                 cfg.s_mul_fixed.enable(&mut region, offset)?;
                 offset += 1;
-                let acc_copy = region.assign_advice(|| "ac", cfg.advice[0], offset, || acc.value().copied())?;
-                region.constrain_equal(acc.cell(), acc_copy.cell())?;
-                let pc = region.assign_advice(|| "pc", cfg.advice[1], offset, || partial.value().copied())?;
-                region.constrain_equal(partial.cell(), pc.cell())?;
-                acc = region.assign_advice(|| "new", cfg.advice[2], offset, || {
-                    acc.value().copied().map(|a| a + partial_val)
-                })?;
-                cfg.s_add.enable(&mut region, offset)?;
-                offset += 1;
-            }
-            Ok(acc)
-        })?;
+                for i in 1..2 {
+                    let partial_val = self.bits[i] * self.weights[i];
+                    region.assign_advice(
+                        || "bit",
+                        cfg.advice[0],
+                        offset,
+                        || Value::known(self.bits[i]),
+                    )?;
+                    region.assign_fixed(
+                        || "w",
+                        cfg.fixed,
+                        offset,
+                        || Value::known(self.weights[i]),
+                    )?;
+                    let partial = region.assign_advice(
+                        || "p",
+                        cfg.advice[1],
+                        offset,
+                        || Value::known(partial_val),
+                    )?;
+                    cfg.s_bool.enable(&mut region, offset)?;
+                    cfg.s_mul_fixed.enable(&mut region, offset)?;
+                    offset += 1;
+                    let acc_copy = region.assign_advice(
+                        || "ac",
+                        cfg.advice[0],
+                        offset,
+                        || acc.value().copied(),
+                    )?;
+                    region.constrain_equal(acc.cell(), acc_copy.cell())?;
+                    let pc = region.assign_advice(
+                        || "pc",
+                        cfg.advice[1],
+                        offset,
+                        || partial.value().copied(),
+                    )?;
+                    region.constrain_equal(partial.cell(), pc.cell())?;
+                    acc = region.assign_advice(
+                        || "new",
+                        cfg.advice[2],
+                        offset,
+                        || acc.value().copied().map(|a| a + partial_val),
+                    )?;
+                    cfg.s_add.enable(&mut region, offset)?;
+                    offset += 1;
+                }
+                Ok(acc)
+            },
+        )?;
         layouter.constrain_instance(acc.cell(), inst, 0)?;
         Ok(())
     }
@@ -165,7 +229,11 @@ fn acc_seed_rejects_free_delta_attack() {
     };
     let prover = MockProver::run(9, &circuit, vec![vec![circuit.target]]).unwrap();
     let res = prover.verify();
-    assert!(res.is_err(), "fixed accumulator MUST reject the free-delta attack: {:?}", res);
+    assert!(
+        res.is_err(),
+        "fixed accumulator MUST reject the free-delta attack: {:?}",
+        res
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -221,7 +289,14 @@ fn swap_configure(meta: &mut ConstraintSystem<Fr>) -> SwapCfg {
         let f = m.query_fixed(fixed, Rotation::cur());
         vec![s * (a + b - f)]
     });
-    SwapCfg { advice, fixed, s_bool, s_mul, s_add, s_sum_fixed }
+    SwapCfg {
+        advice,
+        fixed,
+        s_bool,
+        s_mul,
+        s_add,
+        s_sum_fixed,
+    }
 }
 
 struct SwapCircuit {
@@ -238,7 +313,13 @@ impl Circuit<Fr> for SwapCircuit {
     type Config = (SwapCfg, Column<Instance>);
     type FloorPlanner = SimpleFloorPlanner;
     fn without_witnesses(&self) -> Self {
-        SwapCircuit { sel: Fr::ZERO, a: Fr::ZERO, b: Fr::ZERO, malicious: false, one_val: Fr::ZERO }
+        SwapCircuit {
+            sel: Fr::ZERO,
+            a: Fr::ZERO,
+            b: Fr::ZERO,
+            malicious: false,
+            one_val: Fr::ZERO,
+        }
     }
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
         let cfg = swap_configure(meta);
@@ -246,56 +327,97 @@ impl Circuit<Fr> for SwapCircuit {
         meta.enable_equality(inst);
         (cfg, inst)
     }
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
         let (cfg, inst) = config;
         let sel = self.sel;
         let a = self.a;
         let b = self.b;
-        let oms_val = if self.malicious { self.one_val - sel } else { Fr::ONE - sel };
+        let oms_val = if self.malicious {
+            self.one_val - sel
+        } else {
+            Fr::ONE - sel
+        };
         let out_left = sel * b + oms_val * a;
         let out_right = sel * a + oms_val * b;
-        let (ol, or) = layouter.assign_region(|| "swap", |mut region| {
-            let o = 0usize;
-            // sel boolean
-            region.assign_advice(|| "sel", cfg.advice[0], o, || Value::known(sel))?;
-            cfg.s_bool.enable(&mut region, o)?;
-            // sel + oms = fixed(1)  (FIXED: the "1" is a fixed constant)
-            region.assign_advice(|| "sel1", cfg.advice[0], o + 1, || Value::known(sel))?;
-            region.assign_advice(|| "oms", cfg.advice[1], o + 1, || Value::known(oms_val))?;
-            region.assign_fixed(|| "one", cfg.fixed, o + 1, || Value::known(Fr::ONE))?;
-            cfg.s_sum_fixed.enable(&mut region, o + 1)?;
-            // sel*b
-            region.assign_advice(|| "m2a", cfg.advice[0], o + 2, || Value::known(sel))?;
-            region.assign_advice(|| "m2b", cfg.advice[1], o + 2, || Value::known(b))?;
-            region.assign_advice(|| "sb", cfg.advice[2], o + 2, || Value::known(sel * b))?;
-            cfg.s_mul.enable(&mut region, o + 2)?;
-            // oms*a
-            region.assign_advice(|| "m3a", cfg.advice[0], o + 3, || Value::known(oms_val))?;
-            region.assign_advice(|| "m3b", cfg.advice[1], o + 3, || Value::known(a))?;
-            region.assign_advice(|| "omsa", cfg.advice[2], o + 3, || Value::known(oms_val * a))?;
-            cfg.s_mul.enable(&mut region, o + 3)?;
-            // out_left = sel_b + oms_a
-            region.assign_advice(|| "a4a", cfg.advice[0], o + 4, || Value::known(sel * b))?;
-            region.assign_advice(|| "a4b", cfg.advice[1], o + 4, || Value::known(oms_val * a))?;
-            let ol = region.assign_advice(|| "ol", cfg.advice[2], o + 4, || Value::known(out_left))?;
-            cfg.s_add.enable(&mut region, o + 4)?;
-            // sel*a
-            region.assign_advice(|| "m5a", cfg.advice[0], o + 5, || Value::known(sel))?;
-            region.assign_advice(|| "m5b", cfg.advice[1], o + 5, || Value::known(a))?;
-            region.assign_advice(|| "sa", cfg.advice[2], o + 5, || Value::known(sel * a))?;
-            cfg.s_mul.enable(&mut region, o + 5)?;
-            // oms*b
-            region.assign_advice(|| "m6a", cfg.advice[0], o + 6, || Value::known(oms_val))?;
-            region.assign_advice(|| "m6b", cfg.advice[1], o + 6, || Value::known(b))?;
-            region.assign_advice(|| "omsb", cfg.advice[2], o + 6, || Value::known(oms_val * b))?;
-            cfg.s_mul.enable(&mut region, o + 6)?;
-            // out_right = sel_a + oms_b
-            region.assign_advice(|| "a7a", cfg.advice[0], o + 7, || Value::known(sel * a))?;
-            region.assign_advice(|| "a7b", cfg.advice[1], o + 7, || Value::known(oms_val * b))?;
-            let or = region.assign_advice(|| "orr", cfg.advice[2], o + 7, || Value::known(out_right))?;
-            cfg.s_add.enable(&mut region, o + 7)?;
-            Ok((ol, or))
-        })?;
+        let (ol, or) = layouter.assign_region(
+            || "swap",
+            |mut region| {
+                let o = 0usize;
+                // sel boolean
+                region.assign_advice(|| "sel", cfg.advice[0], o, || Value::known(sel))?;
+                cfg.s_bool.enable(&mut region, o)?;
+                // sel + oms = fixed(1)  (FIXED: the "1" is a fixed constant)
+                region.assign_advice(|| "sel1", cfg.advice[0], o + 1, || Value::known(sel))?;
+                region.assign_advice(|| "oms", cfg.advice[1], o + 1, || Value::known(oms_val))?;
+                region.assign_fixed(|| "one", cfg.fixed, o + 1, || Value::known(Fr::ONE))?;
+                cfg.s_sum_fixed.enable(&mut region, o + 1)?;
+                // sel*b
+                region.assign_advice(|| "m2a", cfg.advice[0], o + 2, || Value::known(sel))?;
+                region.assign_advice(|| "m2b", cfg.advice[1], o + 2, || Value::known(b))?;
+                region.assign_advice(|| "sb", cfg.advice[2], o + 2, || Value::known(sel * b))?;
+                cfg.s_mul.enable(&mut region, o + 2)?;
+                // oms*a
+                region.assign_advice(|| "m3a", cfg.advice[0], o + 3, || Value::known(oms_val))?;
+                region.assign_advice(|| "m3b", cfg.advice[1], o + 3, || Value::known(a))?;
+                region.assign_advice(
+                    || "omsa",
+                    cfg.advice[2],
+                    o + 3,
+                    || Value::known(oms_val * a),
+                )?;
+                cfg.s_mul.enable(&mut region, o + 3)?;
+                // out_left = sel_b + oms_a
+                region.assign_advice(|| "a4a", cfg.advice[0], o + 4, || Value::known(sel * b))?;
+                region.assign_advice(
+                    || "a4b",
+                    cfg.advice[1],
+                    o + 4,
+                    || Value::known(oms_val * a),
+                )?;
+                let ol = region.assign_advice(
+                    || "ol",
+                    cfg.advice[2],
+                    o + 4,
+                    || Value::known(out_left),
+                )?;
+                cfg.s_add.enable(&mut region, o + 4)?;
+                // sel*a
+                region.assign_advice(|| "m5a", cfg.advice[0], o + 5, || Value::known(sel))?;
+                region.assign_advice(|| "m5b", cfg.advice[1], o + 5, || Value::known(a))?;
+                region.assign_advice(|| "sa", cfg.advice[2], o + 5, || Value::known(sel * a))?;
+                cfg.s_mul.enable(&mut region, o + 5)?;
+                // oms*b
+                region.assign_advice(|| "m6a", cfg.advice[0], o + 6, || Value::known(oms_val))?;
+                region.assign_advice(|| "m6b", cfg.advice[1], o + 6, || Value::known(b))?;
+                region.assign_advice(
+                    || "omsb",
+                    cfg.advice[2],
+                    o + 6,
+                    || Value::known(oms_val * b),
+                )?;
+                cfg.s_mul.enable(&mut region, o + 6)?;
+                // out_right = sel_a + oms_b
+                region.assign_advice(|| "a7a", cfg.advice[0], o + 7, || Value::known(sel * a))?;
+                region.assign_advice(
+                    || "a7b",
+                    cfg.advice[1],
+                    o + 7,
+                    || Value::known(oms_val * b),
+                )?;
+                let or = region.assign_advice(
+                    || "orr",
+                    cfg.advice[2],
+                    o + 7,
+                    || Value::known(out_right),
+                )?;
+                cfg.s_add.enable(&mut region, o + 7)?;
+                Ok((ol, or))
+            },
+        )?;
         layouter.constrain_instance(ol.cell(), inst, 0)?;
         layouter.constrain_instance(or.cell(), inst, 1)?;
         Ok(())
@@ -305,7 +427,13 @@ impl Circuit<Fr> for SwapCircuit {
 #[test]
 fn cond_swap_accepts_honest() {
     // sel=0, a=5, b=7 → no swap → (5, 7).
-    let circuit = SwapCircuit { sel: Fr::ZERO, a: Fr::from(5u64), b: Fr::from(7u64), malicious: false, one_val: Fr::ONE };
+    let circuit = SwapCircuit {
+        sel: Fr::ZERO,
+        a: Fr::from(5u64),
+        b: Fr::from(7u64),
+        malicious: false,
+        one_val: Fr::ONE,
+    };
     let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(5u64), Fr::from(7u64)]]).unwrap();
     prover.verify().expect("honest swap MUST verify");
 }
@@ -331,7 +459,11 @@ fn cond_swap_rejects_free_one_attack() {
     let out_right = Fr::ZERO * Fr::from(5u64) + oms_val * Fr::from(7u64);
     let prover = MockProver::run(9, &circuit, vec![vec![out_left, out_right]]).unwrap();
     let res = prover.verify();
-    assert!(res.is_err(), "fixed cond_swap MUST reject the free-one attack: {:?}", res);
+    assert!(
+        res.is_err(),
+        "fixed cond_swap MUST reject the free-one attack: {:?}",
+        res
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -392,7 +524,12 @@ fn cond_sel_configure(meta: &mut ConstraintSystem<Fr>) -> CondSelCfg {
         let c = m.query_advice(advice[2], Rotation::cur());
         vec![s * (a + b - c)]
     });
-    CondSelCfg { advice, s_bool, s_mul, s_add }
+    CondSelCfg {
+        advice,
+        s_bool,
+        s_mul,
+        s_add,
+    }
 }
 
 struct CondSelCircuit {
@@ -405,7 +542,11 @@ impl Circuit<Fr> for CondSelCircuit {
     type Config = (CondSelCfg, Column<Instance>);
     type FloorPlanner = SimpleFloorPlanner;
     fn without_witnesses(&self) -> Self {
-        CondSelCircuit { sel: Fr::ZERO, a: Fr::ZERO, b: Fr::ZERO }
+        CondSelCircuit {
+            sel: Fr::ZERO,
+            a: Fr::ZERO,
+            b: Fr::ZERO,
+        }
     }
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
         let cfg = cond_sel_configure(meta);
@@ -413,7 +554,11 @@ impl Circuit<Fr> for CondSelCircuit {
         meta.enable_equality(inst);
         (cfg, inst)
     }
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
         let (cfg, inst) = config;
         let sel = self.sel;
         let a = self.a;
@@ -422,29 +567,32 @@ impl Circuit<Fr> for CondSelCircuit {
         let diff = a - b;
         let t = sel * diff;
         let out = b + t;
-        let res = layouter.assign_region(|| "cond_sel", |mut region| {
-            let o = 0usize;
-            // sel boolean
-            region.assign_advice(|| "sel", cfg.advice[0], o, || Value::known(sel))?;
-            cfg.s_bool.enable(&mut region, o)?;
-            // b + diff = a   (s_add ⟹ diff = a − b)
-            region.assign_advice(|| "b", cfg.advice[0], o + 1, || Value::known(b))?;
-            region.assign_advice(|| "diff", cfg.advice[1], o + 1, || Value::known(diff))?;
-            region.assign_advice(|| "a", cfg.advice[2], o + 1, || Value::known(a))?;
-            cfg.s_add.enable(&mut region, o + 1)?;
-            // sel * diff = t   (s_mul)
-            region.assign_advice(|| "sel2", cfg.advice[0], o + 2, || Value::known(sel))?;
-            region.assign_advice(|| "diff2", cfg.advice[1], o + 2, || Value::known(diff))?;
-            region.assign_advice(|| "t", cfg.advice[2], o + 2, || Value::known(t))?;
-            cfg.s_mul.enable(&mut region, o + 2)?;
-            // b + t = out   (s_add)
-            region.assign_advice(|| "b2", cfg.advice[0], o + 3, || Value::known(b))?;
-            region.assign_advice(|| "t2", cfg.advice[1], o + 3, || Value::known(t))?;
-            let out_cell =
-                region.assign_advice(|| "out", cfg.advice[2], o + 3, || Value::known(out))?;
-            cfg.s_add.enable(&mut region, o + 3)?;
-            Ok(out_cell)
-        })?;
+        let res = layouter.assign_region(
+            || "cond_sel",
+            |mut region| {
+                let o = 0usize;
+                // sel boolean
+                region.assign_advice(|| "sel", cfg.advice[0], o, || Value::known(sel))?;
+                cfg.s_bool.enable(&mut region, o)?;
+                // b + diff = a   (s_add ⟹ diff = a − b)
+                region.assign_advice(|| "b", cfg.advice[0], o + 1, || Value::known(b))?;
+                region.assign_advice(|| "diff", cfg.advice[1], o + 1, || Value::known(diff))?;
+                region.assign_advice(|| "a", cfg.advice[2], o + 1, || Value::known(a))?;
+                cfg.s_add.enable(&mut region, o + 1)?;
+                // sel * diff = t   (s_mul)
+                region.assign_advice(|| "sel2", cfg.advice[0], o + 2, || Value::known(sel))?;
+                region.assign_advice(|| "diff2", cfg.advice[1], o + 2, || Value::known(diff))?;
+                region.assign_advice(|| "t", cfg.advice[2], o + 2, || Value::known(t))?;
+                cfg.s_mul.enable(&mut region, o + 2)?;
+                // b + t = out   (s_add)
+                region.assign_advice(|| "b2", cfg.advice[0], o + 3, || Value::known(b))?;
+                region.assign_advice(|| "t2", cfg.advice[1], o + 3, || Value::known(t))?;
+                let out_cell =
+                    region.assign_advice(|| "out", cfg.advice[2], o + 3, || Value::known(out))?;
+                cfg.s_add.enable(&mut region, o + 3)?;
+                Ok(out_cell)
+            },
+        )?;
         layouter.constrain_instance(res.cell(), inst, 0)?;
         Ok(())
     }
@@ -453,7 +601,11 @@ impl Circuit<Fr> for CondSelCircuit {
 #[test]
 fn cond_select_accepts_honest_sel0() {
     // sel=0, a=5, b=7 → result = b = 7.
-    let circuit = CondSelCircuit { sel: Fr::ZERO, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let circuit = CondSelCircuit {
+        sel: Fr::ZERO,
+        a: Fr::from(5u64),
+        b: Fr::from(7u64),
+    };
     let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(7u64)]]).unwrap();
     prover.verify().expect("honest select (sel=0) MUST verify");
 }
@@ -461,7 +613,11 @@ fn cond_select_accepts_honest_sel0() {
 #[test]
 fn cond_select_accepts_honest_sel1() {
     // sel=1, a=5, b=7 → result = a = 5.
-    let circuit = CondSelCircuit { sel: Fr::ONE, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let circuit = CondSelCircuit {
+        sel: Fr::ONE,
+        a: Fr::from(5u64),
+        b: Fr::from(7u64),
+    };
     let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(5u64)]]).unwrap();
     prover.verify().expect("honest select (sel=1) MUST verify");
 }
@@ -474,8 +630,16 @@ fn cond_select_rejects_forged_output() {
     // instance claim 42 is REJECTED. If this passes, a free constant has been
     // re-introduced into the scalar-mul conditional select and the
     // scalar↔nullifier binding is broken (unlimited claims / double-spend).
-    let circuit = CondSelCircuit { sel: Fr::ZERO, a: Fr::from(5u64), b: Fr::from(7u64) };
+    let circuit = CondSelCircuit {
+        sel: Fr::ZERO,
+        a: Fr::from(5u64),
+        b: Fr::from(7u64),
+    };
     let prover = MockProver::run(9, &circuit, vec![vec![Fr::from(42u64)]]).unwrap();
     let res = prover.verify();
-    assert!(res.is_err(), "fixed conditional_select MUST reject forged output: {:?}", res);
+    assert!(
+        res.is_err(),
+        "fixed conditional_select MUST reject forged output: {:?}",
+        res
+    );
 }

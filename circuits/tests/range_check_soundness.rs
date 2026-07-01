@@ -130,15 +130,27 @@ impl Circuit<Fr> for ShadowCircuit {
         (cfg, anchor)
     }
 
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<Fr>) -> Result<(), Error> {
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<Fr>,
+    ) -> Result<(), Error> {
         let (cfg, _anchor_col) = config;
 
-        layouter.assign_table(|| "range8", |mut table| {
-            for i in 0u64..256 {
-                table.assign_cell(|| "r", cfg.table, i as usize, || Value::known(Fr::from(i)))?;
-            }
-            Ok(())
-        })?;
+        layouter.assign_table(
+            || "range8",
+            |mut table| {
+                for i in 0u64..256 {
+                    table.assign_cell(
+                        || "r",
+                        cfg.table,
+                        i as usize,
+                        || Value::known(Fr::from(i)),
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
 
         // Witness: honest reconstruction, naive all-zero (malicious), or the
         // "smart" attack that exploits a FREE zero seed (z[0] unconstrained).
@@ -171,77 +183,108 @@ impl Circuit<Fr> for ShadowCircuit {
         }
         let z_term = z[8];
 
-        layouter.assign_region(|| "check_single_limb_shadow", |mut region| {
-            let mut offset = 0usize;
-            let mut prev_z_next: Option<halo2_proofs::circuit::AssignedCell<Fr, Fr>> = None;
+        layouter.assign_region(
+            || "check_single_limb_shadow",
+            |mut region| {
+                let mut offset = 0usize;
+                let mut prev_z_next: Option<halo2_proofs::circuit::AssignedCell<Fr, Fr>> = None;
 
-            for b in 0..8usize {
-                // byte on the dedicated range-check column.
-                let byte_cell = region.assign_advice(
-                    || "rc_byte",
-                    cfg.byte_advice,
-                    offset,
-                    || Value::known(Fr::from(bytes[b] as u64)),
-                )?;
+                for b in 0..8usize {
+                    // byte on the dedicated range-check column.
+                    let byte_cell = region.assign_advice(
+                        || "rc_byte",
+                        cfg.byte_advice,
+                        offset,
+                        || Value::known(Fr::from(bytes[b] as u64)),
+                    )?;
 
-                // Row A: z_cur * 256 = z_scaled
-                let z_cur = z[b];
-                let z_cur_cell = region.assign_advice(|| "z_cur", cfg.advice[0], offset, || {
-                    Value::known(z_cur)
-                })?;
-                region.assign_fixed(|| "256", cfg.fixed, offset, || {
-                    Value::known(Fr::from(256u64))
-                })?;
-                let z_scaled_val = z_cur * Fr::from(256u64);
-                let z_scaled = region.assign_advice(|| "z_scaled", cfg.advice[1], offset, || {
-                    Value::known(z_scaled_val)
-                })?;
-                cfg.s_mul_fixed.enable(&mut region, offset)?;
-                // Seed (b==0): mirror the row-neutral fix. The gate enforces
-                // z_scaled[0] = z_cur[0]·256; forcing z_cur[0]==z_scaled[0]
-                // gives z_cur[0]·255 = 0 ⇒ z_cur[0] = 0. The smart attack sets
-                // z[0]=δ≠0, so this constrain_equal FAILS (δ ≠ δ·256).
-                if b == 0 {
-                    region.constrain_equal(z_cur_cell.cell(), z_scaled.cell())?;
-                } else if let Some(prev) = &prev_z_next {
-                    region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
+                    // Row A: z_cur * 256 = z_scaled
+                    let z_cur = z[b];
+                    let z_cur_cell = region.assign_advice(
+                        || "z_cur",
+                        cfg.advice[0],
+                        offset,
+                        || Value::known(z_cur),
+                    )?;
+                    region.assign_fixed(
+                        || "256",
+                        cfg.fixed,
+                        offset,
+                        || Value::known(Fr::from(256u64)),
+                    )?;
+                    let z_scaled_val = z_cur * Fr::from(256u64);
+                    let z_scaled = region.assign_advice(
+                        || "z_scaled",
+                        cfg.advice[1],
+                        offset,
+                        || Value::known(z_scaled_val),
+                    )?;
+                    cfg.s_mul_fixed.enable(&mut region, offset)?;
+                    // Seed (b==0): mirror the row-neutral fix. The gate enforces
+                    // z_scaled[0] = z_cur[0]·256; forcing z_cur[0]==z_scaled[0]
+                    // gives z_cur[0]·255 = 0 ⇒ z_cur[0] = 0. The smart attack sets
+                    // z[0]=δ≠0, so this constrain_equal FAILS (δ ≠ δ·256).
+                    if b == 0 {
+                        region.constrain_equal(z_cur_cell.cell(), z_scaled.cell())?;
+                    } else if let Some(prev) = &prev_z_next {
+                        region.constrain_equal(z_cur_cell.cell(), prev.cell())?;
+                    }
+                    offset += 1;
+
+                    // Row B: z_scaled + byte = z_next
+                    let z_scaled_copy = region.assign_advice(
+                        || "zs_copy",
+                        cfg.advice[0],
+                        offset,
+                        || Value::known(z_scaled_val),
+                    )?;
+                    region.constrain_equal(z_scaled.cell(), z_scaled_copy.cell())?;
+                    let byte_copy = region.assign_advice(
+                        || "byte_copy",
+                        cfg.byte_advice,
+                        offset,
+                        || Value::known(Fr::from(bytes[b] as u64)),
+                    )?;
+                    region.constrain_equal(byte_cell.cell(), byte_copy.cell())?;
+                    let z_next_val = z_scaled_val + Fr::from(bytes[b] as u64);
+                    let z_next = region.assign_advice(
+                        || "z_next",
+                        cfg.advice[2],
+                        offset,
+                        || Value::known(z_next_val),
+                    )?;
+                    cfg.s_add.enable(&mut region, offset)?;
+                    offset += 1;
+
+                    prev_z_next = Some(z_next);
                 }
-                offset += 1;
 
-                // Row B: z_scaled + byte = z_next
-                let z_scaled_copy = region.assign_advice(|| "zs_copy", cfg.advice[0], offset, || {
-                    Value::known(z_scaled_val)
-                })?;
-                region.constrain_equal(z_scaled.cell(), z_scaled_copy.cell())?;
-                let byte_copy = region.assign_advice(|| "byte_copy", cfg.byte_advice, offset, || {
-                    Value::known(Fr::from(bytes[b] as u64))
-                })?;
-                region.constrain_equal(byte_cell.cell(), byte_copy.cell())?;
-                let z_next_val = z_scaled_val + Fr::from(bytes[b] as u64);
-                let z_next = region.assign_advice(|| "z_next", cfg.advice[2], offset, || {
-                    Value::known(z_next_val)
-                })?;
-                cfg.s_add.enable(&mut region, offset)?;
-                offset += 1;
-
-                prev_z_next = Some(z_next);
-            }
-
-            // Final: z_final == last z_next AND z_final == limb.
-            let limb_copy = region.assign_advice(|| "limb_copy", cfg.advice[0], offset, || {
-                Value::known(self.limb_value)
-            })?;
-            // For the malicious case we try z_final = limb (the attack).
-            let z_final_val = if self.malicious { self.limb_value } else { z_term };
-            let z_final = region.assign_advice(|| "z_final", cfg.advice[1], offset, || {
-                Value::known(z_final_val)
-            })?;
-            if let Some(last) = &prev_z_next {
-                region.constrain_equal(z_final.cell(), last.cell())?;
-            }
-            region.constrain_equal(z_final.cell(), limb_copy.cell())?;
-            Ok(())
-        })
+                // Final: z_final == last z_next AND z_final == limb.
+                let limb_copy = region.assign_advice(
+                    || "limb_copy",
+                    cfg.advice[0],
+                    offset,
+                    || Value::known(self.limb_value),
+                )?;
+                // For the malicious case we try z_final = limb (the attack).
+                let z_final_val = if self.malicious {
+                    self.limb_value
+                } else {
+                    z_term
+                };
+                let z_final = region.assign_advice(
+                    || "z_final",
+                    cfg.advice[1],
+                    offset,
+                    || Value::known(z_final_val),
+                )?;
+                if let Some(last) = &prev_z_next {
+                    region.constrain_equal(z_final.cell(), last.cell())?;
+                }
+                region.constrain_equal(z_final.cell(), limb_copy.cell())?;
+                Ok(())
+            },
+        )
     }
 }
 

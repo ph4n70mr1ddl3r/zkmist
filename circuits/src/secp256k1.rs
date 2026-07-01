@@ -1841,8 +1841,7 @@ impl<'a> Secp256k1Chip<'a> {
                     // r_cell only to another prover-controlled cell — `neg_b` was
                     // unconstrained and `field_sub` returned `a + <arbitrary>`
                     // mod p, fully breaking scalar multiplication).
-                    let p_ref =
-                        self.fixed_const(&mut region, 5 + i, Fr::from(SECP_P[i]))?;
+                    let p_ref = self.fixed_const(&mut region, 5 + i, Fr::from(SECP_P[i]))?;
                     region.constrain_equal(r_cell.cell(), p_ref.cell())?;
                     if i == 3 {
                         // final carry == 0  ⟹  b + neg_b == p (no overflow).
@@ -2304,29 +2303,44 @@ impl<'a> Secp256k1Chip<'a> {
                         offset,
                         || Value::known(Fr::ZERO),
                     )?;
-                    region.assign_fixed(|| "empty_seed_fixed", self.config.fixed, offset, || {
-                        Value::known(Fr::ZERO)
-                    })?;
-                    let zero = region.assign_advice(|| "empty_zero", self.config.advice[1], offset, || {
-                        Value::known(Fr::ZERO)
-                    })?;
+                    region.assign_fixed(
+                        || "empty_seed_fixed",
+                        self.config.fixed,
+                        offset,
+                        || Value::known(Fr::ZERO),
+                    )?;
+                    let zero = region.assign_advice(
+                        || "empty_zero",
+                        self.config.advice[1],
+                        offset,
+                        || Value::known(Fr::ZERO),
+                    )?;
                     self.config.s_mul_fixed.enable(&mut region, offset)?;
                     return Ok(zero);
                 }
 
                 // Seed: acc = bit[0] · weight[0]  (constrained by s_mul_fixed + s_bool).
                 let bit0 = bits[0].value().copied();
-                let b_copy0 = region.assign_advice(|| "ab_seed_bit", self.config.advice[0], offset, || {
-                    bit0
-                })?;
+                let b_copy0 = region.assign_advice(
+                    || "ab_seed_bit",
+                    self.config.advice[0],
+                    offset,
+                    || bit0,
+                )?;
                 region.constrain_equal(bits[0].cell(), b_copy0.cell())?;
-                region.assign_fixed(|| "ab_seed_weight", self.config.fixed, offset, || {
-                    Value::known(weights[0])
-                })?;
+                region.assign_fixed(
+                    || "ab_seed_weight",
+                    self.config.fixed,
+                    offset,
+                    || Value::known(weights[0]),
+                )?;
                 let seed_val = bit0.map(|v| v * weights[0]);
-                let mut acc = region.assign_advice(|| "ab_seed", self.config.advice[1], offset, || {
-                    seed_val
-                })?;
+                let mut acc = region.assign_advice(
+                    || "ab_seed",
+                    self.config.advice[1],
+                    offset,
+                    || seed_val,
+                )?;
                 self.config.s_bool.enable(&mut region, offset)?;
                 self.config.s_mul_fixed.enable(&mut region, offset)?;
                 offset += 1;
@@ -2334,33 +2348,47 @@ impl<'a> Secp256k1Chip<'a> {
                 for (i, bit) in bits.iter().enumerate().skip(1) {
                     // Row: advice[0] = bit (copy), fixed = weight, advice[1] = bit·weight.
                     let bv = bit.value().copied();
-                    let b_copy = region.assign_advice(|| "ab_bit", self.config.advice[0], offset, || {
-                        bv
-                    })?;
+                    let b_copy =
+                        region.assign_advice(|| "ab_bit", self.config.advice[0], offset, || bv)?;
                     region.constrain_equal(bit.cell(), b_copy.cell())?;
-                    region.assign_fixed(|| "ab_weight", self.config.fixed, offset, || {
-                        Value::known(weights[i])
-                    })?;
+                    region.assign_fixed(
+                        || "ab_weight",
+                        self.config.fixed,
+                        offset,
+                        || Value::known(weights[i]),
+                    )?;
                     let partial_val = bv.map(|v| v * weights[i]);
-                    let partial = region.assign_advice(|| "ab_partial", self.config.advice[1], offset, || {
-                        partial_val
-                    })?;
+                    let partial = region.assign_advice(
+                        || "ab_partial",
+                        self.config.advice[1],
+                        offset,
+                        || partial_val,
+                    )?;
                     self.config.s_bool.enable(&mut region, offset)?;
                     self.config.s_mul_fixed.enable(&mut region, offset)?;
                     offset += 1;
 
                     // Row: acc + partial = new_acc  (s_add: advice[0]+advice[1]=advice[2])
-                    let acc_copy = region.assign_advice(|| "ab_acc", self.config.advice[0], offset, || {
-                        acc.value().copied()
-                    })?;
+                    let acc_copy = region.assign_advice(
+                        || "ab_acc",
+                        self.config.advice[0],
+                        offset,
+                        || acc.value().copied(),
+                    )?;
                     region.constrain_equal(acc.cell(), acc_copy.cell())?;
-                    let part_copy = region.assign_advice(|| "ab_part", self.config.advice[1], offset, || {
-                        partial.value().copied()
-                    })?;
+                    let part_copy = region.assign_advice(
+                        || "ab_part",
+                        self.config.advice[1],
+                        offset,
+                        || partial.value().copied(),
+                    )?;
                     region.constrain_equal(partial.cell(), part_copy.cell())?;
-                    acc = region.assign_advice(|| "ab_newacc", self.config.advice[2], offset, || {
-                        acc.value().copied().zip(partial_val).map(|(a, p)| a + p)
-                    })?;
+                    acc = region.assign_advice(
+                        || "ab_newacc",
+                        self.config.advice[2],
+                        offset,
+                        || acc.value().copied().zip(partial_val).map(|(a, p)| a + p),
+                    )?;
                     self.config.s_add.enable(&mut region, offset)?;
                     offset += 1;
                 }

@@ -45,7 +45,17 @@ fn main() {
             }
             "--k" => {
                 if i + 1 < args.len() {
-                    k = args[i + 1].parse().unwrap_or(22);
+                    // A malformed --k must be LOUD: this tool writes a verifier
+                    // file, and the circuit only fits at k=23 (k=22 does not
+                    // fit, k>=24 OOMs). The previous fallback silently used 22
+                    // (a value that does not even fit the circuit) on a typo.
+                    k = args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!(
+                            "Invalid --k value '{}': expected a power of 2 (the circuit targets k=23)",
+                            args[i + 1]
+                        );
+                        std::process::exit(1);
+                    });
                     i += 2;
                 } else {
                     eprintln!("Usage: gen-verifier --k <power>");
