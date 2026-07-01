@@ -145,11 +145,27 @@ fn main() {
                         eprintln!("  ⚠️  ALERT: >10,000 claims in one interval (surge detected)");
                     }
 
+                    // Anomaly detection: ZKMAirdrop mints exactly CLAIM_AMOUNT
+                    // (10,000 ZKM) per claim, and ZKMToken supports burn()/burnFrom()
+                    // which only ever REDUCE totalSupply. So a sound system can NEVER
+                    // have on-chain supply ABOVE claims × CLAIM_AMOUNT — that would
+                    // mean over-minting (a real exploit). Supply BELOW that line is
+                    // simply tokens that have been burned (legitimate), not a mismatch.
+                    // The previous `!=` comparison fired a false-positive ALERT on
+                    // every burn; only flag the genuinely-impossible over-mint case.
                     let expected_supply = state.total_claims as u128 * CLAIM_AMOUNT_ZKM;
-                    if state.on_chain_supply_zkm != expected_supply {
+                    if state.on_chain_supply_zkm > expected_supply {
                         eprintln!(
-                            "  ⚠️  ALERT: Supply mismatch! expected={} ZKM, on-chain={} ZKM",
-                            expected_supply, state.on_chain_supply_zkm
+                            "  ⚠️  ALERT: over-mint detected! on-chain={} ZKM > expected={} ZKM (claims × {})",
+                            state.on_chain_supply_zkm, expected_supply, CLAIM_AMOUNT_ZKM
+                        );
+                    } else if state.on_chain_supply_zkm < expected_supply {
+                        // Burns only reduce supply, so the gap is burned ZKM — not
+                        // an anomaly. Reported info-level (mirrors cmd_status).
+                        let burned = expected_supply - state.on_chain_supply_zkm;
+                        eprintln!(
+                            "  ℹ️  {} ZKM burned so far (minted {} ZKM, on-chain {} ZKM)",
+                            burned, expected_supply, state.on_chain_supply_zkm
                         );
                     }
                 }

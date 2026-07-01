@@ -70,10 +70,19 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
 
     for file_entry in &manifest.files {
         let filename = &file_entry.file;
+        // Normalize the manifest's expected hash to bare lowercase hex so the
+        // comparison against `hex::encode(...)` (always lowercase) is robust to
+        // a manifest that carries a `0x` prefix, surrounding whitespace, or
+        // uppercase hex digits. The KZG-SRS path already normalizes this way
+        // (`expected_hash.trim().to_lowercase()`); this aligns the eligibility
+        // path so a stray uppercase/whitespace hash never falsely rejects a
+        // valid download with a "SHA-256 mismatch".
         let expected_hash = file_entry
             .sha256
+            .trim()
             .strip_prefix("0x")
-            .unwrap_or(&file_entry.sha256);
+            .unwrap_or(file_entry.sha256.trim())
+            .to_lowercase();
         let dest = dir.join(filename);
 
         if dest.exists() {
@@ -90,7 +99,7 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
         }
 
         // Try download sources in priority order
-        let downloaded = try_download_file(&rt, filename, &dest, expected_hash)?;
+        let downloaded = try_download_file(&rt, filename, &dest, &expected_hash)?;
         if !downloaded {
             return Err(format!("Failed to download {} from GitHub", filename));
         }

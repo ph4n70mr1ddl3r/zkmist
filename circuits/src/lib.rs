@@ -984,7 +984,7 @@ mod tests {
         let total = rows_used + blinding + 1; // rows that must fit in 2^k
 
         // Smallest k with 2^k >= total.
-        let min_k = (total as u64).next_power_of_two().trailing_zeros() as u32;
+        let min_k = (total as u64).next_power_of_two().trailing_zeros();
 
         let fits_k23 = total <= (1usize << 23);
         let fits_k24 = total <= (1usize << 24);
