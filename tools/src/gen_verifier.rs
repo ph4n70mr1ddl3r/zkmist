@@ -324,7 +324,14 @@ contract Halo2Verifier is IHalo2Verifier {{
         uint256[3] memory publicInputs
     ) external view returns (bool) {{
         // ── Step 1: Proof length validation ──────────────────────────
-        if (proof.length < 400 || proof.length > 1200) {{
+        // Loose structural pre-filter mirroring the CLI's PROOF_LENGTH_MIN/MAX
+        // ([4000, 8000] in cli/src/constants.rs). The authoritative check is the
+        // production Halo2Verifier.sol's exact `eq(0x1600, ...)` (= 5632). The
+        // previous < 400 || > 1200 range REJECTED every real 5632-byte proof,
+        // making even this dev/structural verifier useless for end-to-end flow
+        // testing — it would return false before reaching the (always-true)
+        // body for any honest proof.
+        if (proof.length < 4000 || proof.length > 8000) {{
             return false;
         }}
 
