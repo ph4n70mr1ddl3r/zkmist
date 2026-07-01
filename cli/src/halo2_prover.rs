@@ -50,17 +50,30 @@ const CIRCUIT_K: u32 = 23;
 
 /// Empirical minimum *available* RAM (GiB) needed to prove at `k`.
 ///
-/// Anchored to the MEASURED VmPeak ≈ 49 GiB of the full ZKMist circuit at
-/// k=23 (2^23 rows; secp256k1-GLV + Keccak + Poseidon + 26-level Merkle). That
-/// peak is dominated by `keygen_vk`, NOT `create_proof`: synthesizing the full
-/// circuit and KZG-committing its fixed/permutation columns across 8.4M rows
-/// allocates far more than the ~20 GiB witness grid `create_proof` later adds.
-/// Extrapolated linearly in 2^k, plus ~3 GiB of headroom for the OS + agent.
-/// On a host below this floor the prover thrashes into swap for tens of
-/// minutes, then gets OOM-killed — which is what this guard prevents.
+/// Anchored to the MEASURED **peak RSS** of the full ZKMist circuit at k=23
+/// (2^23 rows; secp256k1-GLV + Keccak + Poseidon + 26-level Merkle):
+///
+///   - ~14.8 GiB peak RSS — isolated secp256k1 MockProver (2026-06-29).
+///   - ~19.5 GiB peak RSS — full E2E MockProver (2026-06-29).
+///   - ~15–25 GiB peak RSS — real KZG round-trip (see `test_real_kzg_proof_round_trip`).
+///
+/// The README's user-facing figure is "~16–20 GiB RAM"; we round the anchor to
+/// 20 GiB and extrapolate linearly in 2^k (RSS is dominated by the 2^k witness
+/// grid + KZG commitment matrices), plus headroom for the OS + agent.
+///
+/// ⚠️  This MUST track **RSS (resident physical memory)**, NOT VmPeak (peak
+/// virtual address space). Halo2 proving reserves a lot of VIRTUAL memory that
+/// is committed but never paged in — allocator arenas, lazily-populated FFT
+/// scratch, per-thread stacks — so VmPeak runs ~2.5× above RSS (≈49 GiB virtual
+/// vs ≈20 GiB resident at k=23). The OOM killer and swap act on physical RSS,
+/// not virtual reservations. A prior revision anchored the *physical* RAM
+/// floor to the *virtual* peak (49 + 3 = 52 GiB), which hard-rejected the
+/// 32 GiB host the `CIRCUIT_K` doc and README both say is sufficient — blocking
+/// legitimate proving on capable machines for no benefit. Do NOT "fix" this
+/// back to VmPeak.
 pub fn min_required_ram_gib(k: u32) -> f64 {
-    let peak_gib = 49.0 * (1u64 << k) as f64 / (1u64 << 23) as f64;
-    peak_gib + 3.0
+    let peak_rss_gib = 20.0 * (1u64 << k) as f64 / (1u64 << 23) as f64;
+    peak_rss_gib + 4.0
 }
 
 /// Read `MemAvailable` (KiB) from `/proc/meminfo`, or `None` if unavailable
@@ -713,19 +726,26 @@ mod tests {
         LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
-    /// `min_required_ram_gib` anchors to the MEASURED ~49 GiB keygen peak at
-    /// k=23 (VmPeak observed in the wild) + 3 GiB headroom = 52 GiB, and scales
-    /// linearly in 2^k so a future k bump is caught too.
+    /// `min_required_ram_gib` anchors to the MEASURED ~20 GiB peak RSS at
+    /// k=23 (E2E MockProver 2026-06-29 run; README "~16–20 GiB RAM") + 4 GiB
+    /// headroom = 24 GiB, and scales linearly in 2^k. This is RSS — what the
+    /// OOM killer acts on — NOT VmPeak (~49 GiB virtual), which a prior
+    /// revision used and which wrongly hard-rejected the documented 32 GiB
+    /// host. See `min_required_ram_gib`'s doc comment for the VmPeak/RSS
+    /// rationale.
     #[test]
     fn test_min_required_ram_gib_anchors_and_scales() {
-        // k=23 → ~49 GiB peak + 3 GiB headroom = 52 GiB.
-        assert!((min_required_ram_gib(23) - 52.0).abs() < 1e-9);
-        // k=24 → ~98 GiB peak + 3 GiB headroom = 101 GiB.
+        // k=23 → ~20 GiB peak RSS + 4 GiB headroom = 24 GiB.
+        assert!((min_required_ram_gib(23) - 24.0).abs() < 1e-9);
+        // k=24 → ~40 GiB peak RSS + 4 GiB headroom = 44 GiB.
         assert!(
-            (min_required_ram_gib(24) - 101.0).abs() < 1e-9,
-            "k=24 floor must be ~101 GiB"
+            (min_required_ram_gib(24) - 44.0).abs() < 1e-9,
+            "k=24 floor must be ~44 GiB"
         );
         assert!(min_required_ram_gib(24) > min_required_ram_gib(23));
+        // The documented 32 GiB host MUST clear the floor cleanly (not even
+        // land in the marginal warning zone of floor..floor+4 = 24..28).
+        assert!(32.0 >= min_required_ram_gib(23) + 4.0);
     }
 
     /// `read_mem_available_kib` returns a sane positive value on this Linux host
@@ -756,6 +776,31 @@ mod tests {
         let _g = env_lock().lock().unwrap();
         std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
         assert!(preflight_ram_check_for(Some(64.0)).is_ok());
+    }
+
+    /// The documented-sufficient host (32 GiB — see the `CIRCUIT_K` doc and
+    /// README "~16–20 GiB RAM") MUST pass cleanly. This is the regression
+    /// guard for the VmPeak-vs-RSS bug: a prior revision anchored the floor to
+    /// the ~49 GiB *virtual* peak (52 GiB floor), which hard-rejected this
+    /// exact host. Anchoring to the ~20 GiB *resident* peak (24 GiB floor)
+    /// lets it through. A host barely above the floor (26 GiB) must also pass
+    /// (it sits in the marginal warning zone, not the hard-fail zone).
+    #[test]
+    fn test_preflight_accepts_documented_32gib_host() {
+        let _g = env_lock().lock().unwrap();
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
+        // 32 GiB host: documented sufficient, must NOT be hard-rejected.
+        assert!(
+            preflight_ram_check_for(Some(32.0)).is_ok(),
+            "the documented 32 GiB host must be allowed to prove; \
+             if this fails the floor is anchored to VmPeak, not RSS"
+        );
+        // 26 GiB: above the 24 GiB floor (marginal zone) — proceeds with a
+        // warning, never hard-failed. Below the old wrong 52 GiB floor.
+        assert!(
+            preflight_ram_check_for(Some(26.0)).is_ok(),
+            "a 26 GiB host is above the RSS-anchored floor and must proceed"
+        );
     }
 
     /// `ZKMIST_SKIP_RAM_CHECK=1` forces Ok even on an absurdly small host.
