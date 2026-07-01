@@ -5,7 +5,6 @@
 
 use std::io::{self, Write};
 
-use ark_ff::PrimeField;
 use sha2::{Digest as Sha2Digest, Sha256};
 use zkmist_merkle_tree::{
     build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
@@ -487,8 +486,8 @@ pub fn cmd_submit(
 ///   4. Proof creation
 ///   5. Local verification
 pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
-    use zkmist_circuits::{merkle::TREE_DEPTH, poseidon::ark_to_halo2, ZKMistV2Claim};
-    use zkmist_merkle_tree::{build_tree_streaming_with_depth, compute_nullifier};
+    use zkmist_circuits::merkle::TREE_DEPTH;
+    use zkmist_merkle_tree::build_tree_streaming_with_depth;
 
     let depth = tree_depth.clamp(1, 26);
 
@@ -523,22 +522,6 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
     let copy_len = siblings_ark.len().min(TREE_DEPTH);
     sibling_arr[..copy_len].copy_from_slice(&siblings_ark[..copy_len]);
     path_arr[..copy_len].copy_from_slice(&path_indices_u8[..copy_len]);
-
-    // Compute nullifier
-    let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create hasher")?;
-    let nullifier_bytes = compute_nullifier(&key, &mut interior_hasher);
-    let root_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&root_ark));
-    let nullifier_field = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&nullifier_bytes));
-    let recipient = halo2curves::bn256::Fr::from(0xB0Bu64);
-
-    let _circuit = ZKMistV2Claim {
-        private_key: key,
-        siblings: sibling_arr,
-        path_indices: path_arr,
-        merkle_root: root_field,
-        nullifier: nullifier_field,
-        recipient,
-    };
 
     // Phase 2-4: Proving pipeline via halo2_prover
     eprintln!("[2/4] Running proving pipeline...");

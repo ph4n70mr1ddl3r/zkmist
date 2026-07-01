@@ -23,7 +23,7 @@
 //! accepts, and vice versa. It does NOT generate or trust any hash from
 //! anywhere — every digest it prints is computed from the bytes you give it.
 
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::PathBuf;
 
 use halo2_proofs::poly::kzg::commitment::ParamsKZG;
@@ -144,12 +144,11 @@ fn main() {
 
         use halo2_proofs::poly::commitment::{Params as _, ParamsProver as _};
 
-        // 3. Verify the read consumed the ENTIRE file (no trailing garbage).
-        let mut trailing = Vec::new();
-        let _ = BufReader::new(&bytes[..]).read_to_end(&mut trailing);
-        // Recompute consumed length by re-reading is expensive; instead, trust
-        // halo2's read to be exact and just report g1 count below as the sanity
-        // check. (halo2 reads a fixed structure: header + g1 vector + g2 + s.)
+        // 3. Sanity: a genuine halo2 params file has exactly 2^k G1 points.
+        // (We do not separately verify that `read` consumed the whole file:
+        // recomputing the consumed length would require re-reading, and halo2
+        // reads a fixed structure — header + g1 vector + g2 + s — so the g1
+        // count check below is the effective trailing-garbage guard.)
 
         let k = params.k();
         let n: u64 = 1u64 << k;

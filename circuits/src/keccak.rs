@@ -687,14 +687,7 @@ impl<'a> KeccakChip<'a> {
                     self.iota_step(&mut region, &mut offset, &mut state, round, &one_cell)?;
                 }
 
-                // Step 3: Extract hash from first 4 lanes (32 bytes = 256 bits)
-                // Keccak-256 output = first 32 bytes of the state
-                // Lane(0,0) = bytes 0..8, Lane(1,0) = bytes 8..16,
-                // Lane(2,0) = bytes 16..24, Lane(3,0) = bytes 24..32
-                let _hash_bits: Vec<AssignedCell<Fr, Fr>> =
-                    (0..4).flat_map(|x| state[x * 5].clone()).collect();
-
-                // Step 4: Extract address bits (bits 96..255 of the hash,
+                // Step 3: Extract address bits (bits 96..255 of the hash,
                 // which correspond to bytes 12..31)
                 // Each lane is 64 bits. Address starts at bit 96 = lane(1,0)[64-bit offset 32]
                 // But since our bits are organized as byte*8 + bit_within_byte:
