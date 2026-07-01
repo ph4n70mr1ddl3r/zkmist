@@ -177,8 +177,17 @@ fn main() {
     let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
     let nullifier = compute_nullifier(&test_key, &mut interior_hasher);
     let nullifier_hex = hex::encode(nullifier);
-    if nullifier_hex == "078f972a9364d143a172967523ed8d742aab36481a534e97dae6fd7f642f65b9" {
-        eprintln!("  ✓ Nullifier matches PRD test vector");
+    // `compute_nullifier` uses the V2 domain separator ("ZKMist_V2_NULLIFIER",
+    // see zkmist_merkle_tree::NULLIFIER_DOMAIN), so the expected vector MUST be
+    // the V2 nullifier — NOT the V1 value 0x078f972a… (which is
+    // poseidon(key, "ZKMist_V1_NULLIFIER"), pinned by
+    // circuits::poseidon::test_prd_nullifier_test_vector). A previous revision
+    // compared the V2 output against the V1 constant, so this check ALWAYS
+    // printed a spurious "Nullifier MISMATCH" for a perfectly correct nullifier
+    // — misleading a deployer running `compute-root` into thinking the
+    // nullifier derivation was broken.
+    if nullifier_hex == "2ebc3e6c2b56becfab676e0503ad2640467c21b30f3601553097f7df07d71da8" {
+        eprintln!("  ✓ Nullifier matches PRD V2 test vector");
     } else {
         eprintln!("  ✗ Nullifier MISMATCH: 0x{}", nullifier_hex);
     }
