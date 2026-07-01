@@ -126,9 +126,21 @@ echo ""
 # ── Step 5: Run readiness checker ──────────────────────────────────
 echo "[5/6] Running pre-deployment readiness check..."
 
-# Quick k-value consistency check
-VK_K=$(grep '// k$' "$PROJECT_ROOT/contracts/src/Halo2VerifyingKey.sol" 2>/dev/null | grep -oP '0x\K[0-9a-fA-F]+' | head -1)
-PROVER_K=$(grep 'CIRCUIT_K' "$PROJECT_ROOT/cli/src/halo2_prover.rs" 2>/dev/null | grep -oP '\d+' | head -1)
+# Quick k-value consistency check.
+#
+# Both extractions had to be fixed (they reported nonsense, so this check
+# always failed with misleading numbers):
+#   • VK_K  — the `// k` line is `mstore(0x0040, 0x...0015) // k`. The old
+#     `grep -oP '0x\K...'` grabbed the FIRST hex literal, the mstore OFFSET
+#     `0x0040` (=64), not the VALUE `0x15` (=21). The readiness checker's
+#     `extract_vk_k` was already fixed for this exact offset/value bug (see its
+#     `test_extract_vk_k_does_not_return_the_offset`); take the LAST hex literal
+#     on the line, which is the value.
+#   • PROVER_K — `grep 'CIRCUIT_K' | grep -oP '\d+'` hit the FIRST digit run on
+#     the const line `const CIRCUIT_K: u32 = 23;`, which is `32` (from `u32`),
+#     not `23`. Anchor on the const declaration and take the assigned value.
+VK_K=$(grep '// k$' "$PROJECT_ROOT/contracts/src/Halo2VerifyingKey.sol" 2>/dev/null | grep -oP '0x[0-9a-fA-F]+' | tail -1 | sed 's/^0x//')
+PROVER_K=$(grep -oP 'const CIRCUIT_K:\s*u32\s*=\s*\K\d+' "$PROJECT_ROOT/cli/src/halo2_prover.rs" 2>/dev/null | head -1)
 if [ -n "$VK_K" ] && [ -n "$PROVER_K" ]; then
     VK_K_DEC=$((16#$VK_K))
     if [ "$VK_K_DEC" != "$PROVER_K" ]; then
