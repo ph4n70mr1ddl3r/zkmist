@@ -104,6 +104,35 @@ fn check_params_k(k: u32, file_size: u64, file_label: &str) -> Result<(), String
     Ok(())
 }
 
+/// Peek a halo2 `ParamsKZG::<Bn256>` file's 4-byte `k` header + on-disk size
+/// and run [`check_params_k`] against them, WITHOUT buffering the file body.
+///
+/// `ParamsKZG::read` parses the first 4 bytes as `k` and allocates the `g` +
+/// `g_lagrange` G1 vectors (`2·2^k` points, 64 B each) from that `k` BEFORE
+/// the caller can inspect it — so a corrupted / planted header (disk rot, a
+/// partial write from a crash mid-`Params::write`, or a tampered file) or a
+/// truncated download makes halo2 `malloc` a huge region and OOM-aborts the
+/// process. This guard reads ONLY the 4-byte header + `metadata().len()` (zero
+/// peak-RAM on top of `ParamsKZG::read`'s own allocation) and returns
+/// `Ok(())` if the file's claimed `k` is safe to hand to `ParamsKZG::read`,
+/// or an `Err(message)` describing why not. Shared by the `--params-file`
+/// path (hard error → panic) and the dev-cache path (soft → delete +
+/// regenerate).
+fn peek_params_k_guard(path: &std::path::Path) -> Result<(), String> {
+    use std::io::Read;
+    let label = path.display().to_string();
+    let mut f =
+        std::fs::File::open(path).map_err(|e| format!("open {label}: {e}"))?;
+    let mut hdr = [0u8; 4];
+    f.read_exact(&mut hdr)
+        .map_err(|e| format!("read k header from {label}: {e}"))?;
+    let file_size = f
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| format!("stat {label}: {e}"))?;
+    check_params_k(u32::from_le_bytes(hdr), file_size, &label)
+}
+
 /// Load the KZG params (SRS) for `keygen_vk`.
 ///
 /// Precedence:
@@ -134,30 +163,14 @@ fn load_or_gen_params(
         // BEFORE our `assert_eq!(params.k(), k)` below can fire, so a corrupted /
         // planted header (disk rot, a partial write, tampering) or a truncated
         // download would OOM-abort this tool instead of producing the clean
-        // "read params file" panic. Peek just the 4-byte header +
-        // `metadata().len()` (NOT a full `fs::read`, so we add zero peak-RAM on
-        // top of `ParamsKZG::read`'s own allocation), then seek back to 0 and
-        // stream into halo2 as before. Same bug class as the prover's
-        // `reject_untrusted_cache_oversized_k`; see `check_params_k`.
-        use std::io::{Read, Seek, SeekFrom};
-        let mut f = std::fs::File::open(path)
-            .unwrap_or_else(|e| panic!("open params file {}: {}", path.display(), e));
-        let mut hdr = [0u8; 4];
-        f.read_exact(&mut hdr)
-            .unwrap_or_else(|e| panic!("read k header from {}: {}", path.display(), e));
-        let file_size = f
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or_else(|e| panic!("stat params file {}: {}", path.display(), e));
-        if let Err(e) = check_params_k(
-            u32::from_le_bytes(hdr),
-            file_size,
-            &path.display().to_string(),
-        ) {
+        // "read params file" panic. Same bug class as the prover's
+        // `reject_untrusted_cache_oversized_k`; see `check_params_k` /
+        // `peek_params_k_guard`.
+        if let Err(e) = peek_params_k_guard(path) {
             panic!("{e}");
         }
-        f.seek(SeekFrom::Start(0))
-            .unwrap_or_else(|e| panic!("rewind params file {}: {}", path.display(), e));
+        let f = std::fs::File::open(path)
+            .unwrap_or_else(|e| panic!("open params file {}: {}", path.display(), e));
         let params = ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(f))
             .unwrap_or_else(|e| panic!("parse params file {}: {}", path.display(), e));
         assert_eq!(params.k(), k, "pinned SRS k ({}) != --k {}", params.k(), k);
@@ -179,14 +192,40 @@ fn load_or_gen_params(
                     k,
                     p.display()
                 );
-                if let Ok(f) = std::fs::File::open(p) {
-                    if let Ok(params) =
-                        ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(f))
-                    {
-                        eprintln!("      ✓ cached dev SRS loaded");
-                        return params;
+                // Pre-flight the header `k` BEFORE `ParamsKZG::read`: this
+                // cache file is written by THIS tool via `params.write`, so a
+                // crash mid-write (exactly the "partial write from a crash
+                // mid-Params::write" the other SRS guards cite), disk rot, or a
+                // tampered file can leave a header whose `k` is larger than the
+                // cache key implies — and `ParamsKZG::read` would allocate
+                // `2·2^k` G1 points from that header BEFORE any mismatch could
+                // be caught, OOM-killing this tool. Same bug class as the
+                // `--params-file` path above, the prover's
+                // `reject_untrusted_cache_oversized_k`, and the merkle-tree
+                // cache depth bound. On rejection, drop the corrupt cache and
+                // fall through to regeneration below (the cache is optional
+                // convenience, not a hard dependency).
+                let guard_ok = match peek_params_k_guard(p) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        eprintln!("      ⚠️  {e}");
+                        false
+                    }
+                };
+                if guard_ok {
+                    if let Ok(f) = std::fs::File::open(p) {
+                        if let Ok(params) =
+                            ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(f))
+                        {
+                            eprintln!("      ✓ cached dev SRS loaded");
+                            return params;
+                        }
                     }
                 }
+                // Guard rejected OR halo2's own read failed: the cache is
+                // unusable. Remove it so the next run isn't poisoned, then
+                // regenerate below.
+                let _ = std::fs::remove_file(p);
                 eprintln!("      ⚠️  cached dev SRS unreadable; regenerating");
             }
         }
@@ -501,4 +540,103 @@ fn main() {
     eprintln!("✅ Emitted. Next: cd contracts && forge build && forge test -vvv");
     eprintln!("   Then DEPLOYMENT.md Phase 4: real proof → Solidity verifier round-trip");
     eprintln!("   on a local anvil fork BEFORE any testnet/mainnet deploy.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halo2_proofs::poly::commitment::Params;
+
+    /// A unique scratch path so parallel `cargo test` invocations don't
+    /// collide on the same filename. Cleaned up by each test on success AND
+    /// failure (best-effort `let _ = remove_file`).
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "zkmist-gpv-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        p
+    }
+
+    /// A legit small halo2 params file is accepted by the guard (the happy
+    /// path every dev-cache hit takes). Uses k=8 (256 rows, ~32 KiB file) so
+    /// the test is instant and allocates nothing meaningful.
+    #[test]
+    fn peek_guard_accepts_legit_params_file() {
+        let path = scratch("legit.bin");
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(8, &mut rand::rngs::OsRng);
+        {
+            use std::io::BufWriter;
+            let f = std::fs::File::create(&path).unwrap();
+            params.write(&mut BufWriter::new(f)).unwrap();
+        }
+        peek_params_k_guard(&path)
+            .expect("a legit halo2 params file must pass the guard");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Regression for the dev-cache OOM: a corrupted header claiming k=31 on a
+    /// 1 KiB body must be rejected WITHOUT ever handing that `k` to
+    /// `ParamsKZG::read` (which would `malloc ~256 GiB` for the two G1
+    /// vectors). This is the exact failure mode the prover's
+    /// `reject_untrusted_cache_oversized_k` and the tools' `srs_guard` close;
+    /// before this fix the dev-cache read in `load_or_gen_params` skipped the
+    /// peek entirely.
+    #[test]
+    fn peek_guard_rejects_huge_k_header_without_oom() {
+        let path = scratch("hugek.bin");
+        let mut buf = (31u32).to_le_bytes().to_vec(); // header claims k=31
+        buf.resize(1024, 0); // ...on a 1 KiB body (nowhere near 128·2^31)
+        std::fs::write(&path, &buf).unwrap();
+        let err = peek_params_k_guard(&path)
+            .expect_err("a huge-k header on a tiny body must be rejected");
+        assert!(
+            err.contains("only") || err.contains("truncated") || err.contains("corrupted"),
+            "guard must explain the rejection: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `k >= 32` is rejected for shift-safety (halo2's `1<<k` is a 32-bit
+    /// shift: debug-panic / release-mask), and the `k >= 32` branch fires
+    /// BEFORE the `1usize << k` min-size computation — so even a k=100 header
+    /// (which would overflow the shift) is rejected cleanly.
+    #[test]
+    fn peek_guard_rejects_shift_overflow_k() {
+        for k in [32u32, 33, 100] {
+            let path = scratch(&format!("k{k}.bin"));
+            let mut buf = k.to_le_bytes().to_vec();
+            buf.resize(1 << 20, 0); // 1 MiB body — irrelevant; k>=32 alone rejects
+            std::fs::write(&path, &buf).unwrap();
+            let err = peek_params_k_guard(&path)
+                .expect_err("k>=32 must be rejected for shift safety");
+            assert!(err.contains(">= 32"), "guard must cite shift-safety: {err}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// A truncated download — header `k` intact but the body far short of
+    /// `128·2^k` — is rejected. This is the far more common real-world
+    /// corruption (partial write / interrupted download) and the original
+    /// motivation for the size bound.
+    #[test]
+    fn peek_guard_rejects_truncated_body() {
+        let path = scratch("trunc.bin");
+        // Header claims k=20 (min 128·2^20 ≈ 128 MiB) but only 1 MiB present.
+        let mut buf = (20u32).to_le_bytes().to_vec();
+        buf.resize(1 << 20, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let err = peek_params_k_guard(&path)
+            .expect_err("a truncated body must be rejected");
+        assert!(
+            err.contains("truncated") || err.contains("only"),
+            "guard must explain the truncation: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }
