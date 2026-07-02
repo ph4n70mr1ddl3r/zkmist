@@ -5,7 +5,6 @@
 
 use std::io::{self, Write};
 
-use sha2::{Digest as Sha2Digest, Sha256};
 use zkmist_merkle_tree::{
     build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
     verify_merkle_proof, TREE_DEPTH,
@@ -86,20 +85,36 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
         let dest = dir.join(filename);
 
         if dest.exists() {
-            // Verify existing file hash — skip re-download if intact
-            let data = std::fs::read(&dest)
-                .map_err(|e| format!("Failed to read {}: {}", dest.display(), e))?;
-            let mut hasher = Sha256::new();
-            hasher.update(&data);
-            let hash = hex::encode(hasher.finalize());
-            if hash == expected_hash {
-                pb.inc(1);
-                continue;
+            // Verify the existing file's hash by STREAMING it in 64 KiB chunks
+            // (`verify_file_sha256` — the same streaming verifier the KZG-SRS
+            // cache path uses), NOT by buffering the whole (~1.4 GB) CSV into
+            // RAM via `std::fs::read`. Each eligibility file can be hundreds of
+            // MB; the previous whole-file read OOM-killed `zkmist fetch` on
+            // memory-constrained claimant hosts (the same class of unnecessary
+            // whole-file buffering the SRS download avoids by streaming). On a
+            // mismatch or unreadable file, fall through to re-download.
+            match verify_file_sha256(&dest, &expected_hash) {
+                Ok(true) => {
+                    pb.inc(1);
+                    continue;
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "      ⚠  {} present but SHA-256 mismatch (stale/corrupt); re-downloading",
+                        filename
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "      ⚠  Cannot verify existing {} ({}); re-downloading",
+                        filename, e
+                    );
+                }
             }
         }
 
         // Try download sources in priority order
-        let downloaded = try_download_file(&rt, filename, &dest, &expected_hash)?;
+        let downloaded = try_download_file(filename, &dest, &expected_hash)?;
         if !downloaded {
             return Err(format!("Failed to download {} from GitHub", filename));
         }

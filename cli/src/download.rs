@@ -65,10 +65,23 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, 
     serde_json::from_str(&text).map_err(|e| format!("Failed to parse JSON: {}", e))
 }
 
-/// Try downloading a single file from GitHub Releases.
-/// Returns Ok(true) if downloaded successfully, Ok(false) if download failed.
+/// Try downloading a single eligibility file from GitHub Releases.
+///
+/// Returns `Ok(true)` if downloaded + hash-verified, `Ok(false)` if the source
+/// failed (network, HTTP, or SHA-256 mismatch). The file is STREAMED to disk
+/// via [`download_and_verify_to_file`]: written to `dest.with_extension("part")`
+/// and atomically renamed onto `dest` only after the SHA-256 matches, with the
+/// body NEVER buffered in memory.
+///
+/// This matters because each eligibility file can be hundreds of MB (~1.4 GB
+/// for a ~32M-address CSV at ~43 B/line). The previous implementation called a
+/// `download_and_verify` helper that did `resp.bytes().await` — buffering the
+/// ENTIRE body in RAM before the hash check — and then `std::fs::write`. That
+/// ~1.4 GB transient OOM-killed `zkmist fetch` on memory-constrained claimant
+/// hosts, exactly the failure mode the SRS download path avoids by streaming
+/// (`download_and_verify_to_file`); the eligibility files are similarly large
+/// and now get the same streaming treatment.
 pub fn try_download_file(
-    rt: &tokio::runtime::Runtime,
     filename: &str,
     dest: &std::path::Path,
     expected_hash: &str,
@@ -78,50 +91,13 @@ pub fn try_download_file(
         GITHUB_REPO, ELIGIBILITY_RELEASE_TAG, filename
     );
 
-    match rt.block_on(download_and_verify(&github_url, expected_hash)) {
-        Ok(data) => {
-            std::fs::write(dest, &data)
-                .map_err(|e| format!("Failed to write {}: {}", dest.display(), e))?;
-            return Ok(true);
-        }
+    match download_and_verify_to_file(&github_url, expected_hash, dest) {
+        Ok(_) => Ok(true),
         Err(e) => {
             eprintln!("      ⚠ GitHub download of {} failed: {}", filename, e);
+            Ok(false)
         }
     }
-
-    Ok(false)
-}
-
-/// Download a file from a URL and verify its SHA-256 hash.
-async fn download_and_verify(url: &str, expected_hash: &str) -> Result<Vec<u8>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120)) // large files need generous timeout
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-    let data = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(&data);
-    let hash = hex::encode(hasher.finalize());
-    if hash != expected_hash {
-        return Err(format!(
-            "SHA-256 mismatch: expected {}, got {}",
-            expected_hash, hash
-        ));
-    }
-
-    Ok(data.to_vec())
 }
 
 /// Run a future to completion on a dedicated current-thread runtime.
@@ -264,4 +240,80 @@ pub fn verify_file_sha256(path: &std::path::Path, expected_hash: &str) -> Result
     }
     let got = hex::encode(hasher.finalize());
     Ok(got == expected_hash.trim().to_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `verify_file_sha256` is the streaming hash verifier `cmd_fetch` now uses
+    /// for the eligibility-file existing-file check — replacing a whole-file
+    /// `std::fs::read` that OOM'd on the ~1.4 GB eligibility CSVs. It reads in
+    /// 64 KiB chunks (never buffering the whole file) and returns `Ok(true)`
+    /// for a matching hash. This is the same path the SRS cache re-verification
+    /// uses; locking in its contract keeps `cmd_fetch`'s new dependency honest.
+    #[test]
+    fn verify_file_sha256_accepts_matching_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("elig.csv");
+        let body = b"0xfcad0b19bb29d4674531d6f115237e16afce377c\n\
+                     0x0123456789abcdef0123456789abcdef01234567\n";
+        std::fs::write(&path, body).unwrap();
+        let hash = {
+            let mut h = Sha256::new();
+            h.update(body);
+            hex::encode(h.finalize())
+        };
+        assert!(
+            verify_file_sha256(&path, &hash).unwrap(),
+            "a matching hash must verify as Ok(true)"
+        );
+    }
+
+    /// A mismatched hash returns `Ok(false)` (NOT `Err`) so `cmd_fetch` falls
+    /// through to re-download — matching the old whole-file-read behavior,
+    /// where a stale/corrupt cached file is silently re-fetched rather than
+    /// aborting `zkmist fetch`.
+    #[test]
+    fn verify_file_sha256_rejects_mismatched_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("elig.csv");
+        std::fs::write(&path, b"0xsomeaddresses\n").unwrap();
+        assert!(
+            !verify_file_sha256(&path, "deadbeef").unwrap(),
+            "a hash mismatch must return Ok(false), not Err"
+        );
+    }
+
+    /// The comparison normalizes the expected hash to trimmed lowercase, so a
+    /// manifest / pin carrying uppercase hex or surrounding whitespace never
+    /// falsely rejects a valid file (the same tolerance `cmd_fetch`'s old
+    /// hand-rolled comparison lost if the manifest hash were non-lowercase).
+    #[test]
+    fn verify_file_sha256_normalizes_expected_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("elig.csv");
+        let body = b"0xabc\n";
+        std::fs::write(&path, body).unwrap();
+        let hash = {
+            let mut h = Sha256::new();
+            h.update(body);
+            hex::encode(h.finalize())
+        };
+        // Uppercase + surrounding whitespace must still match (normalized).
+        assert!(verify_file_sha256(&path, &format!("  {}  ", hash.to_uppercase())).unwrap());
+    }
+
+    /// A missing file returns `Err` (propagated), not a panic — so the caller
+    /// (`cmd_fetch`) can log + re-download. (Not normally hit, since `cmd_fetch`
+    /// only calls this under `dest.exists()`, but the contract must hold.)
+    #[test]
+    fn verify_file_sha256_missing_file_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.csv");
+        assert!(
+            verify_file_sha256(&path, "anyhash").is_err(),
+            "a missing file must return Err, not panic"
+        );
+    }
 }
