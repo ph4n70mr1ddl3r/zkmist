@@ -69,8 +69,14 @@ echo ""
 
 # ── Step 2: Run circuit tests (fast) ────────────────────────────────
 echo "[2/6] Running Rust unit tests..."
-cargo test -p zkmist-merkle-tree -p zkmist-circuits -p zkmist-cli --bin zkmist --quiet 2>&1 | tail -5
-if [ $? -eq 0 ]; then
+# The check command goes IN the `if` condition, not as a bare statement
+# followed by `if [ $? ... ]`. Under `set -euo pipefail` (set at the top), a
+# failing bare command aborts the script BEFORE the `if` can record it, so the
+# `fail` branch is dead code and every later step (plus the final summary) is
+# skipped — defeating the whole pass/fail tracking. A command in an `if`
+# condition is one of the contexts where `set -e` does NOT trigger, so the
+# failure is recorded and the script continues. (Same bug/fix in Steps 3 & 6.)
+if cargo test -p zkmist-merkle-tree -p zkmist-circuits -p zkmist-cli --bin zkmist --quiet 2>&1 | tail -5; then
     pass "Rust unit tests"
 else
     fail "Rust unit tests"
@@ -80,8 +86,9 @@ echo ""
 # ── Step 3: Run Solidity tests ──────────────────────────────────────
 echo "[3/6] Running Solidity tests..."
 cd contracts
-forge test --quiet -vvv 2>&1 | tail -5
-if [ $? -eq 0 ]; then
+# Command in the `if` condition — see the note in Step 2. A bare failing
+# `forge test` would abort under `set -e` before `fail` could record it.
+if forge test --quiet -vvv 2>&1 | tail -5; then
     pass "Solidity tests"
 else
     fail "Solidity tests"
@@ -183,22 +190,30 @@ echo ""
 # ── Step 6: Lint checks ─────────────────────────────────────────────
 echo "[6/6] Running lint checks..."
 
-cargo fmt --all -- --check 2>&1
-if [ $? -eq 0 ]; then
+# Each check goes IN the `if` condition. Under `set -euo pipefail` (set at the
+# top) a BARE failing command aborts the script before the `else`/`fail` branch
+# can run, so the failure is never recorded and the summary below is skipped —
+# the exact opposite of what pass/fail tracking is for. The `if CMD; then ...`
+# form is one of the contexts where `set -e` does NOT trigger, so a failure is
+# recorded via `fail` and later checks still run. (Steps 2 & 3 had the same
+# latent bug and use the same fix.) This was silent only because CI runs the
+# script against a clean tree, so every check passed and the abort path was
+# never exercised.
+
+if cargo fmt --all -- --check 2>&1; then
     pass "cargo fmt clean"
 else
     fail "cargo fmt: unformatted files"
 fi
 
-cargo clippy --workspace -- -D warnings 2>&1 | tail -3
-if [ $? -eq 0 ]; then
+if cargo clippy --workspace -- -D warnings 2>&1 | tail -3; then
     pass "cargo clippy clean"
 else
     fail "cargo clippy warnings"
 fi
 
-cd contracts && forge fmt --check 2>&1
-if [ $? -eq 0 ]; then
+cd contracts
+if forge fmt --check 2>&1; then
     pass "forge fmt clean"
 else
     fail "forge fmt: unformatted files"
