@@ -271,10 +271,17 @@ pub fn deserialize_tree<R: Read>(mut reader: R) -> io::Result<Vec<Vec<[u8; 32]>>
     for _ in 0..num_layers {
         reader.read_exact(&mut buf4)?;
         let num_nodes = u32::from_le_bytes(buf4) as usize;
-        if num_nodes == 0 || num_nodes > (1 << 27) {
+        // Bound `num_nodes` BEFORE `Vec::with_capacity(num_nodes)` — it is a
+        // u32 read from an untrusted cache file. A crafted value near u32::MAX
+        // would request ~128 GiB of capacity and OOM-abort; cap it at the size
+        // of the largest legit layer (the production leaf layer, 2^TREE_DEPTH).
+        if num_nodes == 0 || num_nodes > MAX_TREE_CACHE_LAYER_NODES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid layer size: {} nodes (max 2^27)", num_nodes),
+                format!(
+                    "Invalid layer size: {num_nodes} nodes (max 2^{TREE_DEPTH} = \
+                     {MAX_TREE_CACHE_LAYER_NODES}) — corrupted tree cache file"
+                ),
             ));
         }
         let mut layer = Vec::with_capacity(num_nodes);
@@ -299,6 +306,35 @@ pub fn deserialize_tree<R: Read>(mut reader: R) -> io::Result<Vec<Vec<[u8; 32]>>
 ///   [depth × 32 bytes] siblings
 ///   [depth × 1 byte]   path_indices
 const PROOF_CACHE_MAGIC: [u8; 4] = [b'Z', b'K', b'M', b'P'];
+
+/// Maximum Merkle depth accepted by [`deserialize_proof`] / layer count by
+/// [`deserialize_tree`] when reading from an *untrusted* cache file.
+///
+/// `depth`/`num_nodes` are read verbatim from disk and drive the allocation
+/// of siblings (`Vec::with_capacity(depth)` → 32 bytes each), path indices
+/// (`vec![0u8; depth]`, which **zeroes every byte** and therefore commits the
+/// whole region to physical RAM), or a full tree layer (`Vec::with_capacity`
+/// per layer). A bogus value from disk corruption, a partial write (a crash
+/// mid-`serialize`), or a tampered cache would otherwise make
+/// `vec![0u8; depth]` allocate + touch up to ~4 GiB (depth near `u32::MAX`)
+/// and the sibling/tree capacity request up to ~128 GiB — an instant
+/// OOM-kill / allocator abort on the *corrupted* cache, instead of the clean
+/// "rebuild the proof" error `zkmist prove` expects.
+///
+/// 64 levels is far beyond any conceivable Merkle tree (the production tree
+/// is [`TREE_DEPTH`] = 26, covering 2^26 = 67M leaves); anything larger is
+/// unambiguously corruption.
+pub const MAX_CACHE_DEPTH: usize = 64;
+
+/// Maximum nodes per layer accepted by [`deserialize_tree`].
+///
+/// The production tree's leaf layer is the largest legit layer at
+/// 2^[`TREE_DEPTH`] = 2^26 = 67M nodes; `deserialize_tree` therefore caps a
+/// layer at 2^26 so a crafted `num_nodes` (u32 from disk) cannot make
+/// `Vec::with_capacity(num_nodes)` reserve more than the ~2 GiB the live
+/// `build_tree_streaming` already allocates. Bump in lockstep with
+/// [`TREE_DEPTH`].
+pub const MAX_TREE_CACHE_LAYER_NODES: usize = 1 << TREE_DEPTH;
 
 pub fn serialize_proof<W: Write>(
     root: &[u8; 32],
@@ -352,6 +388,23 @@ pub fn deserialize_proof<R: Read>(mut reader: R) -> io::Result<ProofData> {
     let leaf_index = u32::from_le_bytes(buf4) as usize;
     reader.read_exact(&mut buf4)?;
     let depth = u32::from_le_bytes(buf4) as usize;
+    // Bound `depth` BEFORE it drives two allocations: `Vec::with_capacity(depth)`
+    // for siblings (32 bytes each) and `vec![0u8; depth]` for path indices (which
+    // ZEROES every byte, committing the whole region to physical RAM). `depth` is
+    // read from an untrusted cache file; without this guard a bogus value (disk
+    // corruption, a partial write from a crash mid-`serialize_proof`, or a
+    // tampered cache) up to `u32::MAX` would make `vec![0u8; depth]` allocate +
+    // touch up to ~4 GiB — an instant OOM-kill on the corrupted cache, instead of
+    // the clean "rebuild the proof" error `zkmist prove` expects.
+    if depth > MAX_CACHE_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "proof cache depth {depth} exceeds maximum {MAX_CACHE_DEPTH} — \
+                 corrupted or tampered cache file; delete it and rebuild the proof"
+            ),
+        ));
+    }
     let mut siblings = Vec::with_capacity(depth);
     for _ in 0..depth {
         let mut s = [0u8; 32];
@@ -744,6 +797,66 @@ mod tests {
         assert_eq!(r_idx, leaf_index);
         assert_eq!(r_sibs, siblings);
         assert_eq!(r_path, path_indices);
+    }
+
+    /// `deserialize_proof` must NOT trust the `depth` field read from a cache
+    /// file: it drives `vec![0u8; depth]` (which zeroes, hence touches, the
+    /// whole region) and `Vec::with_capacity(depth)` (32 bytes each). A bogus
+    /// value near `u32::MAX` from a corrupted / partially-written / tampered
+    /// `~/.zkmist/proofs/{addr}.bin` would otherwise allocate + commit up to
+    /// ~4 GiB (and request up to ~128 GiB of capacity), OOM-killing `zkmist
+    /// prove` on the *corrupted* cache. It must instead be rejected as
+    /// `InvalidData` without any large allocation.
+    #[test]
+    fn deserialize_proof_rejects_bogus_depth_without_oom() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&PROOF_CACHE_MAGIC); // magic b"ZKMP"
+        buf.extend_from_slice(&[0u8; 32]); // root
+        buf.extend_from_slice(&0u32.to_le_bytes()); // leaf_index
+        buf.extend_from_slice(&u32::MAX.to_le_bytes()); // depth = 2^32-1 (bogus)
+        // No further bytes: even if it tried to allocate, read_exact would hit
+        // EOF — but the point is the depth-bound guard fires first.
+        let err = deserialize_proof(&buf[..]).expect_err("bogus depth must reject");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert!(err.to_string().contains("corrupted"), "{err}");
+    }
+
+    /// Regression: a depth just over `MAX_CACHE_DEPTH` is rejected, but the
+    /// production `TREE_DEPTH` value is accepted (happy path still works).
+    #[test]
+    fn deserialize_proof_depth_boundary() {
+        fn cache_with_depth(depth: u32) -> Vec<u8> {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&PROOF_CACHE_MAGIC);
+            buf.extend_from_slice(&[0u8; 32]);
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&depth.to_le_bytes());
+            buf.resize(buf.len() + depth as usize * 33, 0); // sibs (32) + path (1)
+            buf
+        }
+        assert!(
+            deserialize_proof(&cache_with_depth(MAX_CACHE_DEPTH as u32 + 1)[..]).is_err(),
+            "depth > MAX_CACHE_DEPTH must reject"
+        );
+        // TREE_DEPTH must remain a legal depth (this also exercises the full
+        // production-sized proof-cache path with zeroed bytes).
+        let _ = deserialize_proof(&cache_with_depth(TREE_DEPTH as u32)[..])
+            .expect("TREE_DEPTH must be accepted");
+    }
+
+    /// `deserialize_tree` must not let a crafted per-layer `num_nodes` (u32
+    /// from an untrusted file) drive `Vec::with_capacity` into a huge request.
+    /// A value above the legit max (the production leaf layer, 2^TREE_DEPTH)
+    /// is rejected as corruption rather than attempting a multi-GiB allocation.
+    #[test]
+    fn deserialize_tree_rejects_oversize_layer_without_oom() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&CACHE_MAGIC); // magic b"ZKMT"
+        buf.extend_from_slice(&1u32.to_le_bytes()); // num_layers
+        buf.extend_from_slice(&u32::MAX.to_le_bytes()); // num_nodes = 2^32-1 (bogus)
+        let err = deserialize_tree(&buf[..]).expect_err("bogus num_nodes must reject");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert!(err.to_string().contains("corrupted"), "{err}");
     }
 
     /// Test streaming tree build produces the same root as full build.
