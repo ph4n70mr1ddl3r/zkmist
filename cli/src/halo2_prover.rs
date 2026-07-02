@@ -222,6 +222,50 @@ fn ensure_params_k(
     ))
 }
 
+/// Peek the halo2 `ParamsKZG::<Bn256>` `k` header from an UNVERIFIED cache
+/// file and reject it if `k > expected_k` — BEFORE `ParamsKZG::read` can hand
+/// that `k` to the allocator.
+///
+/// halo2 serializes params as `k.to_le_bytes()` (4 B) followed by the `g`
+/// and `g_lagrange` G1 vectors (see `ParamsKZG::write`/`read` →
+/// `write_custom`/`read_custom` with `SerdeFormat::RawBytes`). On `read`, it
+/// parses those first 4 bytes as `k`, computes `n = 1<<k`, and builds BOTH G1
+/// vectors (2·n points ≈ 128 MiB · 2^(k-23) for Bn256) BEFORE our
+/// [`ensure_params_k`] ever runs. So a corrupted / tampered cache whose header
+/// decodes to `k > CIRCUIT_K` (disk rot, a partial write from a crash
+/// mid-`Params::write`, or a planted file) would make halo2 allocate many GiB
+/// — and, for `k >= 32`, `1<<k` panics in debug builds — instead of the clean
+/// "re-fetch" path. This is the direct analog of the merkle-tree cache depth
+/// bound (`zkmist_merkle_tree::MAX_CACHE_DEPTH`).
+///
+/// `k <= expected_k` is allowed through: a smaller-k cache allocates LESS than
+/// the legit file and is then rejected by [`ensure_params_k`] with the existing
+/// clear message. Only applied to UNVERIFIED cache reads — the production path
+/// SHA-256-verifies the file first, which already pins `k = CIRCUIT_K`.
+fn reject_untrusted_cache_oversized_k(
+    path: &std::path::Path,
+    expected_k: u32,
+) -> Result<(), String> {
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("Cannot open cached SRS: {e}"))?;
+    let mut header = [0u8; 4];
+    file.read_exact(&mut header)
+        .map_err(|e| format!("Cannot read k header from cached SRS: {e}"))?;
+    let k = u32::from_le_bytes(header);
+    if k > expected_k {
+        return Err(format!(
+            "Cached KZG SRS header claims k={k} (> expected {expected_k}); halo2's \
+             ParamsKZG::read would allocate 2^{k} G1 points (×2 vectors) reading it before \
+             our k-check could reject it. The cache file is corrupted or tampered — \
+             deleting and re-fetching.",
+            k = k,
+            expected_k = expected_k,
+        ));
+    }
+    Ok(())
+}
+
 /// Load the KZG SRS: cache → download+verify → dev fallback.
 ///
 /// Production (KZG_SRS_URL + KZG_SRS_SHA256 pinned in constants.rs): stream
@@ -246,10 +290,27 @@ fn load_or_download_params(
     let production = !pinned_hash.is_empty() && !pinned_url.is_empty();
 
     // ── 1. Cache hit (re-verify against the pinned hash in production) ──
+    //
+    // `ParamsKZG::read` reads the file's FIRST 4 bytes as `k`, computes
+    // `n = 1<<k`, and immediately allocates the `g` + `g_lagrange` G1 vectors
+    // (2·n points) BEFORE our `ensure_params_k` can reject a bad k. In
+    // production the pinned-hash check proves the file is the authentic
+    // k=CIRCUIT_K SRS, so the read is safe. But when the trust root is NOT
+    // pinned (contributor/dev builds, or the ZKMIST_DEV_SRS cache) the file is
+    // read UNVERIFIED: a corrupted or planted cache whose first 4 bytes decode
+    // to a larger k (disk rot, a partial write from a crash mid-`Params::write`,
+    // or a tampered file) makes halo2 allocate ~128 MiB · 2^(k-CIRCUIT_K) ×2 and
+    // OOM-kills the prover before `ensure_params_k` runs — the same bug class
+    // as the merkle-tree cache depth bound (see zkmist_merkle_tree::MAX_CACHE_DEPTH).
+    // Guard that path by peeking the header `k` ourselves and rejecting
+    // `k > CIRCUIT_K` BEFORE handing the file to `ParamsKZG::read`, so halo2
+    // never sees an allocator-driving k. (k ≤ CIRCUIT_K is allowed through and
+    // left to `ensure_params_k`.)
     if path.exists() {
+        let mut integrity_verified = false;
         if production {
             match crate::download::verify_file_sha256(&path, pinned_hash) {
-                Ok(true) => {}
+                Ok(true) => integrity_verified = true,
                 Ok(false) => {
                     eprintln!(
                         "         ⚠️  Cached KZG SRS SHA-256 mismatch (tampered or stale); re-downloading"
@@ -264,6 +325,12 @@ fn load_or_download_params(
                 }
             }
         }
+        if path.exists() && !integrity_verified {
+            if let Err(reason) = reject_untrusted_cache_oversized_k(&path, k) {
+                eprintln!("         ⚠️  {reason}");
+                let _ = std::fs::remove_file(&path);
+            }
+        }
         if path.exists() {
             eprintln!("         Loading KZG SRS from {}...", path.display());
             match std::fs::File::open(&path) {
@@ -273,7 +340,7 @@ fn load_or_download_params(
                             ensure_params_k(&params, k)?;
                             eprintln!(
                                 "         ✓ KZG SRS loaded{}",
-                                if production {
+                                if integrity_verified {
                                     " (SHA-256 verified)"
                                 } else {
                                     ""
@@ -686,6 +753,59 @@ mod tests {
         // ParamsKZG::setup(8) is tiny (256 rows) — instant, no memory risk.
         let params = ParamsKZG::<halo2curves::bn256::Bn256>::setup(8, &mut rand::rngs::OsRng);
         assert!(ensure_params_k(&params, 8).is_ok());
+    }
+
+    /// `reject_untrusted_cache_oversized_k` peeks the halo2 params `k` header
+    /// (first 4 bytes LE) and must reject `k > expected_k` WITHOUT reading the
+    /// body — i.e. WITHOUT ever calling `ParamsKZG::read`, which would allocate
+    /// 2^k G1 points. We craft a cache whose header claims k=31 (which would
+    /// make halo2 allocate ~2^31 × 64 B ×2 ≈ 256 GiB) but whose body is EMPTY,
+    /// and assert it is rejected before any such allocation. expected_k=23
+    /// mirrors CIRCUIT_K.
+    #[test]
+    fn reject_untrusted_cache_oversized_k_rejects_huge_k_without_oom() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "zkmist_oversized_k_test_{}.bin",
+            std::process::id()
+        ));
+        // Header claims k=31; body deliberately empty (a real OOll attempt
+        // would still trigger the capacity reservation before EOF).
+        std::fs::write(&path, 31u32.to_le_bytes()).unwrap();
+        let err = reject_untrusted_cache_oversized_k(&path, 23)
+            .expect_err("bogus large k must reject");
+        assert!(
+            err.contains("k=31"),
+            "error should name the bogus k: {err}"
+        );
+        assert!(
+            err.contains("corrupted or tampered"),
+            "error should explain it is corruption: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A legit header at exactly `expected_k` is allowed through (the helper
+    /// only bounds the UPPER end; the body is left to `ParamsKZG::read`).
+    /// Also covers `k < expected_k` (a smaller-k cache passes the guard and is
+    /// later rejected by `ensure_params_k`).
+    #[test]
+    fn reject_untrusted_cache_oversized_k_accepts_le_k() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "zkmist_le_k_test_{}.bin",
+            std::process::id()
+        ));
+        for claim_k in [0u32, 8, 22, 23] {
+            std::fs::write(&path, claim_k.to_le_bytes()).unwrap();
+            reject_untrusted_cache_oversized_k(&path, 23)
+                .expect("k <= expected_k must pass the guard");
+        }
+        // Boundary: expected_k itself is the boundary; expected_k+1 rejects.
+        std::fs::write(&path, 24u32.to_le_bytes()).unwrap();
+        reject_untrusted_cache_oversized_k(&path, 23)
+            .expect_err("k = expected_k+1 must reject");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// `ensure_params_k` REJECTS a params at the wrong k with a message that
