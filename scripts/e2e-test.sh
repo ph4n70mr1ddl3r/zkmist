@@ -97,48 +97,65 @@ cd "$PROJECT_ROOT"
 echo ""
 
 # ── Step 4: Run benchmark (generates real proof) ────────────────────
-echo "[4/6] Generating Halo2-KZG proof (benchmark mode)..."
-echo "      Uses a RANDOM dev SRS (ZKMIST_DEV_SRS=1) — validates proving code path"
-echo "      and proof SIZE only, NOT soundness. First run generates the dev SRS"
-echo "      (~8 min cold; cached after)."
-START=$(date +%s)
-# ZKMIST_DEV_SRS=1: the prover now REQUIRES a pinned PSE SRS
-# (KZG_SRS_SHA256) in production and falls back to a random dev SRS ONLY under
-# this gate. Without it `bench` errors with "No KZG SRS configured" before ever
-# proving — so this gate is what lets the benchmark actually produce a proof.
-# The dev SRS is forgeable; fine for a timing/size benchmark, NEVER for mainnet.
-BENCH_OUTPUT=$(ZKMIST_DEV_SRS=1 cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4 2>&1) || true
-ELAPSED=$(($(date +%s) - START))
-
-echo "$BENCH_OUTPUT" | grep -E "Benchmark|Total|Proof size|Proof in range|under|exceeds|expected"
-
-if echo "$BENCH_OUTPUT" | grep -q "Proof in range.*YES"; then
-    pass "Proof size matches expected length"
+#
+# SKIP_BENCH escape hatch: the CI workflow (.github/workflows/ci.yml) exports
+# `SKIP_BENCH=1` for the E2E job (commented "Skip the bench step in CI (too
+# slow)"). This step honors it: when set, the whole proof-generation step is
+# skipped. A real k=23 Halo2-KZG proof peaks at ~16–20 GiB RSS (README + the
+# prover's `preflight_ram_check`, which hard-fails below ~24 GiB available),
+# so on a standard GitHub `ubuntu-latest` runner (~7 GiB RAM) the bench step
+# would either be rejected by the preflight check or OOM-killed mid-prove —
+# silently failing the E2E job the moment an operator manually triggers it.
+# Before this guard the env var was set by CI but never read here, so the bench
+# ran anyway (the exact failure mode the comment intended to prevent).
+if [ -n "${SKIP_BENCH:-}" ]; then
+    echo "[4/6] Skipping Halo2-KZG benchmark (SKIP_BENCH is set)."
+    warn "Proof generation skipped — requires ~16-20 GiB RAM and minutes; run locally."
+    echo ""
 else
-    PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
-    if [ -n "$PROOF_SIZE" ]; then
-        # Production Halo2-KZG proofs are 5888 bytes (0x1700); the CLI's
-        # PROOF_LENGTH_MIN/MAX acceptance window is [4000, 8000]. The old
-        # [400, 1200] window was a stale leftover from the placeholder verifier
-        # and would have wrongly failed every real 5888-byte proof.
-        if [ "$PROOF_SIZE" -ge 4000 ] && [ "$PROOF_SIZE" -le 8000 ]; then
-            pass "Proof size ($PROOF_SIZE bytes) in bench range"
-        else
-            fail "Proof size ($PROOF_SIZE bytes) outside expected range [4000, 8000]"
-        fi
+    echo "[4/6] Generating Halo2-KZG proof (benchmark mode)..."
+    echo "      Uses a RANDOM dev SRS (ZKMIST_DEV_SRS=1) — validates proving code path"
+    echo "      and proof SIZE only, NOT soundness. First run generates the dev SRS"
+    echo "      (~8 min cold; cached after)."
+    START=$(date +%s)
+    # ZKMIST_DEV_SRS=1: the prover now REQUIRES a pinned PSE SRS
+    # (KZG_SRS_SHA256) in production and falls back to a random dev SRS ONLY under
+    # this gate. Without it `bench` errors with "No KZG SRS configured" before ever
+    # proving — so this gate is what lets the benchmark actually produce a proof.
+    # The dev SRS is forgeable; fine for a timing/size benchmark, NEVER for mainnet.
+    BENCH_OUTPUT=$(ZKMIST_DEV_SRS=1 cargo run --release -p zkmist-cli --bin zkmist -- bench --tree-depth 4 2>&1) || true
+    ELAPSED=$(($(date +%s) - START))
+
+    echo "$BENCH_OUTPUT" | grep -E "Benchmark|Total|Proof size|Proof in range|under|exceeds|expected"
+
+    if echo "$BENCH_OUTPUT" | grep -q "Proof in range.*YES"; then
+        pass "Proof size matches expected length"
     else
-        warn "Could not determine proof size"
+        PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
+        if [ -n "$PROOF_SIZE" ]; then
+            # Production Halo2-KZG proofs are 5888 bytes (0x1700); the CLI's
+            # PROOF_LENGTH_MIN/MAX acceptance window is [4000, 8000]. The old
+            # [400, 1200] window was a stale leftover from the placeholder verifier
+            # and would have wrongly failed every real 5888-byte proof.
+            if [ "$PROOF_SIZE" -ge 4000 ] && [ "$PROOF_SIZE" -le 8000 ]; then
+                pass "Proof size ($PROOF_SIZE bytes) in bench range"
+            else
+                fail "Proof size ($PROOF_SIZE bytes) outside expected range [4000, 8000]"
+            fi
+        else
+            warn "Could not determine proof size"
+        fi
     fi
-fi
 
-if echo "$BENCH_OUTPUT" | grep -q "under 60s target"; then
-    pass "Proving time under 60 seconds"
-elif [ $ELAPSED -lt 120 ]; then
-    pass "Total benchmark completed in ${ELAPSED}s"
-else
-    warn "Benchmark took ${ELAPSED}s (includes build overhead)"
+    if echo "$BENCH_OUTPUT" | grep -q "under 60s target"; then
+        pass "Proving time under 60 seconds"
+    elif [ $ELAPSED -lt 120 ]; then
+        pass "Total benchmark completed in ${ELAPSED}s"
+    else
+        warn "Benchmark took ${ELAPSED}s (includes build overhead)"
+    fi
+    echo ""
 fi
-echo ""
 
 # ── Step 5: Run readiness checker ──────────────────────────────────
 echo "[5/6] Running pre-deployment readiness check..."
