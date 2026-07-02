@@ -25,6 +25,9 @@ use halo2_proofs::{
 use halo2curves::bn256::G1Affine;
 use zkmist_circuits::ZKMistV2Claim;
 
+#[path = "srs_guard.rs"]
+mod srs_guard;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut output_path = PathBuf::from("../contracts/src/Halo2Verifier.sol");
@@ -107,11 +110,34 @@ fn main() {
     };
 
     let params: ParamsKZG<halo2curves::bn256::Bn256> = if let Some(ref p) = params_file {
-        use std::io::BufReader;
-        let f = std::fs::File::open(p)
+        use std::io::{BufReader, Read, Seek, SeekFrom};
+        // Pre-flight the header `k` before `ParamsKZG::read`: the --params-file
+        // is operator-supplied and not yet trusted, and halo2 allocates `2·2^k`
+        // G1 points from the header BEFORE this tool's `assert_eq!(params.k(),
+        // k)` can fire — so a corrupted / planted header (disk rot, partial
+        // write, tampering) or a truncated download would OOM-abort. We peek
+        // just the 4-byte header + `metadata().len()` (NOT a full `fs::read`,
+        // so we add zero peak-RAM on top of `ParamsKZG::read`'s own allocation)
+        // then seek back to 0 and stream the file into halo2 as before. Same
+        // bug class as the prover's `reject_untrusted_cache_oversized_k`;
+        // see `srs_guard.rs`.
+        let mut f = std::fs::File::open(p)
             .unwrap_or_else(|e| panic!("open params file {}: {}", p.display(), e));
+        let mut hdr = [0u8; 4];
+        f.read_exact(&mut hdr)
+            .unwrap_or_else(|e| panic!("read k header from {}: {}", p.display(), e));
+        let file_size = f
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or_else(|e| panic!("stat params file {}: {}", p.display(), e));
+        let header_k = u32::from_le_bytes(hdr);
+        if let Err(e) = srs_guard::check_params_k(header_k, file_size, &p.display().to_string()) {
+            panic!("{e}");
+        }
+        f.seek(SeekFrom::Start(0))
+            .unwrap_or_else(|e| panic!("rewind params file {}: {}", p.display(), e));
         ParamsKZG::read(&mut BufReader::new(f))
-            .unwrap_or_else(|e| panic!("read params file {}: {}", p.display(), e))
+            .unwrap_or_else(|e| panic!("parse params file {}: {}", p.display(), e))
     } else {
         eprintln!("  ⚠️  no --params-file: generating a RANDOM dev SRS (not for mainnet)");
         ParamsKZG::setup(k, &mut rand::rngs::OsRng)

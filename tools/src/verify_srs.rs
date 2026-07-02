@@ -29,6 +29,9 @@ use std::path::PathBuf;
 use halo2_proofs::poly::kzg::commitment::ParamsKZG;
 use sha2::{Digest, Sha256};
 
+#[path = "srs_guard.rs"]
+mod srs_guard;
+
 /// Production circuit k. MUST match `CIRCUIT_K` in `cli/src/halo2_prover.rs`.
 const EXPECTED_K: u32 = 23;
 
@@ -124,10 +127,28 @@ fn main() {
         eprintln!("  file size:    {:.1} MiB ({} bytes)", size_mb, bytes.len());
         eprintln!("  SHA-256:      {}", digest_hex);
 
-        // 2. Parse as halo2 params via the SAME path the prover uses. This both
+        // 2. Pre-flight: peek the header `k` and reject a value that would
+        //    make `ParamsKZG::read` allocate hundreds of GiB (or panic on a
+        //    32-bit `1<<k` shift) BEFORE we hand the file to halo2. This tool
+        //    exists to report an untrusted file's `k`; OOMing on a corrupted /
+        //    planted header (disk rot, a partial write, a tampered file, or the
+        //    far more common truncated download) instead of printing it would
+        //    defeat its purpose. Same bug class as the prover's
+        //    `reject_untrusted_cache_oversized_k`; see `srs_guard.rs`.
+        // 3. Parse as halo2 params via the SAME path the prover uses. This both
         //    confirms the file is a genuine halo2 params file AND surfaces the
         //    embedded k (which the prover allocates against — see ensure_params_k).
         let params = {
+            let label = path.display().to_string();
+            if let Err(e) = srs_guard::peek_and_bound_params_k(&bytes, &label) {
+                eprintln!("  ❌ {}", e);
+                eprintln!(
+                    "     (refused before ParamsKZG::read — it would have allocated huge memory)"
+                );
+                any_k_mismatch = true;
+                eprintln!();
+                continue;
+            }
             let mut reader = BufReader::new(&bytes[..]);
             ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut reader).map_err(|e| e.to_string())
         };

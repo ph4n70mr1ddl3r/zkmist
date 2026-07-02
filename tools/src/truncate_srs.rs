@@ -59,6 +59,9 @@ use std::io::{BufReader, BufWriter};
 use halo2_proofs::poly::commitment::{Params, ParamsProver};
 use halo2_proofs::poly::kzg::commitment::ParamsKZG;
 
+#[path = "srs_guard.rs"]
+mod srs_guard;
+
 /// Production circuit k. MUST match `CIRCUIT_K` in `cli/src/halo2_prover.rs`
 /// and `EXPECTED_K` in `tools/src/verify_srs.rs`.
 const DEFAULT_TARGET_K: u32 = 23;
@@ -119,6 +122,22 @@ fn main() {
     );
 
     let mut params = {
+        // Pre-flight: peek the header `k` and reject a value that would make
+        // `ParamsKZG::read` allocate hundreds of GiB (or panic on a 32-bit
+        // `1<<k`) BEFORE handing the input to halo2. The input is an
+        // operator-supplied file (downloaded / extracted, not yet trusted) and
+        // this tool reads it via the SAME `ParamsKZG::read` the prover uses, so
+        // a corrupted / planted header (disk rot, partial write, tampering) or a
+        // truncated download would otherwise OOM-abort instead of producing the
+        // clean "not a valid halo2 KZG params file" error below. Same bug class
+        // as the prover's `reject_untrusted_cache_oversized_k`; see `srs_guard.rs`.
+        if let Err(e) = srs_guard::peek_and_bound_params_k(&in_bytes, &input_path) {
+            eprintln!("   ❌ {e}");
+            eprintln!(
+                "      (refused before ParamsKZG::read — it would have allocated huge memory)"
+            );
+            std::process::exit(1);
+        }
         let mut reader = BufReader::new(&in_bytes[..]);
         ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut reader).unwrap_or_else(|e| {
             eprintln!("   ❌ not a valid halo2 KZG params file: {e}");

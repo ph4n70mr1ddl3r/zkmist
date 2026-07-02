@@ -64,6 +64,46 @@ use zkmist_circuits::{constraint_system_digest, ZKMistV2Claim, EXPECTED_CS_DIGES
 /// (k=23 after the secp256k1 `point_add_mixed` optimization halved the witness).
 const EXPECTED_K: u32 = 23;
 
+/// OOM guard for an untrusted halo2 `ParamsKZG::<Bn256>` read.
+///
+/// Inline copy of `tools/src/srs_guard.rs::check_params_k` (this is a separate
+/// workspace, so the module is not shared). halo2 parses the file's first 4
+/// bytes as `k` and allocates `2·2^k` G1 points (64 B each) from it BEFORE the
+/// caller's `k`-check can fire — so a corrupted / planted header (disk rot,
+/// partial write, tampering) or a truncated download would OOM-abort. Reject,
+/// before `ParamsKZG::read`, when:
+///   - `k >= 32` (halo2's `1<<k` is a 32-bit shift: debug-panic / release-mask), or
+///   - the file is smaller than `128·2^k` bytes (the G1 footprint it claims).
+///
+/// A legit Bn256 RawBytes file is always >= `128·2^k` (header + 2·2^k G1 points
+/// + 2 G2 points), so this never rejects a real file.
+fn check_params_k(k: u32, file_size: u64, file_label: &str) -> Result<(), String> {
+    if k >= 32 {
+        return Err(format!(
+            "{file_label}: header claims k={k} (>= 32). halo2's `1<<k` is a 32-bit \
+             shift (debug-panic / release-mask) and a k=32 SRS would be >= 16 GiB of \
+             G1 data alone. The file is corrupted or tampered; refusing to hand this \
+             k to ParamsKZG::read."
+        ));
+    }
+    // k < 32 ⇒ 128·2^k <= 2^38, no usize overflow on 64-bit.
+    let min_g1_bytes = 128usize * (1usize << k);
+    if (file_size as usize) < min_g1_bytes {
+        let claimed_g1_points = 2u64 << k; // 2 · 2^k
+        return Err(format!(
+            "{file_label}: header claims k={k} ({g1_pts} G1 points across the g + \
+             g_lagrange vectors = {min} bytes of G1 data at 64 B/point), but the file \
+             is only {actual} bytes. It is corrupted or truncated (e.g. an interrupted \
+             download, disk rot, or a tampered/planted header). Refusing to hand k={k} \
+             to ParamsKZG::read — it would allocate ~{min} bytes before erroring on EOF.",
+            g1_pts = claimed_g1_points,
+            min = min_g1_bytes,
+            actual = file_size,
+        ));
+    }
+    Ok(())
+}
+
 /// Load the KZG params (SRS) for `keygen_vk`.
 ///
 /// Precedence:
@@ -89,10 +129,37 @@ fn load_or_gen_params(
     // 1. Pinned transcript file (production).
     if let Some(path) = params_file {
         eprintln!("      Loading pinned KZG SRS from {}...", path.display());
-        let file = std::fs::File::open(path)
+        // Pre-flight the header `k` before `ParamsKZG::read`: halo2 parses the
+        // file's first 4 bytes as `k` and allocates `2·2^k` G1 points from it
+        // BEFORE our `assert_eq!(params.k(), k)` below can fire, so a corrupted /
+        // planted header (disk rot, a partial write, tampering) or a truncated
+        // download would OOM-abort this tool instead of producing the clean
+        // "read params file" panic. Peek just the 4-byte header +
+        // `metadata().len()` (NOT a full `fs::read`, so we add zero peak-RAM on
+        // top of `ParamsKZG::read`'s own allocation), then seek back to 0 and
+        // stream into halo2 as before. Same bug class as the prover's
+        // `reject_untrusted_cache_oversized_k`; see `check_params_k`.
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(path)
             .unwrap_or_else(|e| panic!("open params file {}: {}", path.display(), e));
-        let params = ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(file))
-            .unwrap_or_else(|e| panic!("read params file {}: {}", path.display(), e));
+        let mut hdr = [0u8; 4];
+        f.read_exact(&mut hdr)
+            .unwrap_or_else(|e| panic!("read k header from {}: {}", path.display(), e));
+        let file_size = f
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or_else(|e| panic!("stat params file {}: {}", path.display(), e));
+        if let Err(e) = check_params_k(
+            u32::from_le_bytes(hdr),
+            file_size,
+            &path.display().to_string(),
+        ) {
+            panic!("{e}");
+        }
+        f.seek(SeekFrom::Start(0))
+            .unwrap_or_else(|e| panic!("rewind params file {}: {}", path.display(), e));
+        let params = ParamsKZG::<halo2curves::bn256::Bn256>::read(&mut BufReader::new(f))
+            .unwrap_or_else(|e| panic!("parse params file {}: {}", path.display(), e));
         assert_eq!(params.k(), k, "pinned SRS k ({}) != --k {}", params.k(), k);
         eprintln!("      ✓ loaded pinned SRS (k={})", params.k());
         return params;
