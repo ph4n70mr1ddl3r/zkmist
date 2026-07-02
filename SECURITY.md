@@ -70,7 +70,7 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
 - [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **✅ all PASS at k=23 (2026-06-29 confirmation run)**. Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. Measured: ~2:11–2:31 wall, ~19.5 GiB peak RSS each (release).
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including the carry-chain mod-p reduction: `carry_chain_columns` + `reduce_canonical_mod_p`)
-- [ ] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** from the real circuit VK. The generation TOOL is functional (2026-06-29): `gen-production-verifier` runs the REAL `ZKMistV2Claim::synthesize` via `keygen_vk` (confirmed 15 fixed + 20 permutation commitments, k=23, against a dev SRS). The remaining steps are operational — pin the PSE SRS, emit, confirm the VK match:
+- [x] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** from the real circuit VK. **✅ Done (regenerated at k=23):** `gen-production-verifier --emit` ran the REAL `ZKMistV2Claim::synthesize` via `keygen_vk` against the pinned PSE SRS (15 fixed + 20 permutation commitments, k=23; the readiness checker confirms `VK k=23 == prover CIRCUIT_K`). The historical generation steps were:
   ```
   cd gen-production-verifier && cargo build --release
   # dry run (prints VK fingerprint, writes nothing):
@@ -79,8 +79,8 @@ Before mainnet deployment, ALL of the following must be completed:
   cargo run --release -- --k 23 --params-file <pinned PSE SRS> --emit
   ```
   See [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 3. The version split (crates.io vs PSE-git-fork halo2) is resolved by a digest-preserving compat shim — no circuit duplication, no prover changes.
-  **IMPORTANT**: The CURRENT `contracts/src/Halo2VerifyingKey.sol` is still the placeholder (k=21 / 0x15, all-zero fixed commitments). The tool refuses to overwrite it without `--emit` + a pinned SRS, so it cannot accidentally brick the airdrop.
-- [ ] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol`
+  **Note**: `contracts/src/Halo2VerifyingKey.sol` is now the real k=23 VK (non-zero fixed + permutation commitments). The earlier placeholder (k=21 / 0x15, all-zero fixed commitments) is retired. The tool still refuses to overwrite it without `--emit` + a pinned SRS, so it cannot accidentally brick the airdrop.
+- [x] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol` (readiness checker confirms k=23 == prover `CIRCUIT_K`)
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```
   ./scripts/testnet-deploy.sh
@@ -243,12 +243,15 @@ cargo test --release -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --i
 ```
 (MockProver confirms constraint soundness; it does not replace the external audit or the real-KZG/Solidity round-trip.)
 
-**VK mismatch**: The current `Halo2VerifyingKey.sol` has k=21 (2M rows) with all-zero fixed
-commitments. The full production circuit requires **k=23 (8.4M rows)** — the
-secp256k1 carry-chain soundness rewrite first pushed k 22→24, then the
-`point_add_mixed` optimization halved the witness and brought it back to k=23.
-The VK must be regenerated from the full circuit after the E2E wiring bug
-above is fixed and the E2E MockProver test passes at k=23.
+**VK (regenerated)**: `Halo2VerifyingKey.sol` is now the real k=23 VK (non-zero fixed +
+permutation commitments), emitted by `gen-production-verifier --emit` against
+the pinned PSE SRS. The earlier placeholder (k=21 / 2M rows / all-zero fixed
+commitments) is retired. (Historical context: the secp256k1 carry-chain
+soundness rewrite first pushed k 22→24, then the `point_add_mixed`
+optimization halved the witness and brought it back to k=23.) The E2E
+MockProver test passes at k=23; the remaining blocker for the VK is the
+real-KZG → on-chain round-trip (`test_realKzgRoundtrip` with a real fixture),
+not the VK emission itself.
 
 **Remaining recommendation**: Replace the hand-rolled secp256k1 gadget with an audited library
 for defense-in-depth:

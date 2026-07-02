@@ -12,7 +12,7 @@ The four blocking issues from the production review, in resolution order:
 
 | # | Blocker | Owner | Why it blocks |
 |---|---------|-------|---------------|
-| 1 | On-chain verifier was a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments); the generation tool's `synthesize` was a stub | eng | Every honest proof would revert → airdrop mints nothing, forever. **RESOLVED (tool):** `gen-production-verifier` now runs the real circuit (15 fixed commitments, k=23). **Remaining:** pin SRS → `--emit` → confirm VK match (Phase 3) |
+| 1 | On-chain verifier was a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments); the generation tool's `synthesize` was a stub | eng | Every honest proof would revert → airdrop mints nothing, forever. **RESOLVED (VK emitted):** `gen-production-verifier --emit` regenerated `Halo2VerifyingKey.sol` at k=23 (0x17) with real fixed + permutation commitments against the pinned PSE SRS. **Remaining:** exercise the real-KZG → on-chain round-trip (`test_realKzgRoundtrip`) + confirm SRS provenance + audit (Phase 3-4) |
 | 2 | KZG SRS not pinned (`KZG_SRS_URL`/`KZG_SRS_SHA256` empty → prover falls back to a forgeable random SRS) | deployer | Whoever ran the prover can forge proofs → unlimited mint |
 | 3 | secp256k1 non-native arithmetic is hand-rolled and unaudited (MockProver-confirmed at k=23, but NOT audited and NOT real-KZG-confirmed) | eng + auditor | A missing constraint = forged proofs (MockProver covers the tested constraints; only an audit covers the untested gaps) |
 | 4 | No real proof has ever verified against the Solidity verifier; no testnet deployment | eng | The one property that matters is empirically unproven |
@@ -131,10 +131,13 @@ pinned file (no `ZKMIST_DEV_SRS` fallback) when generating a proof.
 > digest-preserving compat shim (no circuit duplication). The remaining step is
 > purely operational: pin the SRS, run with `--emit`, confirm the VK matches.
 
-The current `contracts/src/Halo2Verifier.sol` + `Halo2VerifyingKey.sol` are
-STILL a **placeholder** (the tool refuses to overwrite them without `--emit`):
-the VK has `k = 0x15 (21)` with all-zero fixed commitments, but the prover runs
-at `CIRCUIT_K = 23`. They must be regenerated from the real circuit.
+`contracts/src/Halo2Verifier.sol` + `Halo2VerifyingKey.sol` are now the **real,
+regenerated** verifier (emitted via `gen-production-verifier --emit` against
+the pinned PSE SRS): the VK is `k = 0x17 (23)` with non-zero fixed +
+permutation commitments, matching the prover's `CIRCUIT_K = 23`. The earlier
+placeholder (`k = 0x15 (21)`, all-zero fixed commitments) is retired. The
+remaining step in this phase is to validate the real-KZG → on-chain
+round-trip (see `test_realKzgRoundtrip` / the bottom of this phase).
 
 ### How the version split was resolved
 
