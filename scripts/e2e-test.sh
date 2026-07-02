@@ -166,10 +166,17 @@ fi
 READINESS_OUTPUT=$(cargo run --release -p zkmist-tools --bin readiness -- --skip-slow 2>&1) || true
 echo "$READINESS_OUTPUT" | grep -E "Results:|PASS|FAIL|✅|❌|⚠️"
 
-if echo "$READINESS_OUTPUT" | grep -q "0 failed"; then
-    pass "Readiness check (no failures)"
+# Match the readiness checker's ACTUAL summary line
+#   "Results: N passed, M regression(s), K known blocker(s), S skipped"
+# (tools/src/readiness.rs). The previous `grep -q "0 failed"` could never
+# match — the tool reports "regression(s)", never "failed" — so this branch
+# ALWAYS warned "Readiness check has failures" even on a perfectly clean run
+# (a clean run has 0 regressions but may carry advisory known-blockers like
+# the placeholder AIRDROP_CONTRACT). "0 regression(s)" is the real clean signal.
+if echo "$READINESS_OUTPUT" | grep -q "0 regression(s)"; then
+    pass "Readiness check (no regressions)"
 else
-    warn "Readiness check has failures (expected pre-deployment)"
+    warn "Readiness check reports regressions (expected pre-deployment)"
 fi
 echo ""
 
