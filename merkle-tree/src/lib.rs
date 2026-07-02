@@ -814,6 +814,7 @@ mod tests {
         buf.extend_from_slice(&[0u8; 32]); // root
         buf.extend_from_slice(&0u32.to_le_bytes()); // leaf_index
         buf.extend_from_slice(&u32::MAX.to_le_bytes()); // depth = 2^32-1 (bogus)
+
         // No further bytes: even if it tried to allocate, read_exact would hit
         // EOF — but the point is the depth-bound guard fires first.
         let err = deserialize_proof(&buf[..]).expect_err("bogus depth must reject");

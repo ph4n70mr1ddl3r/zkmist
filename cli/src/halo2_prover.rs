@@ -247,8 +247,7 @@ fn reject_untrusted_cache_oversized_k(
     expected_k: u32,
 ) -> Result<(), String> {
     use std::io::Read;
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("Cannot open cached SRS: {e}"))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Cannot open cached SRS: {e}"))?;
     let mut header = [0u8; 4];
     file.read_exact(&mut header)
         .map_err(|e| format!("Cannot read k header from cached SRS: {e}"))?;
@@ -772,12 +771,9 @@ mod tests {
         // Header claims k=31; body deliberately empty (a real OOll attempt
         // would still trigger the capacity reservation before EOF).
         std::fs::write(&path, 31u32.to_le_bytes()).unwrap();
-        let err = reject_untrusted_cache_oversized_k(&path, 23)
-            .expect_err("bogus large k must reject");
-        assert!(
-            err.contains("k=31"),
-            "error should name the bogus k: {err}"
-        );
+        let err =
+            reject_untrusted_cache_oversized_k(&path, 23).expect_err("bogus large k must reject");
+        assert!(err.contains("k=31"), "error should name the bogus k: {err}");
         assert!(
             err.contains("corrupted or tampered"),
             "error should explain it is corruption: {err}"
@@ -792,10 +788,7 @@ mod tests {
     #[test]
     fn reject_untrusted_cache_oversized_k_accepts_le_k() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "zkmist_le_k_test_{}.bin",
-            std::process::id()
-        ));
+        let path = dir.join(format!("zkmist_le_k_test_{}.bin", std::process::id()));
         for claim_k in [0u32, 8, 22, 23] {
             std::fs::write(&path, claim_k.to_le_bytes()).unwrap();
             reject_untrusted_cache_oversized_k(&path, 23)
@@ -803,8 +796,7 @@ mod tests {
         }
         // Boundary: expected_k itself is the boundary; expected_k+1 rejects.
         std::fs::write(&path, 24u32.to_le_bytes()).unwrap();
-        reject_untrusted_cache_oversized_k(&path, 23)
-            .expect_err("k = expected_k+1 must reject");
+        reject_untrusted_cache_oversized_k(&path, 23).expect_err("k = expected_k+1 must reject");
         let _ = std::fs::remove_file(&path);
     }
 

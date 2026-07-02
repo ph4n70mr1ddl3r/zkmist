@@ -121,8 +121,7 @@ fn check_params_k(k: u32, file_size: u64, file_label: &str) -> Result<(), String
 fn peek_params_k_guard(path: &std::path::Path) -> Result<(), String> {
     use std::io::Read;
     let label = path.display().to_string();
-    let mut f =
-        std::fs::File::open(path).map_err(|e| format!("open {label}: {e}"))?;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("open {label}: {e}"))?;
     let mut hdr = [0u8; 4];
     f.read_exact(&mut hdr)
         .map_err(|e| format!("read k header from {label}: {e}"))?;
@@ -575,8 +574,7 @@ mod tests {
             let f = std::fs::File::create(&path).unwrap();
             params.write(&mut BufWriter::new(f)).unwrap();
         }
-        peek_params_k_guard(&path)
-            .expect("a legit halo2 params file must pass the guard");
+        peek_params_k_guard(&path).expect("a legit halo2 params file must pass the guard");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -613,8 +611,8 @@ mod tests {
             let mut buf = k.to_le_bytes().to_vec();
             buf.resize(1 << 20, 0); // 1 MiB body — irrelevant; k>=32 alone rejects
             std::fs::write(&path, &buf).unwrap();
-            let err = peek_params_k_guard(&path)
-                .expect_err("k>=32 must be rejected for shift safety");
+            let err =
+                peek_params_k_guard(&path).expect_err("k>=32 must be rejected for shift safety");
             assert!(err.contains(">= 32"), "guard must cite shift-safety: {err}");
             let _ = std::fs::remove_file(&path);
         }
@@ -631,8 +629,7 @@ mod tests {
         let mut buf = (20u32).to_le_bytes().to_vec();
         buf.resize(1 << 20, 0);
         std::fs::write(&path, &buf).unwrap();
-        let err = peek_params_k_guard(&path)
-            .expect_err("a truncated body must be rejected");
+        let err = peek_params_k_guard(&path).expect_err("a truncated body must be rejected");
         assert!(
             err.contains("truncated") || err.contains("only"),
             "guard must explain the truncation: {err}"
