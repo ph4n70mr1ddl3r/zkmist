@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # ZKMist Testnet Deployment Script
 #
-# Deploys ZKMist contracts to Base Sepolia for end-to-end testing.
-# The Halo2Verifier deployed here uses structural validation only
-# (IS_PRODUCTION_VERIFIER = false) — the airdrop constructor is bypassed
-# for testnet by deploying with a MockHalo2Verifier pattern.
+# Deploys the REAL production contracts to Base Sepolia via Deploy.s.sol:
+# the generated Halo2Verifier + Halo2VerifyingKey (k=23, real KZG
+# commitments), ZKMToken, and ZKMAirdrop. There is NO mock on this path —
+# the same verifier that will go to mainnet is what gets deployed here.
+#
+# ⚠️  Caveat: a real on-chain claim has still never been exercised (the
+# test_realKzgRoundtrip Forge gate is a no-op until a real proof fixture is
+# generated, and the PSE SRS transcript provenance is unconfirmed — see
+# DEPLOYMENT.md Phase 4-5 and SECURITY.md). Treat a Sepolia deployment as
+# wiring validation only, not soundness validation.
 #
 # Prerequisites:
 #   - Foundry (forge, cast) installed
@@ -89,8 +95,8 @@ echo "════════════════════════�
 echo "Ready to deploy to Base Sepolia"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
-echo -e "${YELLOW}⚠️  This will deploy contracts to a PUBLIC testnet.${NC}"
-echo -e "${YELLOW}   These contracts use a MOCK verifier (not production).${NC}"
+echo -e "${YELLOW}⚠️  This deploys the REAL production contracts to a PUBLIC testnet.${NC}"
+echo -e "${YELLOW}   (real Halo2Verifier + VK — there is no mock on this path.)${NC}"
 echo -e "${YELLOW}   Do NOT send real funds to testnet contracts.${NC}"
 echo ""
 read -p "Continue with deployment? [y/N] " confirm

@@ -151,9 +151,11 @@ contract ZKMV2Integration is Test {
 
     // ── Deployment safety: real verifier guard ──────────────────────
 
-    function test_integration_production_verifier_accepted() public {
+    function test_integration_airdrop_constructor_accepts_production_verifier() public {
         // The production Halo2Verifier performs real KZG pairing verification.
-        // ZKMAirdrop should accept it.
+        // ZKMAirdrop's constructor should store it as the verifier. (This only
+        // asserts the constructor wiring — it does NOT verify a real proof; the
+        // real-KZG → on-chain round-trip is gated in ZKM.realroundtrip.t.sol.)
         vm.prank(DEPLOYER);
         ZKMToken t = new ZKMToken(address(0x999)); // dummy minter
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
