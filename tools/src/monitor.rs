@@ -108,17 +108,24 @@ fn main() {
         eprintln!("  Interval: {}s", interval_secs);
         eprintln!();
 
-        let mut prev_claims: u64 = 0;
+        // `None` until the first successful poll establishes a baseline.
+        // Using `Option` (rather than `prev_claims > 0` as the "first poll?"
+        // guard) is what makes the delta correct when monitoring starts BEFORE
+        // any claims exist: `total_claims` is legitimately 0 at launch, so a
+        // bare `> 0` guard stays false across every pre-claim poll AND the
+        // first poll that finally sees claims — silently reporting a 0 delta
+        // (and missing the `> 10_000` surge detector) for the interval in
+        // which claims first arrive. A dedicated first-poll flag decouples
+        // "have we polled before" from "is the baseline nonzero".
+        let mut prev_claims: Option<u64> = None;
 
         loop {
             match poll_state(&provider, airdrop_addr).await {
                 Ok(state) => {
-                    let claims_delta = if prev_claims > 0 {
-                        state.total_claims.saturating_sub(prev_claims)
-                    } else {
-                        0
-                    };
-                    prev_claims = state.total_claims;
+                    let claims_delta = prev_claims
+                        .map(|p| state.total_claims.saturating_sub(p))
+                        .unwrap_or(0);
+                    prev_claims = Some(state.total_claims);
 
                     let timestamp = chrono_now();
                     eprintln!(
