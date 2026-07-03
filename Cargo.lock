@@ -1782,6 +1782,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ecc"
+version = "0.1.0"
+source = "git+https://github.com/privacy-scaling-explorations/halo2wrong?tag=v2024_01_31#1fe10a798edde7a0686248c29cae96ca79b710ae"
+dependencies = [
+ "integer",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.6",
+ "subtle",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2687,6 +2700,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "integer"
+version = "0.1.0"
+source = "git+https://github.com/privacy-scaling-explorations/halo2wrong?tag=v2024_01_31#1fe10a798edde7a0686248c29cae96ca79b710ae"
+dependencies = [
+ "maingate",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.6",
+ "subtle",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2969,6 +2995,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "maingate"
+version = "0.1.0"
+source = "git+https://github.com/privacy-scaling-explorations/halo2wrong?tag=v2024_01_31#1fe10a798edde7a0686248c29cae96ca79b710ae"
+dependencies = [
+ "halo2wrong",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.6",
+ "subtle",
 ]
 
 [[package]]
@@ -5737,6 +5776,7 @@ version = "0.2.0"
 dependencies = [
  "ark-bn254",
  "ark-ff 0.5.0",
+ "ecc",
  "ff",
  "group",
  "halo2_proofs",
@@ -5744,7 +5784,9 @@ dependencies = [
  "halo2curves",
  "halo2wrong",
  "hex",
+ "integer",
  "light-poseidon",
+ "maingate",
  "num-bigint",
  "num-traits",
  "rand 0.8.6",

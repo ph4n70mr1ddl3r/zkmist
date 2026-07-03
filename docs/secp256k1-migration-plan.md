@@ -112,6 +112,19 @@ overhead. Measure with `test_measure_circuit_rows` after integration.
 | **C. Measure + regenerate** | `test_measure_circuit_rows` → if <4.19M set `CIRCUIT_K=22`; regen VK + `Halo2Verifier.sol` via `gen-production-verifier` | 1 day | 🟡 k=22 not guaranteed |
 | **D. Test + audit prep** | New soundness tests for the integration; re-run Phase 0; audit-scope doc | ongoing | new surface |
 
+**Progress (2026-07-03):**
+- ✅ Phase A done (commit `c095fe9`): halo2wrong dep + binding glue extracted.
+- ✅ Phase B step 1 done: deps extended to `ecc`/`integer`/`maingate` (the umbrella
+  `halo2wrong` crate alone *cannot* do EC arithmetic); the integration test
+  `circuits/tests/halo2wrong_integration.rs` verifies halo2wrong's audited
+  `GeneralEccChip` computes `scalar · G` on secp256k1 correctly (MockProver PASS).
+  The real API is confirmed: `GeneralEccChip::<Secp256k1Affine, Fr, 4, 68>`, then
+  `assign_aux_generator` + `assign_aux(ctx, window=4, number_of_pairs=1)` +
+  `mul(ctx, &base, &scalar, window=4)` + `assert_equal`. The main circuit digest
+  is unchanged (`b8022d1afb857964`) — this step touches no production circuit.
+- ⬜ Phase B remainder: rewire `ZKMistV2Claim` to use the chip (changes the
+  digest → regen VK) + re-derive the nullifier/address bindings (soundness-critical).
+
 **Total: ~1–2 weeks focused engineering, then audit.**
 
 ## 8. Phase A dependency spike — result (2026-07-03)
