@@ -34,10 +34,12 @@ const CIRCUIT_K: u32 = 23;
 
 // ── Pre-flight RAM check ───────────────────────────────────────────
 //
-// `create_proof` at k=23 builds a witness grid of 2^23 = 8.4M rows and peaks
-// near ~20 GiB RSS, on top of `keygen_vk`/`keygen_pk` transients and the
-// cached SRS params held in memory. On a memory-constrained host (e.g. a
-// 32 GiB WSL2 VM under host pressure) the prover silently thrashes into swap
+// The real-KZG path at k=23 builds a witness grid of 2^23 = 8.4M rows and peaks
+// ≳26–28 GiB RSS (empirically measured 2026-07-03: `keygen_vk` alone exceeded
+// 24 GiB before `create_proof` even began, on top of the cached SRS params).
+// This is substantially MORE than the ~19.5 GiB MockProver peak, which skips
+// the KZG commitment matrices. On a host with under ~36 GiB free RAM (e.g. a
+// 32 GiB WSL2 VM, even without host pressure) the prover silently thrashes into swap
 // for tens of minutes, then gets OOM-killed (SIGKILL): no panic, no error,
 // just a dead process and a missing output file. That failure mode cost a
 // 37-minute diagnosis once; this check turns it into a one-line message.
@@ -48,31 +50,51 @@ const CIRCUIT_K: u32 = 23;
 // thrashing on a huge swapfile). Non-Linux / unreadable meminfo is treated as
 // "can't check" and silently proceeds.
 
-/// Empirical minimum *available* RAM (GiB) needed to prove at `k`.
+/// Empirical minimum *available* RAM (GiB) needed to prove at `k` via the
+/// **real KZG path** (`generate_v2_proof`: `keygen_vk` → `keygen_pk` →
+/// `create_proof` → `verify_proof`).
 ///
-/// Anchored to the MEASURED **peak RSS** of the full ZKMist circuit at k=23
-/// (2^23 rows; secp256k1-GLV + Keccak + Poseidon + 26-level Merkle):
+/// ⚠️  This guards the real-KZG CLI path (`prove`, `gen-roundtrip-fixture`,
+/// `bench`), NOT the `#[ignore]d` MockProver tests. The two have very different
+/// peaks and conflating them was the root cause of a recurring crash:
 ///
-///   - ~14.8 GiB peak RSS — isolated secp256k1 MockProver (2026-06-29).
-///   - ~19.5 GiB peak RSS — full E2E MockProver (2026-06-29).
-///   - ~15–25 GiB peak RSS — real KZG round-trip (see `test_real_kzg_proof_round_trip`).
+///   - **MockProver** (Phase 0 tests): ~14.8 GiB isolated secp, ~19.5 GiB full
+///     E2E (2026-06-29). These do NOT call this preflight — they are run by
+///     developers who know they need ~20 GiB.
+///   - **Real KZG** (`generate_v2_proof`): `keygen_vk` ALONE was measured at
+///     **>24 GiB and still climbing** on a 2026-07-03 WSL2 run (an external
+///     watchdog killed it at ~24.2 GiB during step 2/5 `keygen_vk`, BEFORE
+///     `create_proof` even began). The full path therefore peaks ≳26–28 GiB —
+///     substantially HIGHER than MockProver, because the real KZG backend
+///     builds the polynomial commitment matrices (G1 commitments over the
+///     2^k domain for every fixed + permutation column) that MockProver skips.
 ///
-/// The README's user-facing figure is "~16–20 GiB RAM"; we round the anchor to
-/// 20 GiB and extrapolate linearly in 2^k (RSS is dominated by the 2^k witness
-/// grid + KZG commitment matrices), plus headroom for the OS + agent.
+/// A PRIOR revision anchored this floor to the MockProver peak (20 GiB →
+/// 24 GiB floor). That was WRONG for the real-KZG path: a 26 GiB WSL2 host
+/// passed the 24 GiB preflight, then was OOM-killed during `keygen_vk` — the
+/// exact crash this preflight exists to prevent. The anchor is now the
+/// empirically-measured real-KZG peak (~27 GiB at k=23), so a 26 GiB host is
+/// correctly REFUSED with a clear message instead of silently crashing.
+///
+/// `RAYON_NUM_THREADS` does NOT help: tested 4 vs 32 on 2026-07-03, the peak
+/// was unchanged (~25.6 GiB either way) — the dominant memory is the shared
+/// witness grid + commitment matrices, not per-thread FFT/MSM scratch. Do NOT
+/// suggest thread reduction as a workaround.
+///
+/// We extrapolate linearly in 2^k (RSS is dominated by the 2^k witness grid +
+/// KZG commitment matrices), plus headroom for the OS + agent.
 ///
 /// ⚠️  This MUST track **RSS (resident physical memory)**, NOT VmPeak (peak
 /// virtual address space). Halo2 proving reserves a lot of VIRTUAL memory that
-/// is committed but never paged in — allocator arenas, lazily-populated FFT
-/// scratch, per-thread stacks — so VmPeak runs ~2.5× above RSS (≈49 GiB virtual
-/// vs ≈20 GiB resident at k=23). The OOM killer and swap act on physical RSS,
-/// not virtual reservations. A prior revision anchored the *physical* RAM
-/// floor to the *virtual* peak (49 + 3 = 52 GiB), which hard-rejected the
-/// 32 GiB host the `CIRCUIT_K` doc and README both say is sufficient — blocking
-/// legitimate proving on capable machines for no benefit. Do NOT "fix" this
-/// back to VmPeak.
+/// is committed but never paged in (allocator arenas, lazily-populated FFT
+/// scratch, per-thread stacks), so VmPeak runs ~2.5× above RSS. The OOM killer
+/// and swap act on physical RSS, not virtual reservations. Do NOT anchor this
+/// to VmPeak.
 pub fn min_required_ram_gib(k: u32) -> f64 {
-    let peak_rss_gib = 20.0 * (1u64 << k) as f64 / (1u64 << 23) as f64;
+    // Anchor: real-KZG peak ≈27 GiB at k=23 (empirically measured 2026-07-03;
+    // keygen_vk alone exceeded 24 GiB before create_proof began). See the doc
+    // comment above for the full basis and the MockProver-vs-real-KZG split.
+    let peak_rss_gib = 27.0 * (1u64 << k) as f64 / (1u64 << 23) as f64;
     peak_rss_gib + 4.0
 }
 
@@ -113,12 +135,16 @@ fn preflight_ram_check_for(avail_gib: Option<f64>) -> Result<(), String> {
 
     if avail_gib < min_gib {
         return Err(format!(
-            "Insufficient RAM for a k={} Halo2-KZG proof: MemAvailable is {:.1} GiB but \
-             ~{:.1} GiB is needed (witness grid of 2^{} rows + keygen transients + SRS). \
-             Free host memory, raise the container/WSL RAM limit (e.g. .wslconfig `memory=`), \
-             or set ZKMIST_SKIP_RAM_CHECK=1 to proceed anyway (it will likely be \
-             OOM-killed after minutes of work).",
-            k, avail_gib, min_gib, k
+            "Insufficient RAM for a real Halo2-KZG proof at k={}: MemAvailable is {:.1} GiB \
+             but ~{:.1} GiB is needed. The real-KZG path (keygen_vk + create_proof) peaks \
+             ≳26–28 GiB at k=23 — substantially higher than MockProver (~19.5 GiB) because it \
+             builds the KZG commitment matrices. Freeing memory on a ~32 GiB host is usually \
+             NOT enough; this step typically needs a machine with ≥36 GiB free RAM (e.g. a \
+             cloud instance such as an r6i.2xlarge / 64 GiB box for ~30 min, then copy the \
+             fixture back). RAYON_NUM_THREADS does NOT reduce the peak. To proceed anyway \
+             (it will almost certainly be OOM-killed during keygen_vk), set \
+             ZKMIST_SKIP_RAM_CHECK=1.",
+            k, avail_gib, min_gib
         ));
     }
 
@@ -838,26 +864,35 @@ mod tests {
         LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
-    /// `min_required_ram_gib` anchors to the MEASURED ~20 GiB peak RSS at
-    /// k=23 (E2E MockProver 2026-06-29 run; README "~16–20 GiB RAM") + 4 GiB
-    /// headroom = 24 GiB, and scales linearly in 2^k. This is RSS — what the
+    /// `min_required_ram_gib` anchors to the MEASURED real-KZG peak ≳27 GiB at
+    /// k=23 (`keygen_vk` alone exceeded 24 GiB on 2026-07-03) + 4 GiB headroom
+    /// = 31 GiB, and scales linearly in 2^k. This is RSS — what the
     /// OOM killer acts on — NOT VmPeak (~49 GiB virtual), which a prior
     /// revision used and which wrongly hard-rejected the documented 32 GiB
     /// host. See `min_required_ram_gib`'s doc comment for the VmPeak/RSS
     /// rationale.
     #[test]
     fn test_min_required_ram_gib_anchors_and_scales() {
-        // k=23 → ~20 GiB peak RSS + 4 GiB headroom = 24 GiB.
-        assert!((min_required_ram_gib(23) - 24.0).abs() < 1e-9);
-        // k=24 → ~40 GiB peak RSS + 4 GiB headroom = 44 GiB.
+        // k=23 → ~27 GiB real-KZG peak RSS + 4 GiB headroom = 31 GiB. Anchored
+        // to the MEASURED real-KZG keygen_vk peak (>24 GiB on 2026-07-03, full
+        // path ≳26–28 GiB), NOT the MockProver peak (19.5 GiB). The old 24 GiB
+        // floor let a 26 GiB host start and then OOM-die during keygen_vk.
+        assert!((min_required_ram_gib(23) - 31.0).abs() < 1e-9);
+        // k=24 → ~54 GiB peak + 4 GiB headroom = 58 GiB.
         assert!(
-            (min_required_ram_gib(24) - 44.0).abs() < 1e-9,
-            "k=24 floor must be ~44 GiB"
+            (min_required_ram_gib(24) - 58.0).abs() < 1e-9,
+            "k=24 floor must be ~58 GiB"
         );
         assert!(min_required_ram_gib(24) > min_required_ram_gib(23));
-        // The documented 32 GiB host MUST clear the floor cleanly (not even
-        // land in the marginal warning zone of floor..floor+4 = 24..28).
-        assert!(32.0 >= min_required_ram_gib(23) + 4.0);
+        // A 26 GiB host (the box that OOM-crashed during keygen_vk on
+        // 2026-07-03) MUST be below the floor — regression guard for the
+        // miscalibration that let it start and then silently OOM.
+        assert!(
+            26.0 < min_required_ram_gib(23),
+            "a 26 GiB host cannot complete the real-KZG path and must be refused"
+        );
+        // A 40 GiB host clears the floor + marginal zone comfortably.
+        assert!(40.0 >= min_required_ram_gib(23) + 4.0);
     }
 
     /// `read_mem_available_kib` returns a sane positive value on this Linux host
@@ -890,29 +925,38 @@ mod tests {
         assert!(preflight_ram_check_for(Some(64.0)).is_ok());
     }
 
-    /// The documented-sufficient host (32 GiB — see the `CIRCUIT_K` doc and
-    /// README "~16–20 GiB RAM") MUST pass cleanly. This is the regression
-    /// guard for the VmPeak-vs-RSS bug: a prior revision anchored the floor to
-    /// the ~49 GiB *virtual* peak (52 GiB floor), which hard-rejected this
-    /// exact host. Anchoring to the ~20 GiB *resident* peak (24 GiB floor)
-    /// lets it through. A host barely above the floor (26 GiB) must also pass
-    /// (it sits in the marginal warning zone, not the hard-fail zone).
+    /// The real-KZG path needs more than the MockProver peak. A 26 GiB host
+    /// (which OOM-crashed during `keygen_vk` on 2026-07-03) MUST be REFUSED.
+    /// This replaces the old `test_preflight_accepts_documented_32gib_host`,
+    /// which encoded the wrong premise that 32 GiB is sufficient for proving —
+    /// true for MockProver (~19.5 GiB), FALSE for real KZG (≳26–28 GiB). The
+    /// old test let a 26 GiB host through and that host then silently OOM'd.
     #[test]
-    fn test_preflight_accepts_documented_32gib_host() {
+    fn test_preflight_refuses_sub_real_kzg_ram() {
         let _g = env_lock().lock().unwrap();
         std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
-        // 32 GiB host: documented sufficient, must NOT be hard-rejected.
+        // 26 GiB: empirically OOM-killed during keygen_vk — MUST hard-reject.
+        let err = preflight_ram_check_for(Some(26.0))
+            .expect_err("26 GiB must be refused (OOM-crashed during keygen_vk 2026-07-03)");
+        assert!(err.contains("Insufficient RAM"), "{err}");
+        assert!(err.contains("k=23"), "{err}");
+    }
+
+    /// A 32 GiB host lands in the MARGINAL zone for real KZG (floor 31, ceil
+    /// 35): it proceeds WITH a warning, not a clean pass and not a hard fail.
+    /// This is correct — 32 GiB may or may not complete the real-KZG path
+    /// depending on host overhead (a bare-metal 32 GiB box with ~30 GiB free
+    /// can squeeze through; a 32 GiB WSL2 VM with ~26 GiB free cannot).
+    #[test]
+    fn test_preflight_32gib_is_marginal_for_real_kzg() {
+        let _g = env_lock().lock().unwrap();
+        std::env::remove_var("ZKMIST_SKIP_RAM_CHECK");
         assert!(
             preflight_ram_check_for(Some(32.0)).is_ok(),
-            "the documented 32 GiB host must be allowed to prove; \
-             if this fails the floor is anchored to VmPeak, not RSS"
+            "32 GiB proceeds in the marginal zone (warns, does not hard-fail)"
         );
-        // 26 GiB: above the 24 GiB floor (marginal zone) — proceeds with a
-        // warning, never hard-failed. Below the old wrong 52 GiB floor.
-        assert!(
-            preflight_ram_check_for(Some(26.0)).is_ok(),
-            "a 26 GiB host is above the RSS-anchored floor and must proceed"
-        );
+        // 40 GiB clears the marginal ceiling cleanly.
+        assert!(preflight_ram_check_for(Some(40.0)).is_ok());
     }
 
     /// `ZKMIST_SKIP_RAM_CHECK=1` forces Ok even on an absurdly small host.
@@ -954,12 +998,14 @@ mod tests {
     /// makes production proofs unforgeable; this test validates only the
     /// proving/verifying CODE PATH, not the trust root.
     ///
-    /// Heavy: ~15–25 GiB RSS at k=23 (keygen + prove + re-keygen + 2 verifies).
+    /// Heavy: ≳26 GiB RSS at k=23 (keygen_vk alone measured >24 GiB on 2026-07-03;
+    /// the full test does keygen + prove + re-keygen + 2 verifies, so it needs
+    /// ≥36 GiB free RAM).
     /// Run ALONE:
     ///   ZKMIST_DEV_SRS=1 cargo test --release -p zkmist-cli \
     ///     test_real_kzg_proof_round_trip -- --ignored --nocapture --test-threads=1
     #[test]
-    #[ignore = "heavy: real KZG proof at k=23 (~min, ~15-25 GiB). Run with --ignored --test-threads=1 and ZKMIST_DEV_SRS=1."]
+    #[ignore = "heavy: real KZG proof at k=23 (~min, ≳26 GiB — needs ≥36 GiB free RAM). Run with --ignored --test-threads=1 and ZKMIST_DEV_SRS=1."]
     fn test_real_kzg_proof_round_trip() {
         use zkmist_circuits::secp256k1::native_derive_address;
         use zkmist_merkle_tree::build_single_leaf_proof;

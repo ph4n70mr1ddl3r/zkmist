@@ -84,7 +84,7 @@ A relayer or observer cannot link the qualified address to the receiving address
 ### Prerequisites
 
 - **Rust** (stable) — [rustup.rs](https://rustup.rs)
-- **~16–20 GiB RAM** for proof generation (measured peak ~19.5 GiB RSS for the k=23 circuit; real KZG `create_proof` is comparable). See [SECURITY.md](./SECURITY.md) for the benchmarks.
+- **~32 GiB RAM** for proof generation. The real KZG path (`keygen_vk` + `create_proof`) peaks ≳26–28 GiB at k=23 — empirically measured 2026-07-03 (`keygen_vk` alone exceeded 24 GiB *before* `create_proof` began). This is substantially more than the ~19.5 GiB `MockProver` peak (which skips the KZG commitment matrices), so a 32 GiB machine is the practical floor; a 26 GiB WSL2 VM is OOM-killed during `keygen_vk`. See [SECURITY.md](./SECURITY.md) for the benchmarks.
 - **~3 GB disk** for eligibility list
 
 ### Build

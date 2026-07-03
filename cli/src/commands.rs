@@ -722,7 +722,7 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     // Generate the REAL KZG proof. Under a pinned SRS this is mainnet-grade;
     // under ZKMIST_DEV_SRS it is forgeable but still exercises the full
     // create_proof → transcript path (sufficient to validate the verifier).
-    eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~3 min / ~20 GiB at k=23)...");
+    eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~5 min, peaks ≳26 GiB at k=23; the preflight refuses below ~31 GiB free RAM — needs a ≥36 GiB machine)...");
     let tmp = std::env::temp_dir().join("zkmist_roundtrip_proof.json");
     let nullifier = crate::halo2_prover::generate_v2_proof(
         &key,
