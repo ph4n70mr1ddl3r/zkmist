@@ -117,13 +117,18 @@ and `AssignedInteger::limbs() -> &[AssignedLimb<N>; N]` (lib.rs:162). Bind the
 two native Fr cells with halo2wrong's `MainGate` equality (or expose both to
 the instance for MockProver during development).
 
-> ⚠️ **TRAP — the K vs K mod n divergence.** `mul` reduces the scalar mod the
-> secp256k1 order `n`; the nullifier must use the *raw* key `K`. For valid keys
-> (`K < n`) `native()` already equals `K mod p_BN254` so the binding is sound.
-> For `K ≥ n`, `native()` carries `K mod n ≠ K`, so the binding would decouple —
-> **the rewiring MUST add an explicit `scalar < n` range proof** (halo2wrong's
-> `IntegerChip` can range-check against `SECP_N`) that the current bit-based
-> circuit gets implicitly. This is the single most important new constraint.
+> **The K vs K mod n divergence — handled for free by `native()==key_cell`.**
+> `mul` reduces the scalar mod the secp256k1 order `n`; the nullifier uses the
+> *raw* key `K`. The binding `constrain_equal(scalar.native(), key_cell)` is
+> satisfiable ONLY when `(K mod n) mod p_BN254 == K mod p_BN254`. That requires
+> `floor(K/n)·n ≡ 0 (mod p_BN254)`; with `gcd(n, p_BN254)=1`, `K < 2^256 < 2n`
+> (so `floor(K/n) ∈ {0,1}`), and `n ≢ 0 (mod p_BN254)`, **no `K ≥ n` satisfies
+> the constraint** — including the `K+n` alias (which would otherwise allow two
+> claims for one address with nullifiers `poseidon(K)` and `poseidon(K+n)`).
+> So the equality binding soundly enforces `K < n` and **no separate
+> `scalar < n` range proof is needed** (an earlier draft of this spec called
+> for one; the argument above shows it is redundant). Verified analytically
+> 2026-07-03.
 
 ### Leaf ↔ Keccak address (replaces Finding 3)
 
@@ -159,8 +164,11 @@ fixed-point assignment.)
    (they still point at hand-rolled cells).
 2. Re-point Finding 3 (address) at halo2wrong's `AssignedInteger<Fp>` limbs.
    Re-run; E2E should pass, negatives should reject.
-3. Re-derive Finding 2 (nullifier) via `native()` + the **`scalar < n` range
-   proof**. Re-run all Phase 0; add a new negative test `test_key_above_n`.
+3. Re-derive Finding 2 (nullifier) via `constrain_equal(scalar.native(),
+   key_cell)` — which soundly enforces `K < n` by itself (see the trap note in
+   §5a; no separate range proof needed). Re-run all Phase 0; add a negative
+   test `test_key_above_n` confirming `K ≥ n` is rejected (the equality
+   constraint rejects it).
 4. `test_measure_circuit_rows` → learn k. Regenerate VK + `Halo2Verifier.sol`
    via `gen-production-verifier` **on a ≥36 GiB box** (keygen OOMs here).
 
