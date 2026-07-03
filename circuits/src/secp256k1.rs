@@ -493,16 +493,18 @@ pub struct Secp256k1Config {
     pub fixed: Column<Fixed>,
     pub range_check: RangeCheckConfig,
     s_mul: Selector,
-    s_add: Selector,
+    // `pub(crate)`: the binding glue in `gadgets/field_accumulator.rs` enables
+    // these gates. Kept off the public API; no constraint-system change.
+    pub(crate) s_add: Selector,
     /// Selector for `a + fixed = b` gate (reserved for constrained reduction).
     #[allow(dead_code)]
     s_add_fixed: Selector,
-    s_mul_fixed: Selector,
+    pub(crate) s_mul_fixed: Selector,
     s_add_carry: Selector,
-    s_bool: Selector,
+    pub(crate) s_bool: Selector,
     /// Selector for the non-zero gate `a * b - 1 = 0` (proves `a` is
     /// invertible / non-zero: `b` is the prover-supplied inverse).
-    s_nonzero: Selector,
+    pub(crate) s_nonzero: Selector,
 }
 
 impl Secp256k1Config {
@@ -666,7 +668,10 @@ pub struct AssignedPoint {
 /// Each operation creates regions that enable the configured gates, ensuring
 /// the prover cannot assign arbitrary values.
 pub struct Secp256k1Chip<'a> {
-    config: &'a Secp256k1Config,
+    // `pub(crate)` so the binding glue in `gadgets/field_accumulator.rs`
+    // (a second `impl Secp256k1Chip` block) can read the config. Phase A of
+    // docs/secp256k1-migration-plan.md. Still private to external crates.
+    pub(crate) config: &'a Secp256k1Config,
 }
 
 impl<'a> Secp256k1Chip<'a> {
@@ -2236,183 +2241,12 @@ impl<'a> Secp256k1Chip<'a> {
         )
     }
 
-    /// Accumulate boolean bit-cells into a single field element under full
-    /// constraints: `result = Σ_i bits[i] · weights[i]` (mod BN254).
-    ///
-    /// For every bit this enables, on one row, BOTH:
-    ///   - `s_bool`      : `bit · (1 − bit) = 0`   (re-asserts booleanity), and
-    ///   - `s_mul_fixed` : `bit · weight = partial`.
-    ///
-    /// A following `s_add` row folds `partial` into a running accumulator.
-    ///
-    /// Because the accumulation runs in the BN254 scalar field, the result is
-    /// the integer `Σ bits[i]·weights[i]` reduced mod p_BN254. This is used to:
-    ///   * bind the nullifier key to the scalar bits (weights 2^(255−i)),
-    ///   * bind the Merkle leaf to the Keccak address bits, and
-    ///   * bind each Keccak input byte-group to a public-key limb.
-    pub fn accumulate_weighted_bits(
-        &self,
-        layouter: &mut impl Layouter<Fr>,
-        bits: &[AssignedCell<Fr, Fr>],
-        weights: &[Fr],
-    ) -> Result<AssignedCell<Fr, Fr>, Error> {
-        assert_eq!(bits.len(), weights.len(), "bits/weights length mismatch");
-        layouter.assign_region(
-            || "accumulate_weighted_bits",
-            |mut region| {
-                let mut offset = 0usize;
-
-                // ── Soundness (2026 bug-hunt): no free "zero start" cell. ──
-                // The previous version initialized the accumulator with a bare
-                // advice cell assigned `Fr::ZERO` but read by NO gate on its
-                // row. That cell was free, so a malicious prover could seed it
-                // with any `δ` and still satisfy the terminal `constrain_equal`
-                // against the caller's target — making the accumulator vacuous.
-                // For the nullifier-key binding (Finding 2) this fully decouples
-                // `poseidon(key, domain)` from the secp256k1 scalar actually
-                // multiplied, enabling unlimited claims with fresh nullifiers.
-                //
-                // Fix: seed the accumulator from the FIRST weighted bit, which is
-                // already constrained by `s_mul_fixed` (advice[0]·fixed = advice[1])
-                // and boolean-constrained by `s_bool`. Every subsequent step adds a
-                // gate-constrained partial. There is no unconstrained cell in the
-                // chain, so `acc = Σ bits[i]·weights[i]` is binding.
-                if bits.is_empty() {
-                    // Provable zero: `s_mul_fixed` with fixed=0 forces advice[1]=0
-                    // regardless of advice[0].
-                    region.assign_advice(
-                        || "empty_seed_a",
-                        self.config.advice[0],
-                        offset,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    region.assign_fixed(
-                        || "empty_seed_fixed",
-                        self.config.fixed,
-                        offset,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    let zero = region.assign_advice(
-                        || "empty_zero",
-                        self.config.advice[1],
-                        offset,
-                        || Value::known(Fr::ZERO),
-                    )?;
-                    self.config.s_mul_fixed.enable(&mut region, offset)?;
-                    return Ok(zero);
-                }
-
-                // Seed: acc = bit[0] · weight[0]  (constrained by s_mul_fixed + s_bool).
-                let bit0 = bits[0].value().copied();
-                let b_copy0 = region.assign_advice(
-                    || "ab_seed_bit",
-                    self.config.advice[0],
-                    offset,
-                    || bit0,
-                )?;
-                region.constrain_equal(bits[0].cell(), b_copy0.cell())?;
-                region.assign_fixed(
-                    || "ab_seed_weight",
-                    self.config.fixed,
-                    offset,
-                    || Value::known(weights[0]),
-                )?;
-                let seed_val = bit0.map(|v| v * weights[0]);
-                let mut acc = region.assign_advice(
-                    || "ab_seed",
-                    self.config.advice[1],
-                    offset,
-                    || seed_val,
-                )?;
-                self.config.s_bool.enable(&mut region, offset)?;
-                self.config.s_mul_fixed.enable(&mut region, offset)?;
-                offset += 1;
-
-                for (i, bit) in bits.iter().enumerate().skip(1) {
-                    // Row: advice[0] = bit (copy), fixed = weight, advice[1] = bit·weight.
-                    let bv = bit.value().copied();
-                    let b_copy =
-                        region.assign_advice(|| "ab_bit", self.config.advice[0], offset, || bv)?;
-                    region.constrain_equal(bit.cell(), b_copy.cell())?;
-                    region.assign_fixed(
-                        || "ab_weight",
-                        self.config.fixed,
-                        offset,
-                        || Value::known(weights[i]),
-                    )?;
-                    let partial_val = bv.map(|v| v * weights[i]);
-                    let partial = region.assign_advice(
-                        || "ab_partial",
-                        self.config.advice[1],
-                        offset,
-                        || partial_val,
-                    )?;
-                    self.config.s_bool.enable(&mut region, offset)?;
-                    self.config.s_mul_fixed.enable(&mut region, offset)?;
-                    offset += 1;
-
-                    // Row: acc + partial = new_acc  (s_add: advice[0]+advice[1]=advice[2])
-                    let acc_copy = region.assign_advice(
-                        || "ab_acc",
-                        self.config.advice[0],
-                        offset,
-                        || acc.value().copied(),
-                    )?;
-                    region.constrain_equal(acc.cell(), acc_copy.cell())?;
-                    let part_copy = region.assign_advice(
-                        || "ab_part",
-                        self.config.advice[1],
-                        offset,
-                        || partial.value().copied(),
-                    )?;
-                    region.constrain_equal(partial.cell(), part_copy.cell())?;
-                    acc = region.assign_advice(
-                        || "ab_newacc",
-                        self.config.advice[2],
-                        offset,
-                        || acc.value().copied().zip(partial_val).map(|(a, p)| a + p),
-                    )?;
-                    self.config.s_add.enable(&mut region, offset)?;
-                    offset += 1;
-                }
-                Ok(acc)
-            },
-        )
-    }
-
-    /// Prove that `val` is non-zero by supplying its inverse and enabling the
-    /// `s_nonzero` gate (`val · inv − 1 = 0`). Sound: if `val == 0` then
-    /// `0 · inv = 0 ≠ 1` for every field element `inv`, so no satisfying
-    /// assignment exists. Unlike the inverse-and-constrain-equal-to-one
-    /// pattern, the constant 1 lives *inside* the gate polynomial, so the
-    /// prover cannot cheat by reassigning the “one” cell.
-    pub fn assert_nonzero(
-        &self,
-        layouter: &mut impl Layouter<Fr>,
-        val: &AssignedCell<Fr, Fr>,
-    ) -> Result<(), Error> {
-        layouter.assign_region(
-            || "assert_nonzero",
-            |mut region| {
-                // advice[0] = val (copy); advice[1] = inverse(val) (prover witness).
-                let a = region.assign_advice(
-                    || "nz_val",
-                    self.config.advice[0],
-                    0,
-                    || val.value().copied(),
-                )?;
-                region.constrain_equal(val.cell(), a.cell())?;
-                let inv = val.value().copied().map(|v| {
-                    // 0⁻¹ is undefined; the gate will reject it regardless of
-                    // what we put here, so fall back to 0.
-                    Option::<Fr>::from(v.invert()).unwrap_or(Fr::ZERO)
-                });
-                region.assign_advice(|| "nz_inv", self.config.advice[1], 0, || inv)?;
-                self.config.s_nonzero.enable(&mut region, 0)?;
-                Ok(())
-            },
-        )
-    }
+    // `accumulate_weighted_bits` and `assert_nonzero` (the ZKMist binding
+    // glue) moved to `crate::gadgets::field_accumulator` as a second
+    // `impl Secp256k1Chip` block — Phase A of docs/secp256k1-migration-plan.md.
+    // They remain methods on this chip for digest-neutrality (no `configure()`
+    // change → constraint-system digest + on-chain VK unchanged). Phase B gives
+    // them an independent config once the EC engine is replaced by halo2wrong.
 
     /// Assign a native affine point as constant cells (Z = 1).
     /// Assign a KNOWN affine point (e.g. the secp256k1 generator `G` or the

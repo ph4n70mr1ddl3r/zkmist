@@ -17,6 +17,11 @@ light-poseidon = "0.4"
 num-bigint = "0.4"
 num-traits = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
+# Audited secp256k1 / non-native field arithmetic (PSE halo2wrong). Phase A of
+# the migration in docs/secp256k1-migration-plan.md: dependency is available;
+# the hand-rolled Secp256k1Chip is NOT yet replaced. Pins the SAME PSE halo2
+# v0.3.0 fork as this workspace (verified: cargo unifies to one halo2_proofs).
+halo2wrong = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2024_01_31", default-features = false }
 
 [features]
 # Always enabled now that the whole workspace is on the PSE git fork (see

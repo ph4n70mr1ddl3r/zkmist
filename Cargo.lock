@@ -2291,6 +2291,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "halo2wrong"
+version = "0.1.0"
+source = "git+https://github.com/privacy-scaling-explorations/halo2wrong?tag=v2024_01_31#1fe10a798edde7a0686248c29cae96ca79b710ae"
+dependencies = [
+ "halo2_proofs",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5731,6 +5742,7 @@ dependencies = [
  "halo2_proofs",
  "halo2_solidity_verifier",
  "halo2curves",
+ "halo2wrong",
  "hex",
  "light-poseidon",
  "num-bigint",
