@@ -92,6 +92,82 @@ a 256-term weighted sum), but they are **new code that itself needs audit**.
 The non-native arithmetic becomes audited (halo2wrong); the *integration
 wiring* does not.
 
+## 5a. Concrete re-derivation (API-confirmed, 2026-07-03)
+
+Phase B step 1 confirmed the halo2wrong API. The two bindings re-derive as
+follows — each must land as its own MockProver-verified increment.
+
+### Nullifier ↔ scalar (replaces Finding 2)
+
+Today the 256 boolean scalar bit-cells are shared between `scalar_mul` and the
+nullifier accumulator. halo2wrong's `mul` takes the scalar as a non-native
+`Fe<Fq>`, so the binding is re-derived via its **native representation**:
+
+```
+key K (32 bytes, K < n enforced — see TRAP below)
+  ├─ assign_integer(K as Fe<Fq>)  ─► assigned_scalar         ─► mul(G, ·) ─► pubkey
+  │                                  └─ assigned_scalar.native()  (Fr cell, halo2wrong
+  │                                       constrains it = Σ limbs[i]·2^(68·i) mod p_BN254)
+  └─ constrain_equal(assigned_scalar.native(), key_cell_fr)   ◄── THE NEW BINDING
+        where key_cell_fr = K mod p_BN254, fed to poseidon(·, domain) = nullifier
+```
+
+API: `AssignedInteger::native() -> &AssignedValue<N>` (integer/src/lib.rs:167)
+and `AssignedInteger::limbs() -> &[AssignedLimb<N>; N]` (lib.rs:162). Bind the
+two native Fr cells with halo2wrong's `MainGate` equality (or expose both to
+the instance for MockProver during development).
+
+> ⚠️ **TRAP — the K vs K mod n divergence.** `mul` reduces the scalar mod the
+> secp256k1 order `n`; the nullifier must use the *raw* key `K`. For valid keys
+> (`K < n`) `native()` already equals `K mod p_BN254` so the binding is sound.
+> For `K ≥ n`, `native()` carries `K mod n ≠ K`, so the binding would decouple —
+> **the rewiring MUST add an explicit `scalar < n` range proof** (halo2wrong's
+> `IntegerChip` can range-check against `SECP_N`) that the current bit-based
+> circuit gets implicitly. This is the single most important new constraint.
+
+### Leaf ↔ Keccak address (replaces Finding 3)
+
+`mul` returns an `AssignedPoint` whose x/y are `AssignedInteger<Fp>` (the
+secp256k1 *base* field). The 64 Keccak input bytes are re-bound from those
+limbs:
+
+```
+for coord in [pubkey.x(), pubkey.y()]:           // AssignedInteger<Fp>
+    limbs = coord.limbs()                          // 4 Fr cells, each < 2^68
+    bind_limb_to_inputs(keccak_input_bytes, start_byte, limbs[i])  // re-pointed
+```
+
+`bind_limb_to_inputs` (lib.rs) already accumulates byte-bits weighted into a
+limb cell; it currently consumes the hand-rolled `AssignedFieldElement.limbs`,
+and is re-pointed at halo2wrong's `AssignedLimb` native cells unchanged. Each
+halo2wrong limb is range-checked `[0, 2^68)` by its `IntegerChip`, so the
+binding stays sound.
+
+### What drops entirely
+
+`check_on_curve`, `check_limb_ranges`, and `constrain_affine` become
+unnecessary — halo2wrong points are on-curve by construction, and
+`ecc_chip.assert_equal(result, assigned_pubkey)` replaces the k·G == pubkey
+check. (`assign_affine_constant` for G/P255 is replaced by halo2wrong
+fixed-point assignment.)
+
+### Implementation order (each step MockProver-verified before the next)
+
+1. Add `GeneralEccChip` config alongside the existing `Secp256k1Config` in
+   `ZKMistV2ClaimConfig`; load aux; swap `scalar_mul` → `mul` + `assert_equal`.
+   Run the E2E MockProver — expect the nullifier/address bindings to FAIL
+   (they still point at hand-rolled cells).
+2. Re-point Finding 3 (address) at halo2wrong's `AssignedInteger<Fp>` limbs.
+   Re-run; E2E should pass, negatives should reject.
+3. Re-derive Finding 2 (nullifier) via `native()` + the **`scalar < n` range
+   proof**. Re-run all Phase 0; add a new negative test `test_key_above_n`.
+4. `test_measure_circuit_rows` → learn k. Regenerate VK + `Halo2Verifier.sol`
+   via `gen-production-verifier` **on a ≥36 GiB box** (keygen OOMs here).
+
+The digest moves at step 1 and the committed `Halo2VerifyingKey.sol` is
+invalid until step 4 — so steps 1–4 land as one reviewed sequence, not piecemeal
+on `master`.
+
 ## 6. k=22 feasibility (the RAM prize)
 
 halo2wrong's GLV + fixed-base lookups make secp256k1 dramatically smaller —
