@@ -34,14 +34,19 @@ use halo2_proofs::{
 use halo2curves::bn256::Fr;
 // halo2wrong audited secp256k1 (Phase B rewiring). Config integrated below;
 // the `mul` wire-up in `synthesize` is the next focused step.
-use ecc::{EccConfig, GeneralEccChip};
-use halo2curves::secp256k1::Secp256k1Affine;
-use maingate::{MainGate, RangeChip as H2wRangeChip};
+use ecc::{integer::{IntegerInstructions, Range}, maingate::RegionCtx, EccConfig, GeneralEccChip};
+use halo2curves::secp256k1::{Fq as Secp256k1Fq, Secp256k1Affine};
+use maingate::{
+    MainGate, MainGateConfig, MainGateInstructions, RangeChip as H2wRangeChip,
+    RangeConfig as H2wRangeConfig, RangeInstructions,
+};
 
 /// halo2wrong secp256k1 RNS config — the audited values halo2wrong's own
 /// ecc/integer/ecdsa tests use (`NUMBER_OF_LIMBS=4`, `BIT_LEN_LIMB=68`).
 const SECP_LIMBS: usize = 4;
 const SECP_LIMB_BITS: usize = 68;
+/// Sliding-window size for halo2wrong's `mul` (matches its audited tests).
+const SECP_LIMB_WINDOW: usize = 4;
 
 use crate::gadgets::cond_swap::{cond_swap, CondSwapConfig};
 use crate::gadgets::range_check::RangeCheckConfig;
@@ -49,6 +54,7 @@ use crate::keccak::KeccakConfig;
 use crate::merkle::TREE_DEPTH;
 use crate::nullifier::domain_field_element;
 use crate::poseidon::ark_to_halo2;
+#[allow(unused_imports)] // NativePoint/NativeSecpField used in tests, not synthesize (Phase B)
 use crate::secp256k1::{
     decompose_key_to_bits, native_derive_address, NativePoint, NativeSecpField, Secp256k1Chip,
     Secp256k1Config,
@@ -106,6 +112,30 @@ fn pow2_fr(exp: u32) -> Fr {
         v = v.double();
     }
     v
+}
+
+/// Convert a big-endian 32-byte secp256k1 private key to the scalar field `Fq`.
+/// halo2curves `Repr` is little-endian, so the big-endian key is reversed first.
+/// The key must be `< n` (valid); the `native()==key_cell` binding (§5a) rejects
+/// any `K >= n`, so a non-scalar key never yields a valid proof.
+fn key_bytes_to_scalar_fq(key: &[u8; 32]) -> Secp256k1Fq {
+    use halo2curves::ff::PrimeField;
+    let mut le = *key;
+    le.reverse();
+    Option::from(Secp256k1Fq::from_repr(le))
+        .expect("private key is a valid secp256k1 scalar (< n)")
+}
+
+/// Fixed auxiliary generator for halo2wrong's sliding-window `mul`. A non-`G`
+/// point; TODO-ZK before mainnet: select a nothing-up-my-sleeve point with no
+/// known discrete log w.r.t. `G` (mul SOUNDNESS is independent of this choice,
+/// but the claimant-key ZERO-KNOWLEDGE property is not).
+fn aux_generator_point() -> Secp256k1Affine {
+    use halo2curves::{
+        group::Curve,
+        secp256k1::Secp256k1,
+    };
+    (Secp256k1::generator() * Secp256k1Fq::from(3u64)).to_affine()
 }
 
 /// Deterministic fingerprint of a configured `ConstraintSystem`.
@@ -227,6 +257,8 @@ pub const EXPECTED_CS_DIGEST: &str = "d5a9f39dc8845ba4";
 /// of the limb. Limb value (little-endian 64-bit) is reconstructed as
 ///   Σ_{k=0..7} Σ_{j=0..7} bit[start_byte+k][j] · 2^(8·(7-k) + j)
 /// and constrained equal to `limb`.
+#[allow(dead_code)] // Phase B: obsolete — the address binding now binds to
+                     // halo2wrong's pubkey native() instead of 64-bit limbs.
 fn bind_limb_to_inputs(
     secp: &Secp256k1Chip,
     layouter: &mut impl Layouter<Fr>,
@@ -286,10 +318,12 @@ pub struct ZKMistV2ClaimConfig {
     poseidon: PoseidonConfig,
     cond_swap: CondSwapConfig,
     secp256k1: Secp256k1Config,
-    /// halo2wrong audited secp256k1 chip config (Phase B). Used for the EC
-    /// scalar multiplication once the `synthesize` wire-up lands.
-    #[allow(dead_code)]
+    /// halo2wrong audited secp256k1 chip config (Phase B).
     ecc_config: EccConfig,
+    /// halo2wrong MainGate config — for the native() binding equalities.
+    main_gate_config: MainGateConfig,
+    /// halo2wrong Range config — to load the integer-chip range table.
+    range_config: H2wRangeConfig,
     keccak: KeccakConfig,
     range_check: RangeCheckConfig,
     instance: Column<Instance>,
@@ -357,13 +391,17 @@ impl Circuit<Fr> for ZKMistV2Claim {
             vec![SECP_LIMB_BITS / SECP_LIMBS],
             h2w_overflow,
         );
-        let ecc_config = EccConfig::new(h2w_range, h2w_main_gate);
+        let ecc_config = EccConfig::new(h2w_range.clone(), h2w_main_gate.clone());
 
         ZKMistV2ClaimConfig {
             poseidon,
             cond_swap,
             secp256k1,
             ecc_config,
+            // Stored separately because `EccConfig`'s fields are private; the
+            // synthesize wire-up constructs a `MainGate` + `RangeChip` from these.
+            main_gate_config: h2w_main_gate,
+            range_config: h2w_range,
             keccak,
             range_check,
             instance,
@@ -400,133 +438,95 @@ impl Circuit<Fr> for ZKMistV2Claim {
         // Verify the derived address matches Keccak output (debug only)
         debug_assert_eq!(address_bytes, keccak_address);
 
-        // ── Step 1b: secp256k1 scalar multiplication (constrained) ─────
+        // ── Step 1b: secp256k1 scalar multiplication — halo2wrong (constrained) ──
+        // Secp256k1Chip is retained ONLY as the binding-glue provider
+        // (accumulate_weighted_bits / assert_nonzero — gadgets/field_accumulator.rs).
+        // The EC scalar mul itself uses halo2wrong's audited GeneralEccChip.
         let secp_chip = Secp256k1Chip::new(&config.secp256k1);
+        let mut ecc_chip =
+            GeneralEccChip::<Secp256k1Affine, Fr, SECP_LIMBS, SECP_LIMB_BITS>::new(
+                config.ecc_config.clone(),
+            );
+        let main_gate = MainGate::<Fr>::new(config.main_gate_config.clone());
 
-        let pub_x = NativeSecpField::from_bytes_be(&pub_x_bytes);
-        let pub_y = NativeSecpField::from_bytes_be(&pub_y_bytes);
-        let pub_x_limbs = pub_x.to_bn254_limbs();
-        let pub_y_limbs = pub_y.to_bn254_limbs();
-
-        // Assign affine public key coordinates as field elements
-        let pub_x_assigned = {
-            let limbs = pub_x_limbs;
-            layouter.assign_region(
-                || "pub_x",
-                |mut region| {
-                    let mut assigned = Vec::with_capacity(4);
-                    for (i, limb) in limbs.iter().enumerate() {
-                        let cell = region.assign_advice(
-                            || format!("pub_x_limb_{}", i),
-                            config.advice[i],
-                            0,
-                            || Value::known(*limb),
-                        )?;
-                        assigned.push(cell);
-                    }
-                    Ok(crate::secp256k1::AssignedFieldElement {
-                        limbs: [
-                            assigned[0].clone(),
-                            assigned[1].clone(),
-                            assigned[2].clone(),
-                            assigned[3].clone(),
-                        ],
-                    })
-                },
-            )?
-        };
-
-        let pub_y_assigned = {
-            let limbs = pub_y_limbs;
-            layouter.assign_region(
-                || "pub_y",
-                |mut region| {
-                    let mut assigned = Vec::with_capacity(4);
-                    for (i, limb) in limbs.iter().enumerate() {
-                        let cell = region.assign_advice(
-                            || format!("pub_y_limb_{}", i),
-                            config.advice[i],
-                            0,
-                            || Value::known(*limb),
-                        )?;
-                        assigned.push(cell);
-                    }
-                    Ok(crate::secp256k1::AssignedFieldElement {
-                        limbs: [
-                            assigned[0].clone(),
-                            assigned[1].clone(),
-                            assigned[2].clone(),
-                            assigned[3].clone(),
-                        ],
-                    })
-                },
-            )?
-        };
-
-        // Assign the secp256k1 generator G as a SOUND circuit constant.
-        // `assign_affine_constant` binds every coordinate limb to a fixed-column
-        // constant (verifier-known) — a bare `assign_advice` would leave G
-        // prover-controlled, letting a malicious prover substitute an arbitrary
-        // base point and claim any eligible address without its private key.
-        let g = NativePoint::GENERATOR;
-        let g_assigned = secp_chip.assign_affine_constant(&mut layouter, &g, "generator")?;
-
-        // Scalar bits for multiplication — assigned as boolean cells ONCE and
-        // shared between the scalar multiplication and the nullifier binding
-        // (Finding 2). This shared set of cells is what cryptographically links
-        // the nullifier key to the secp256k1 scalar actually multiplied.
+        // Scalar bits — assigned ONCE and accumulated into the nullifier key
+        // (Finding 2). The Fe<Fq> scalar fed to halo2wrong's mul is separately
+        // bound to these bits via native() (same scalar ⇒ proves the nullifier
+        // key is the one whose k·G was taken). This is what cryptographically
+        // links the nullifier to the secp256k1 scalar actually multiplied.
         let scalar_bits_bool = decompose_key_to_bits(&self.private_key);
         let scalar_bit_cells = secp_chip.assign_scalar_bits(&mut layouter, &scalar_bits_bool)?;
         let scalar_bits: [AssignedCell<Fr, Fr>; 256] = scalar_bit_cells
             .try_into()
             .expect("assign_scalar_bits returns exactly 256 cells");
 
-        // Perform constrained scalar multiplication: k * G
-        let computed_point = secp_chip.scalar_mul(&mut layouter, &scalar_bits, &g_assigned)?;
-
-        // ── Soundness: Verify computed point is on the secp256k1 curve ──
-        // This catches any incorrect intermediate field operations.
-        // y² = x³ + 7 (mod secp256k1 field prime)
-        secp_chip.check_on_curve(&mut layouter, &computed_point)?;
-
-        // ── Soundness: Range-check all limbs of the computed point ──────
-        // Ensures no limb exceeds 2^64, preventing carry-chain attacks.
-        secp_chip.check_limb_ranges(&mut layouter, &computed_point.x)?;
-        secp_chip.check_limb_ranges(&mut layouter, &computed_point.y)?;
-        secp_chip.check_limb_ranges(&mut layouter, &computed_point.z)?;
-
-        // Constrain: k*G == (pub_x, pub_y) in affine coordinates
-        secp_chip.constrain_affine(
-            &mut layouter,
-            &computed_point,
-            &pub_x_assigned,
-            &pub_y_assigned,
+        // k · G via halo2wrong. Capture both the resulting public-key point
+        // (for the address binding) and the scalar's native() cell (for the
+        // nullifier binding). `AssignedValue<F>` is a type alias for
+        // `AssignedCell<F,F>`, so native() and accumulate_weighted_bits agree.
+        let scalar_fq = key_bytes_to_scalar_fq(&self.private_key);
+        let (pubkey_point, scalar_native) = layouter.assign_region(
+            || "h2w_scalar_mul",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                ecc_chip.assign_aux_generator(ctx, Value::known(aux_generator_point()))?;
+                ecc_chip.assign_aux(ctx, SECP_LIMB_WINDOW, 1)?;
+                let g =
+                    ecc_chip.assign_point(ctx, Value::known(Secp256k1Affine::generator()))?;
+                let scalar_chip = ecc_chip.scalar_field_chip();
+                let assigned_scalar = scalar_chip.assign_integer(
+                    ctx,
+                    ecc_chip.new_unassigned_scalar(Value::known(scalar_fq)),
+                    Range::Remainder,
+                )?;
+                let native = assigned_scalar.native().clone();
+                let pubkey = ecc_chip.mul(ctx, &g, &assigned_scalar, SECP_LIMB_WINDOW)?;
+                Ok((pubkey, native))
+            },
         )?;
+        // Load halo2wrong's integer range table (per its idiom, after regions).
+        H2wRangeChip::<Fr>::new(config.range_config.clone()).load_table(&mut layouter)?;
 
-        // ── Finding 3: Bind the Keccak INPUT to the scalar-mul output ──
-        // `constrain_affine` already links k*G → (pub_x_assigned, pub_y_assigned).
-        // This block additionally forces the (pub_x||pub_y) bytes fed into the
-        // Keccak hash to be those exact coordinates. Without it, a malicious
-        // prover could hash an unrelated eligible pubkey while proving a
-        // different scalar multiplication, claiming eligibility for an address
-        // whose private key they do not know.
-        for limb_idx in 0..4usize {
-            // pub_x occupies Keccak input bytes 0..31; pub_y bytes 32..63.
-            // Limbs are little-endian: limb[i] covers bytes [(3-i)*8 .. +7].
-            bind_limb_to_inputs(
-                &secp_chip,
-                &mut layouter,
-                &keccak_input_bytes,
-                (3 - limb_idx) * 8,
-                &pub_x_assigned.limbs[limb_idx],
-            )?;
-            bind_limb_to_inputs(
-                &secp_chip,
-                &mut layouter,
-                &keccak_input_bytes,
-                32 + (3 - limb_idx) * 8,
-                &pub_y_assigned.limbs[limb_idx],
-            )?;
+        // ── Finding 3: Bind the Keccak INPUT to the scalar-mul output ──────
+        // The 64 Keccak input bytes are pub_x (bytes 0..31) || pub_y (32..63).
+        // Accumulate each coordinate's 256 bits into a native Fr cell and
+        // constrain it equal to the corresponding pubkey coordinate's native()
+        // reduction. This forces the bytes hashed by Keccak to be the EXACT k·G
+        // output — without it a malicious prover could hash an unrelated eligible
+        // pubkey while proving a different scalar multiplication.
+        {
+            // pub_x: byte b (0 = MSB) contributes bit j (0 = LSB) at weight
+            // 2^(8·(31−b)+j), reconstructing the 256-bit integer mod p_BN254.
+            let (mut bits, mut weights): (Vec<AssignedCell<Fr, Fr>>, Vec<Fr>) =
+                (Vec::with_capacity(256), Vec::with_capacity(256));
+            for b in 0..32u32 {
+                for j in 0..8u32 {
+                    bits.push(keccak_input_bytes[b as usize][j as usize].clone());
+                    weights.push(pow2_fr(8 * (31 - b) + j));
+                }
+            }
+            let pub_x_acc =
+                secp_chip.accumulate_weighted_bits(&mut layouter, &bits, &weights)?;
+            layouter.assign_region(|| "addr_bind_x", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                main_gate.assert_equal(ctx, &pub_x_acc, pubkey_point.x().native())
+            })?;
+
+            // pub_y: bytes 32..63.
+            let (mut bits, mut weights): (Vec<AssignedCell<Fr, Fr>>, Vec<Fr>) =
+                (Vec::with_capacity(256), Vec::with_capacity(256));
+            for b in 0..32u32 {
+                for j in 0..8u32 {
+                    bits.push(keccak_input_bytes[32 + b as usize][j as usize].clone());
+                    weights.push(pow2_fr(8 * (31 - b) + j));
+                }
+            }
+            let pub_y_acc =
+                secp_chip.accumulate_weighted_bits(&mut layouter, &bits, &weights)?;
+            layouter.assign_region(|| "addr_bind_y", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                main_gate.assert_equal(ctx, &pub_y_acc, pubkey_point.y().native())
+            })?;
         }
 
         // ── Finding 1: Bind the Merkle leaf to the Keccak-derived address ──
@@ -660,6 +660,19 @@ impl Circuit<Fr> for ZKMistV2Claim {
         layouter.assign_region(
             || "nullifier_key_bind",
             |mut region| region.constrain_equal(key_cell.cell(), key_acc.cell()),
+        )?;
+        // ── Finding 2 (Phase B): bind the halo2wrong Fe<Fq> scalar to the
+        // nullifier key. The scalar whose k·G was computed (scalar_native) must
+        // equal the key fed to the nullifier — proving the nullifier is over the
+        // EXACT scalar multiplied (so it can't be rotated for double claims).
+        // This equality also soundly enforces K < n: any K >= n makes native()
+        // differ from key_cell, so no such proof exists (migration doc §5a).
+        layouter.assign_region(
+            || "nullifier_h2w_bind",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                main_gate.assert_equal(ctx, &scalar_native, &key_cell)
+            },
         )?;
         let domain = domain_field_element();
         let domain_cell = layouter.assign_region(
@@ -1188,7 +1201,7 @@ mod tests {
             k
         );
         let public_inputs = vec![root_field, nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs, vec![]]);
 
         match result {
             Ok(prover) => match prover.verify() {
@@ -1672,7 +1685,7 @@ mod tests {
 
         let k = 23;
         let public_inputs = vec![wrong_root, nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs, vec![]]);
 
         match result {
             Ok(prover) => {
@@ -1743,7 +1756,7 @@ mod tests {
 
         let k = 23;
         let public_inputs = vec![root_field, wrong_nullifier, recipient];
-        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs, vec![]]);
 
         match result {
             Ok(prover) => {
@@ -1814,7 +1827,7 @@ mod tests {
 
         let k = 23;
         let public_inputs = vec![root_field, nullifier, Fr::ZERO];
-        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs, vec![]]);
 
         match result {
             Ok(prover) => {
@@ -2306,7 +2319,7 @@ mod tests {
 
         let k = 23;
         let public_inputs = vec![root_field, nullifier, big_recipient];
-        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs]);
+        let result = halo2_proofs::dev::MockProver::run(k, &circuit, vec![public_inputs, vec![]]);
 
         match result {
             Ok(prover) => {

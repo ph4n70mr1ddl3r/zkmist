@@ -101,7 +101,7 @@ impl Circuit<BnFr> for Halo2WrongSecp256k1Mul {
                 ecc_chip.assign_aux(ctx, WINDOW_SIZE, 1)?;
                 Ok(())
             },
-        )?;;
+        )?;
 
         // The actual `scalar · G` and an internal soundness check that the
         // result equals the natively-computed expected public key.
