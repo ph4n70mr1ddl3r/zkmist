@@ -769,6 +769,145 @@ mod tests {
     use ark_ff::BigInteger;
     use light_poseidon::PoseidonHasher;
 
+    /// Decisive Phase B diagnostic: a circuit that reuses the EXACT
+    /// ZKMistV2ClaimConfig (all chip configs coexist — poseidon, keccak, secp256k1,
+    /// halo2wrong) but synthesizes ONLY the halo2wrong mul + a check.
+    /// - If the mul's x.native() != expected here  => config coexistence corrupts
+    ///   the mul (column/table collision) — the bug is config-level.
+    /// - If it matches => the corruption is in the full synthesize sequencing.
+    #[derive(Clone)]
+    struct CoexistMulCircuit {
+        key: [u8; 32],
+        expected_x_mod_p: Fr, // pub_x mod p_BN254 (what x.native() must equal)
+        expected_pubkey: Secp256k1Affine, // for the POINT-comparison bisect
+    }
+
+    impl Default for CoexistMulCircuit {
+        fn default() -> Self {
+            Self {
+                key: [0u8; 32],
+                expected_x_mod_p: Fr::ZERO,
+                expected_pubkey: Secp256k1Affine::generator(),
+            }
+        }
+    }
+
+    impl Circuit<Fr> for CoexistMulCircuit {
+        type Config = ZKMistV2ClaimConfig; // reuse the EXACT production config
+        type FloorPlanner = SimpleFloorPlanner;
+
+        fn without_witnesses(&self) -> Self {
+            Self::default()
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            <ZKMistV2Claim as Circuit<Fr>>::configure(meta)
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            // BISECT: skip the PROJECT's table loads (keep halo2wrong's, which
+            // the mul needs). If the mul now passes => project table loading
+            // corrupts; if still fails => config ALLOCATION itself corrupts.
+            // config.range_check.load_range_table(&mut layouter)?;
+            // config.secp256k1.load_tables(&mut layouter)?;
+
+            let mut ecc_chip = GeneralEccChip::<
+                Secp256k1Affine,
+                Fr,
+                SECP_LIMBS,
+                SECP_LIMB_BITS,
+            >::new(config.ecc_config.clone());
+            let main_gate = MainGate::<Fr>::new(config.main_gate_config.clone());
+
+            layouter.assign_region(|| "aux", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                ecc_chip.assign_aux_generator(ctx, Value::known(aux_generator_point()))?;
+                ecc_chip.assign_aux(ctx, SECP_LIMB_WINDOW, 1)?;
+                Ok(())
+            })?;
+
+            let pubkey = layouter.assign_region(|| "mul", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let g =
+                    ecc_chip.assign_point(ctx, Value::known(Secp256k1Affine::generator()))?;
+                let scalar_chip = ecc_chip.scalar_field_chip();
+                let s = scalar_chip.assign_integer(
+                    ctx,
+                    ecc_chip.new_unassigned_scalar(Value::known(key_bytes_to_scalar_fq(
+                        &self.key,
+                    ))),
+                    Range::Remainder,
+                )?;
+                ecc_chip.mul(ctx, &g, &s, SECP_LIMB_WINDOW)
+            })?;
+
+            H2wRangeChip::<Fr>::new(config.range_config.clone()).load_table(&mut layouter)?;
+
+            layouter.assign_region(|| "check-point", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let expected_pt =
+                    ecc_chip.assign_point(ctx, Value::known(self.expected_pubkey))?;
+                ecc_chip.assert_equal(ctx, &pubkey, &expected_pt)
+            })?;
+            // Also keep the native() check, to contrast point-correct vs native-wrong.
+            layouter.assign_region(|| "check-native", |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let expected = main_gate.assign_constant(ctx, self.expected_x_mod_p)?;
+                main_gate.assert_equal(ctx, pubkey.x().native(), &expected)
+            })?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore = "Phase B diagnostic: reproduces the isolated root cause. check-point PASSES
+               (the mul's result point == G·K, even with full config coexistence) but
+               check-native FAILS — AssignedInteger::native() of the BASE field (Fp)
+               point coordinate returns a value != pub_x mod p_BN254. native() of the
+               SCALAR field (Fq) works (hence the nullifier binding passes). The
+               address binding must therefore NOT use pubkey.x().native(); bind the
+               Keccak input to the pubkey limbs directly instead."]
+    fn test_halo2wrong_mul_with_full_config_coexistence() {
+        use halo2_proofs::{
+            arithmetic::CurveAffine, dev::MockProver,
+            halo2curves::{ff::PrimeField, group::{Curve, Group}, secp256k1::Secp256k1},
+        };
+        let key: [u8; 32] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ];
+        // Expected pub_x mod p_BN254 via halo2curves (independent of the circuit).
+        let pk = (Secp256k1::generator() * key_bytes_to_scalar_fq(&key)).to_affine();
+        let mut x_le = pk.coordinates().unwrap().x().to_repr();
+        x_le.reverse(); // LE -> BE
+        let expected = ark_to_halo2(&ark_bn254::Fr::from_be_bytes_mod_order(&x_le));
+
+        let circuit = CoexistMulCircuit { key, expected_x_mod_p: expected, expected_pubkey: pk };
+        // 2 instance columns: the circuit's + halo2wrong MainGate's.
+        let prover =
+            MockProver::run(20, &circuit, vec![vec![], vec![]]).expect("MockProver::run");
+        let res = prover.verify();
+        if res.is_err() {
+            eprintln!(
+                "\n[DIAGNOSIS] mul CORRUPTED with full config coexistence => the bug is
+                 CONFIG-LEVEL (column/table collision between halo2wrong and the
+                 project's secp256k1/keccak/poseidon configs), NOT synthesize sequencing."
+            );
+        } else {
+            eprintln!(
+                "\n[DIAGNOSIS] mul CORRECT with full config coexistence => the bug is in
+                 the full synthesize SEQUENCING (keccak/merkle/nullifier region
+                 interaction), not config coexistence."
+            );
+        }
+        assert!(res.is_ok(), "coexist mul verify failed: {:#?}", res);
+    }
+
     /// NOTE: the process-wide serialization lock `HEAVY_MOCK_PROVER_LOCK` now
     /// lives at crate scope (see top of file) and is acquired by EVERY heavy
     /// k>=22 MockProver test, not just the `*_rejected` ones -- see its doc
