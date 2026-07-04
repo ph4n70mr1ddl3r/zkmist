@@ -292,3 +292,36 @@ This closes the loop: the axiom claim circuit can now verify a real,
 off-chain-built eligibility tree. (The streaming builder for the 64M-address
 production tree is the same logic, convention-agnostic in structure — port it
 when sizing the real deployment.)
+
+## 13. Real-KZG round-trip (DONE 2026-07-04) — production blocker #2 cleared
+
+The last big unknown — does an axiom proof of the actual ZKMist claim verify
+under **real KZG** (SHPLONK multi-open + Blake2b transcript)? — is answered:
+**yes.** Using halo2-base's `bench_builder` (gen_srs → keygen_vk → keygen_pk →
+create_proof → check_proof) on the full `claim_axiom` circuit:
+
+| stage        | time    |
+|--------------|---------|
+| keygen_vk    | 32 s    |
+| keygen_pk    | 21 s    |
+| create_proof | 150 s   |
+| verify       | 19 ms   |
+| proof size   | 960 B   |
+
+at k=21 (~1.9M advice cells), peaking well within the 28 GiB WSL2 box (k=23's
+~25 GiB OOM is a 4× larger commitment grid). A small Poseidon round-trip
+(`tests/axiom_real_kzg.rs`) validated the axiom KZG pipeline first.
+
+This clears production blocker #2 (real-KZG → verify) **at the circuit level**:
+the axiom claim circuit produces a verifying real-KZG proof. Remaining
+productionization:
+- **Public instances:** the claim's root / nullifier / recipient are currently
+  constrained via `assert_is_const` (expected as constants). For the on-chain
+  verifier to check them they become public instance columns (a `Circuit`
+  wrapper around `prove_claim`).
+- **Port the CLI prover** (`cli/src/halo2_prover.rs`, PSE k=23) to the axiom
+  backend (SRS handling, preflight — the k=21 RAM floor is far lower than k=23's
+  ~27 GiB).
+- **Regenerate the on-chain Solidity verifier** with the axiom verifier tool
+  (different transcript/format from PSE's `halo2-solidity-verifier`).
+- **Testnet deploy** on Base Sepolia + the on-chain round-trip.

@@ -67,14 +67,12 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 4 step 1: off-chain tree → halo2-base convention** —
-  `merkle-tree/src/halo2base.rs`; cross-checked byte-for-byte against
-  `poseidon_axiom` AND end-to-end (off-chain-built tree verified in-circuit).
-  Resolves the §9.1 sponge-convention decision (adopt halo2-base end-to-end).
-  See `docs/axiom-backend-migration.md` §12.
-- `19a01cc` — **Phase 3 step 4: K<n range proof + 4 negatives** — the §5a
-  TRAP closed; full claim circuit now rejects wrong-root / wrong-nullifier /
-  zero-recipient / K≥n. **Phase 3 circuit work complete.**
+- _(pending)_ — **Phase 4 step 2: real-KZG round-trip** — the full claim
+  circuit produces a verifying real-KZG proof (keygen 32s + pk 21s + prove 150s
+  + verify 19ms, 960 B, k=21, fits the 28 GiB box). **Production blocker #2
+  cleared at the circuit level.** See `docs/axiom-backend-migration.md` §13.
+- `d25b0d8` — **Phase 4 step 1: off-chain tree → halo2-base convention** —
+  cross-checked byte-for-byte AND end-to-end (off-chain tree verified in-circuit).
 - `c2c1e57` — **Phase 3 step 2: Merkle + nullifier axiom ports + address
   bridge** — all gadgets ported; `keccak(pubkey)→address` proven end-to-end.
 - `2aca3cb` — **Phase 3 step 1: Keccak port** — bit-level Keccak-f[1600] on
@@ -111,10 +109,13 @@ poseidon-primitives = "0.2"
    **The axiom circuit is complete and sound (MockProver-verified).**
 7. **TODO — productionize (Phase 4):**
    (a) ✅ off-chain tree → halo2-base convention (done, §12);
-   (b) optionally a lookup-table χ for Keccak to bring the circuit from k≈21
-     back toward the k=18 target (~1 GiB proving);
-   (c) port `cli/src/halo2_prover.rs` to the axiom backend; regenerate the
-     on-chain verifier; real-KZG round-trip; testnet deploy.
+   (b) ✅ real-KZG round-trip on the full claim circuit (done, §13 — blocker #2
+     cleared at the circuit level);
+   (c) expose root/nullifier/recipient as **public instances** (currently
+     `assert_is_const`) so the on-chain verifier can check them;
+   (d) optionally a lookup-table χ for Keccak (k≈21 → k≈18);
+   (e) port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain
+     verifier; **on-chain** round-trip; testnet deploy.
 8. **External audit** of the (now much smaller) integration + Keccak port.
 
 **Soundness note:** the circuit is MockProver-verified sound (positive + 4

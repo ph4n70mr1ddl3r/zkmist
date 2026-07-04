@@ -46,6 +46,7 @@ fn address_to_fr(addr: &[u8; 20]) -> Fr {
     v
 }
 
+#[derive(Clone)]
 struct Claim {
     privkey: Fq,
     siblings: Vec<Fr>,
@@ -166,6 +167,28 @@ fn test_axiom_claim_rejects_key_above_n() {
             prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
                         c.root, c.nullifier, c.recipient);
         });
+}
+
+/// **Phase 4 de-risk:** a REAL KZG round-trip on the full claim circuit
+/// (gen_srs → keygen → create_proof → verify). Proves an axiom proof of an
+/// actual ZKMist claim verifies under real SHPLONK KZG — the last big unknown
+/// before porting the production prover.
+#[test]
+fn test_axiom_claim_real_kzg_roundtrip() {
+    let c = build_valid_claim(4, 5);
+    let stats = base_test()
+        .k(21)
+        .lookup_bits(8)
+        .bench_builder(c.clone(), c, |pool, range, c| {
+            let ctx = pool.main();
+            let limbs = assign_privkey(ctx, c.privkey);
+            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
+                        c.root, c.nullifier, c.recipient);
+        });
+    eprintln!(
+        "axiom claim real-KZG round-trip OK: proof_size = {} bytes",
+        stats.proof_size
+    );
 }
 
 /// End-to-end: a tree built by the OFF-CHAIN tooling
