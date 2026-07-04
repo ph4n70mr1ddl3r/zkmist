@@ -325,3 +325,43 @@ productionization:
 - **Regenerate the on-chain Solidity verifier** with the axiom verifier tool
   (different transcript/format from PSE's `halo2-solidity-verifier`).
 - **Testnet deploy** on Base Sepolia + the on-chain round-trip.
+
+## 14. On-chain Solidity verifier — investigation + halo2-base 0.5.3 migration (2026-07-04)
+
+**Finding:** there is **no off-the-shelf Solidity verifier for the exact axiom
+stack** we used (halo2-base 0.5.0 / halo2-axiom 0.5.x — SHPLONK multiopen,
+Challenge255/Blake2b transcript). The viable path is **`axiom-crypto/snark-verifier`**
+— the axiom team's own verifier SDK (`loader::evm`, `StandardPlonkVerifier.sol`,
+used in Axiom's production on-chain products). Alternatives ruled out:
+
+- `axiom-crypto/halo2` (the halo2-base source repo) at v0.5.0 ships **no**
+  Solidity verifier (only in-Rust verifiers).
+- `summa-dev/halo2-solidity-verifier` is axiom-based but pins **halo2 0.2.0**
+  (Dec 2023) — an older lineage, incompatible with 0.5.x VK/proof format.
+- The vendored PSE `halo2-solidity-verifier` is GWC + Keccak transcript — wrong
+  multiopen/transcript for axiom SHPLONK.
+
+**Blocker:** snark-verifier pins `halo2-base = git halo2-lib v0.5.3`, which is
+**ahead of crates.io** (max 0.5.1). So adopting it requires migrating the whole
+circuit stack off crates.io 0.5.0 onto the halo2-lib git repo.
+
+**Done — the migration:** `halo2-base` / `halo2-ecc` moved from crates.io
+`=0.5.0` to `halo2-lib` git `v0.5.3`. The 0.5.0→0.5.3 bump is **clean** — every
+axiom gadget re-compiles and passes (foundation, Poseidon, secp byte-bridge +
+K<n, Keccak, address-bridge, Merkle, nullifier, claim happy-path). This
+**unlocks snark-verifier** and gets us onto the latest axiom stack.
+
+**Remaining integration (snark-verifier → Solidity → on-chain):**
+1. Add `snark-verifier` (git, same halo2-lib v0.5.3 baseline) as a dep.
+2. Use its `system::halo2::compile` on the claim `VerifyingKey` + the
+   `PlonkVerifier<KzgAs<Bn256, Shplonk>>` (the **SHPLONK** variant — the
+   `evm-verifier.rs` example uses `Gwc19`; halo2-base proves with SHPLONK) +
+   `transcript::evm::EvmTranscript` to render an EVM verifier via `loader::evm`.
+3. Generate `Halo2Verifier.sol` from the claim VK; compile (solc/foundry); call
+   it with a real proof (revm `deploy_and_call`, as snark-verifier's example
+   does) for the **on-chain round-trip**.
+4. Testnet deploy on Base Sepolia.
+
+⚠️ The Solidity verifier is **security-critical** (a buggy verifier = unsound
+on-chain verification); the generated contract needs review. This is a focused
+next step now that the version gate is cleared.

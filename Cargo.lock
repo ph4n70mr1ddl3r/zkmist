@@ -2201,6 +2201,26 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "678cf3adc0a39d7b4d9b82315a655201aa24a430dd1902b162c508047f56ac69"
 dependencies = [
+ "getset",
+ "halo2-axiom",
+ "itertools 0.11.0",
+ "log",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "poseidon-primitives",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "rustc-hash 1.1.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "halo2-base"
+version = "0.5.3"
+source = "git+https://github.com/axiom-crypto/halo2-lib.git?tag=v0.5.3#c54cbac60da598e8e484b8aea858e0bf3c51a857"
+dependencies = [
  "ark-std 0.3.0",
  "getset",
  "halo2-axiom",
@@ -2225,7 +2245,26 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "645c00681fdd1febaf552d8814e9f5a6a142d81a1514102190da07039588b366"
 dependencies = [
- "halo2-base",
+ "halo2-base 0.5.0",
+ "itertools 0.11.0",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+ "rayon",
+ "serde",
+ "serde_json",
+ "test-case",
+]
+
+[[package]]
+name = "halo2-ecc"
+version = "0.5.3"
+source = "git+https://github.com/axiom-crypto/halo2-lib.git?tag=v0.5.3#c54cbac60da598e8e484b8aea858e0bf3c51a857"
+dependencies = [
+ "halo2-base 0.5.3",
  "itertools 0.11.0",
  "num-bigint",
  "num-integer",
@@ -4435,8 +4474,8 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c426469de23e6a799d6755465df2aec9bec12e5a263c817394c28b833614da6"
 dependencies = [
- "halo2-base",
- "halo2-ecc",
+ "halo2-base 0.5.0",
+ "halo2-ecc 0.5.0",
  "hex",
  "itertools 0.11.0",
  "lazy_static",
@@ -5813,8 +5852,8 @@ dependencies = [
  "ecc",
  "ff",
  "group",
- "halo2-base",
- "halo2-ecc",
+ "halo2-base 0.5.3",
+ "halo2-ecc 0.5.3",
  "halo2_proofs",
  "halo2_solidity_verifier",
  "halo2curves",

@@ -67,11 +67,12 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 4 step 3: public instances** — `prove_claim_to_cells`
-  exposes `(root, nullifier, recipient)` as a public instance column; real-KZG
-  proof verifies against the correct instance and is REJECTED against a wrong
-  root (the on-chain verifier model). The circuit is now deployable in
-  principle. See `docs/axiom-backend-migration.md` §13.
+- _(pending)_ — **Phase 4 step 4: halo2-base 0.5.3 migration (Solidity
+  verifier gate cleared)** — migrated the stack crates.io 0.5.0 → halo2-lib
+  git 0.5.3 (clean: all gadgets re-verify). Unlocks `axiom-crypto/snark-verifier`
+  for on-chain Solidity verification. See `docs/axiom-backend-migration.md` §14.
+- `d201c32` — **Phase 4 step 3: public instances** — `(root,nullifier,recipient)`
+  exposed; real-KZG proof verifies / wrong-root rejected (on-chain model).
 - `58ba8ce` — **Phase 4 step 2: real-KZG round-trip** — the full claim circuit
   produces a verifying real-KZG proof (960 B, k=21). Blocker #2 cleared.
 - `d25b0d8` — **Phase 4 step 1: off-chain tree → halo2-base convention** —
@@ -116,9 +117,13 @@ poseidon-primitives = "0.2"
      cleared at the circuit level);
    (c) ✅ public instances `(root, nullifier, recipient)` (done, §13.1 —
      on-chain verifier model: verifies / wrong-root rejected);
-   (d) optionally a lookup-table χ for Keccak (k≈21 → k≈18);
-   (e) port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain
-     verifier; **on-chain** round-trip; testnet deploy.
+   (d) ✅ halo2-base 0.5.0 → halo2-lib 0.5.3 migration (done, §14 — clean,
+     unlocks snark-verifier); **note:** halo2-base/halo2-ecc are now git deps
+     (halo2-lib v0.5.3), not crates.io;
+   (e) optionally a lookup-table χ for Keccak (k≈21 → k≈18);
+   (f) **snark-verifier integration** → generate `Halo2Verifier.sol` from the
+     claim VK (SHPLONK `PlonkVerifier` + `compile` + `EvmLoader`), on-chain
+     round-trip (revm), testnet deploy.
 8. **External audit** of the (now much smaller) integration + Keccak port.
 
 **Soundness note:** the circuit is MockProver-verified sound (positive + 4
