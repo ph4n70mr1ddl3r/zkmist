@@ -32,6 +32,16 @@ use halo2_proofs::{
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Instance},
 };
 use halo2curves::bn256::Fr;
+// halo2wrong audited secp256k1 (Phase B rewiring). Config integrated below;
+// the `mul` wire-up in `synthesize` is the next focused step.
+use ecc::{EccConfig, GeneralEccChip};
+use halo2curves::secp256k1::Secp256k1Affine;
+use maingate::{MainGate, RangeChip as H2wRangeChip};
+
+/// halo2wrong secp256k1 RNS config — the audited values halo2wrong's own
+/// ecc/integer/ecdsa tests use (`NUMBER_OF_LIMBS=4`, `BIT_LEN_LIMB=68`).
+const SECP_LIMBS: usize = 4;
+const SECP_LIMB_BITS: usize = 68;
 
 use crate::gadgets::cond_swap::{cond_swap, CondSwapConfig};
 use crate::gadgets::range_check::RangeCheckConfig;
@@ -206,7 +216,7 @@ pub fn constraint_system_digest(cs: &halo2_proofs::plonk::ConstraintSystem<Fr>) 
 /// constant, so both sides agree by construction. The generator's runtime
 /// parity assert re-validates it under the PSE halo2 git fork when built in an
 /// environment with `halo2-solidity-verifier` present.
-pub const EXPECTED_CS_DIGEST: &str = "b8022d1afb857964";
+pub const EXPECTED_CS_DIGEST: &str = "d5a9f39dc8845ba4";
 
 /// Finding 3 helper: constrain 8 consecutive Keccak *input* bytes (each
 /// already decomposed into 8 boolean bits by `build_initial_state`) to equal a
@@ -276,6 +286,10 @@ pub struct ZKMistV2ClaimConfig {
     poseidon: PoseidonConfig,
     cond_swap: CondSwapConfig,
     secp256k1: Secp256k1Config,
+    /// halo2wrong audited secp256k1 chip config (Phase B). Used for the EC
+    /// scalar multiplication once the `synthesize` wire-up lands.
+    #[allow(dead_code)]
+    ecc_config: EccConfig,
     keccak: KeccakConfig,
     range_check: RangeCheckConfig,
     instance: Column<Instance>,
@@ -326,10 +340,30 @@ impl Circuit<Fr> for ZKMistV2Claim {
             ],
         );
 
+        // halo2wrong audited secp256k1 chip (Phase B rewiring). The config
+        // is integrated here (allocates its own MainGate + Range columns);
+        // wiring `GeneralEccChip::mul` into `synthesize`, replacing the
+        // hand-rolled `scalar_mul`, is the next focused step. See
+        // docs/secp256k1-migration-plan.md §5a.
+        let (rns_base, rns_scalar) =
+            GeneralEccChip::<Secp256k1Affine, Fr, SECP_LIMBS, SECP_LIMB_BITS>::rns();
+        let h2w_main_gate = MainGate::<Fr>::configure(meta);
+        let mut h2w_overflow: Vec<usize> = Vec::new();
+        h2w_overflow.extend(rns_base.overflow_lengths());
+        h2w_overflow.extend(rns_scalar.overflow_lengths());
+        let h2w_range = H2wRangeChip::<Fr>::configure(
+            meta,
+            &h2w_main_gate,
+            vec![SECP_LIMB_BITS / SECP_LIMBS],
+            h2w_overflow,
+        );
+        let ecc_config = EccConfig::new(h2w_range, h2w_main_gate);
+
         ZKMistV2ClaimConfig {
             poseidon,
             cond_swap,
             secp256k1,
+            ecc_config,
             keccak,
             range_check,
             instance,
