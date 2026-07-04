@@ -22,6 +22,10 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 # the hand-rolled Secp256k1Chip is NOT yet replaced. Pins the SAME PSE halo2
 # v0.3.0 fork as this workspace (verified: cargo unifies to one halo2_proofs).
 halo2wrong = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2024_01_31", default-features = false }
+# Phase 1 axiom backend migration: the axiom stack (halo2-base eDSL + halo2-ecc
+# audited secp256k1). Coexists with the PSE stack until the circuit is migrated.
+halo2-base = "=0.5.0"
+halo2-ecc = "=0.5.0"
 # Phase B: the ECC/integer/maingate sub-crates (the umbrella `halo2wrong` crate
 # alone cannot do EC arithmetic). Same git tag → same PSE halo2 v0.3.0 fork.
 ecc = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2024_01_31" }
