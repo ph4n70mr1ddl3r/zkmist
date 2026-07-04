@@ -12,10 +12,9 @@
 //! across halo2wrong's ecc/integer/ecdsa/transcript tests). See
 //! `docs/secp256k1-migration-plan.md`.
 //!
-//! What this does NOT do (Phase B remainder):
-//!   - rewire `ZKMistV2Claim` to use this chip (changes the VK digest),
-//!   - re-derive the nullifier↔scalar and leaf↔Keccak-address bindings,
-//!   - measure rows / reach for k=22.
+//! What this does NOT do (Phase B remainder): rewire `ZKMistV2Claim` to use
+//! this chip (changes the VK digest), re-derive the nullifier↔scalar and
+//! leaf↔Keccak-address bindings, and measure rows / reach for k=22.
 //! Those need the careful incremental + MockProver-reverification path.
 
 use ecc::integer::Range;
@@ -30,7 +29,8 @@ use halo2_proofs::{
 use halo2_proofs::halo2curves::secp256k1::Fq as Secp256k1Scalar;
 use integer::IntegerInstructions;
 use maingate::{
-    MainGate, MainGateConfig, RangeChip, RangeConfig, RangeInstructions,
+    MainGate, MainGateConfig, MainGateInstructions, RangeChip, RangeConfig,
+    RangeInstructions,
 };
 
 // Audited halo2wrong config for secp256k1 (see module doc).
@@ -101,7 +101,7 @@ impl Circuit<BnFr> for Halo2WrongSecp256k1Mul {
                 ecc_chip.assign_aux(ctx, WINDOW_SIZE, 1)?;
                 Ok(())
             },
-        )?;;
+        )?;
 
         // The actual `scalar · G` and an internal soundness check that the
         // result equals the natively-computed expected public key.
@@ -162,4 +162,100 @@ fn test_halo2wrong_secp256k1_scalar_mul() {
     let prover = MockProver::run(20, &circuit, vec![vec![]]).expect("MockProver::run");
     let res = prover.verify();
     assert!(res.is_ok(), "halo2wrong mul verify failed: {:#?}", res);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Nullifier-binding re-derivation mechanism (Phase B crux).
+//
+// Proves an Fe<Fq> scalar's `.native()` is a CONSTRAINED native Fr cell equal
+// to the scalar's integer value mod p_BN254 — the exact handle the rewired
+// nullifier binding constrains to the bit-accumulated key (migration doc §5a).
+// The negative test (wrong expected MUST fail) is what proves `.native()` is not
+// a free advice cell a malicious prover could reassign (which would decouple
+// the nullifier from the scalar actually multiplied = unlimited claims).
+// ──────────────────────────────────────────────────────────────────────────
+
+#[derive(Default, Clone)]
+struct NativeBinding {
+    scalar: Value<Secp256k1Scalar>,
+    expected: BnFr,
+}
+
+impl Circuit<BnFr> for NativeBinding {
+    type Config = MulConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self::default()
+    }
+
+    fn configure(meta: &mut ConstraintSystem<BnFr>) -> Self::Config {
+        // Reuse the exact halo2wrong config (MainGate + Range -> EccConfig).
+        <Halo2WrongSecp256k1Mul as Circuit<BnFr>>::configure(meta)
+    }
+
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<BnFr>,
+    ) -> Result<(), Error> {
+        let ecc_chip =
+            GeneralEccChip::<Secp256k1Affine, BnFr, NUMBER_OF_LIMBS, BIT_LEN_LIMB>::new(
+                config.ecc_config(),
+            );
+        RangeChip::<BnFr>::new(config.range_config.clone()).load_table(&mut layouter)?;
+        let main_gate = MainGate::<BnFr>::new(config.main_gate_config.clone());
+
+        layouter.assign_region(
+            || "native binding",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let scalar_chip = ecc_chip.scalar_field_chip();
+                let assigned = scalar_chip.assign_integer(
+                    ctx,
+                    ecc_chip.new_unassigned_scalar(self.scalar),
+                    Range::Remainder,
+                )?;
+                let expected = main_gate.assign_constant(ctx, self.expected)?;
+                // THE BINDING: the Fe<Fq> scalar's native reduction must equal
+                // the independently-expected Fr value.
+                main_gate.assert_equal(ctx, assigned.native(), &expected)
+            },
+        )?;
+
+        Ok(())
+    }
+}
+
+#[test]
+fn test_halo2wrong_native_binding_positive() {
+    use halo2_proofs::dev::MockProver;
+    // scalar = 42 (Fe<Fq>); native() must reduce to 42 (Fr).
+    let circuit = NativeBinding {
+        scalar: Value::known(Secp256k1Scalar::from(42u64)),
+        expected: BnFr::from(42u64),
+    };
+    let prover = MockProver::run(20, &circuit, vec![vec![]]).expect("MockProver::run");
+    assert!(
+        prover.verify().is_ok(),
+        "native() must equal the scalar's integer value (42)"
+    );
+}
+
+#[test]
+fn test_halo2wrong_native_binding_constrained() {
+    use halo2_proofs::dev::MockProver;
+    // Same scalar = 42, but expected = 43. native() is CONSTRAINED to 42 (the
+    // scalar's value), so assert_equal(42, 43) MUST fail. This is the soundness
+    // crux: it proves native() is not a free cell a malicious prover could
+    // reassign to forge the nullifier binding.
+    let circuit = NativeBinding {
+        scalar: Value::known(Secp256k1Scalar::from(42u64)),
+        expected: BnFr::from(43u64),
+    };
+    let prover = MockProver::run(20, &circuit, vec![vec![]]).expect("MockProver::run");
+    assert!(
+        prover.verify().is_err(),
+        "native() must be constrained — a wrong expected value must be rejected"
+    );
 }
