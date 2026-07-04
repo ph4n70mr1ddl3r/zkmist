@@ -5825,6 +5825,7 @@ dependencies = [
  "maingate",
  "num-bigint",
  "num-traits",
+ "poseidon-primitives",
  "rand 0.8.6",
  "tiny-keccak",
  "zkmist-merkle-tree",

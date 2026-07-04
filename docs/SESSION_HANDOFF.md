@@ -1,7 +1,7 @@
 # Session Handoff — ZKMist Production Readiness & Axiom Migration
 
 > **Read this first in a fresh session.** It captures everything needed to
-> continue the work without re-discovering it. Last updated 2026-07-03.
+> continue the work without re-discovering it. Last updated 2026-07-04.
 
 ## Project
 
@@ -66,28 +66,34 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 
 ## Active branch: `axiom-backend-migration`
 
-**This is where to continue.** Two commits:
-- `f63baea` — migration scope doc (`docs/axiom-backend-migration.md`).
+**This is where to continue.** Commits (latest first):
+- _(latest)_ — **Phase 1 cont.: Poseidon port** — hand-rolled Poseidon replaced
+  with `halo2_base::poseidon::PoseidonChip`; verified in
+  `circuits/tests/poseidon_axiom.rs` (params byte-match light-poseidon; chip
+  matches native sponge). See `docs/axiom-backend-migration.md` §9.
 - `2ab90f4` — **Phase 1 complete**: axiom stack (`halo2-base` + `halo2-ecc`)
   builds and runs in this repo. Foundation test
   (`circuits/tests/axiom_stack_foundation.rs`) PASSES.
+- `f63baea` — migration scope doc (`docs/axiom-backend-migration.md`).
 
 ### Deps added (coexist with PSE — no conflict)
 ```toml
 halo2-base = "=0.5.0"   # Context/RangeChip eDSL + PoseidonChip, on halo2-axiom
 halo2-ecc  = "=0.5.0"   # audited secp256k1 (EccChip, fixed_base_scalar_mult)
+# dev-dep: native Poseidon reference (raw Grain-LFSR constants + dense MDS)
+poseidon-primitives = "0.2"
 ```
 
-### What to do next (Phase 1 cont. → Phase 2)
+### What to do next (Phase 2 — secp + address bridge)
 
-1. **Port Poseidon to `halo2_base::poseidon::PoseidonChip`** — the project's
-   hand-rolled `circuits/src/poseidon.rs` gets replaced. Write an integration
-   test (like `axiom_stack_foundation.rs`) that hashes via halo2-base's chip
-   and verifies. The PoseidonChip API:
-   `PoseidonChip::new(ctx, OptimizedPoseidonSpec::<Fr, T, RATE>::new::<R_F, R_P, 0>(), range)`.
-   Must match the project's circom params (t=2 for leaf, t=3 for interior;
-   R_F=8, R_P from light-poseidon). halo2-base re-exports halo2curves via
-   `halo2_base::halo2_proofs::halo2curves`.
+1. **✅ DONE — Poseidon port** (`halo2_base::poseidon::PoseidonChip`). Gadget in
+   `circuits/src/poseidon_axiom.rs`; verified in `circuits/tests/poseidon_axiom.rs`.
+   **Caveat for Phase 3:** halo2-base's sponge convention DIFFERS from
+   light-poseidon/Circom (capacity `2^64` vs `0`, squeeze perm, output
+   `state[1]` vs `state[0]`) — same permutation, different hash. The off-chain
+   Merkle tree (`zkmist-merkle-tree`) uses light-poseidon, so Phase 3 must
+   reconcile (adopt halo2-base's convention end-to-end, or wrap the chip).
+   See `docs/axiom-backend-migration.md` §9.1.
 
 2. **halo2-ecc secp256k1 scalar·G** — use
    `EccChip::fixed_base_scalar_mult(ctx, &Secp256k1Affine::generator(), scalar_limbs, 256, 4)`.
@@ -129,19 +135,21 @@ halo2-ecc  = "=0.5.0"   # audited secp256k1 (EccChip, fixed_base_scalar_mult)
 ```bash
 cd ~/zkmist
 git checkout axiom-backend-migration
-cat docs/axiom-backend-migration.md   # the scope/plan
+cat docs/axiom-backend-migration.md   # the scope/plan (§9 = Poseidon port done)
 cat docs/secp256k1-migration-plan.md  # the investigation history
-cargo test -p zkmist-circuits --test axiom_stack_foundation -- --nocapture  # verify Phase 1
+cargo test -p zkmist-circuits --test axiom_stack_foundation -- --nocapture  # Phase 1
+cargo test -p zkmist-circuits --test poseidon_axiom -- --nocapture         # Poseidon port
 ```
 
-Then continue with the Poseidon port (step 1 above).
+Then continue with the halo2-ecc secp256k1 port (step 2 above — Phase 2).
 
 ## Suggested first message for the fresh session
 
-> "Read `docs/SESSION_HANDOFF.md`. We're on the `axiom-backend-migration` branch.
-> Phase 1 (axiom stack foundation) is done. Continue with the Poseidon port:
-> replace the hand-rolled Poseidon gadget with `halo2_base::poseidon::PoseidonChip`,
-> write an integration test proving it works, then commit and push."
+> "Read `docs/SESSION_HANDOFF.md`. We're on the `axiom-backend-migration`
+> branch. Phase 1 (axiom stack foundation) and the Poseidon port are done.
+> Continue with Phase 2: use `halo2-ecc` for secp256k1 `scalar·G`, extract the
+> pubkey bytes, and prove the `keccak(pubkey)→address` bridge in an isolated
+> circuit. Then commit and push."
 
 ## Other production blockers (unchanged, for reference)
 

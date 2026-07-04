@@ -18,6 +18,10 @@ pub mod keccak;
 pub mod merkle;
 pub mod nullifier;
 pub mod poseidon;
+// Axiom-backend Poseidon gadget (halo2-base). Phase 1 of the axiom migration
+// (docs/axiom-backend-migration.md): audited replacement for `poseidon.rs`,
+// for the future axiom circuit. Coexists with the PSE stack until Phase 3.
+pub mod poseidon_axiom;
 // Non-native field arithmetic uses limb-indexed loops throughout.
 #[allow(clippy::needless_range_loop)]
 pub mod secp256k1;

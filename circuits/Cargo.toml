@@ -43,5 +43,9 @@ git-fork-api = []
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"
+# Native Poseidon reference (raw Grain-LFSR round constants + dense MDS) for
+# the axiom Poseidon port test — same algorithm light-poseidon / Circom use.
+# Already pulled in transitively by halo2-base; pinned explicitly here.
+poseidon-primitives = "0.2"
 zkmist-merkle-tree = { path = "../merkle-tree" }
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }

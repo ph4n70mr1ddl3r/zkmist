@@ -72,7 +72,7 @@ mint) is unchanged.
 
 | Phase | Work | Gate |
 |---|---|---|
-| **1. Stack + first vertical slice** | Add the axiom deps; locate the Solidity verifier; port the Poseidon gadget to `halo2_base::poseidon`; build a tiny test circuit doing `poseidon(x)` via halo2-base + MockProver (axiom's `base_test`) | axiom stack builds in this repo; Poseidon port verified |
+| **1. Stack + first vertical slice** | Add the axiom deps; locate the Solidity verifier; port the Poseidon gadget to `halo2_base::poseidon`; build a tiny test circuit doing `poseidon(x)` via halo2-base + MockProver (axiom's `base_test`) | axiom stack builds in this repo; Poseidon port verified — **DONE 2026-07-04** (see §9) |
 | **2. secp + address bridge** | Use `halo2-ecc` for `scalar·G`; extract pubkey bytes; feed a Keccak input; prove `keccak(pubkey)→address` in an isolated circuit (mirrors PSE `sig_circuit`) | byte-bridge proven in isolation |
 | **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | MockProver E2E + 4 negatives pass at k=18 |
 | **4. Prover + verifier + deploy** | Port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain verifier; measure k; testnet deploy + real-KZG round-trip (now ~1 GiB → fits 32 GB) | blocker #2 cleared on a 32 GB machine |
@@ -94,3 +94,51 @@ mint) is unchanged.
 ~2–4 weeks focused engineering, then audit of the (much smaller) integration +
 Keccak port. Ends at: audited secp+Poseidon, k=18, ~1 GiB proving, byte-bridge
 sound — production-ready on a 32 GB machine (and claimants' laptops).
+
+## 9. Phase 1 — Poseidon port (DONE 2026-07-04)
+
+Replaced the hand-rolled Poseidon permutation with the audited
+`halo2_base::poseidon` chip, configured with the project's Circom parameters.
+Deliverables:
+
+- **`circuits/src/poseidon_axiom.rs`** — axiom-stack Poseidon gadget exposing
+  `hash_leaf` (t=2, RATE=1, R_F=8, R_P=56) and `hash_interior` (t=3, RATE=2,
+  R_F=8, R_P=57), built on `halo2_base::poseidon::PoseidonHasher`. Coexists
+  with the PSE `poseidon.rs` until the circuit is rewritten in Phase 3.
+- **`circuits/tests/poseidon_axiom.rs`** — three independent correctness proofs:
+  1. **Parameters are Circom-compatible:** the raw Grain-LFSR permutation from
+     `OptimizedPoseidonSpec` reproduces `light_poseidon::Poseidon::hash`
+     byte-for-byte for both arities (strongest possible "match circom params"
+     check).
+  2. **`PoseidonChip::new(ctx, spec, range)` runs:** instantiating it loads all
+     constants in-circuit and MockProver asserts every constraint.
+  3. **In-circuit gadget == native sponge:** the chip's constrained output
+     equals a native reference under halo2-base's sponge convention. Combined
+     with (1), this confirms the chip uses the Circom permutation *and*
+     implements halo2-base's sponge correctly.
+
+All three pass; the PSE stack and `axiom_stack_foundation` test are unaffected.
+
+### 9.1 Sponge-convention divergence — Phase 3 reconciliation required
+
+The PERMUTATION matches light-poseidon/Circom exactly (verified above), but the
+HASH functions differ by construction:
+
+| Aspect           | halo2-base (this gadget)               | light-poseidon / Circom (`zkmist-merkle-tree`) |
+|------------------|----------------------------------------|------------------------------------------------|
+| Capacity element | `2^64`                                 | `0`                                            |
+| Input padding    | `1` then `0`s                          | none for a full RATE block                     |
+| Squeeze          | extra empty permutation when `len % RATE == 0` | single permutation                      |
+| Digest output    | `state[1]`                             | `state[0]`                                     |
+
+The off-chain Merkle tree (`zkmist-merkle-tree`) and the existing PSE circuit
+commit to the **light-poseidon** convention. Phase 3 must reconcile this so the
+circuit verifies the *same* tree that is committed on-chain — either:
+
+- **(a)** rebuild the off-chain Merkle tree + nullifier under halo2-base's
+  convention (audited, standard sponge — preferred), or
+- **(b)** wrap the axiom chip to replicate the Circom convention (capacity 0,
+  no squeeze, output `state[0]`) so existing tree tooling keeps working.
+
+This does not affect Phase 1/2 — the chip and its parameters are correct either
+way. It is a wiring decision for the full-circuit rewrite (Phase 3).
