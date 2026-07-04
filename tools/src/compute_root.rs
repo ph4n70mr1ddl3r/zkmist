@@ -9,9 +9,16 @@
 use std::io::Write;
 use std::path::Path;
 
-use ark_bn254::Fr;
-use light_poseidon::Poseidon;
-use zkmist_merkle_tree::{build_tree_streaming, compute_nullifier, hash_leaf, TREE_DEPTH};
+// IMPORTANT: build with the HALO2-BASE Poseidon sponge convention
+// (`zkmist_merkle_tree::halo2base`) — the SAME convention the axiom circuit
+// verifies (capacity 2^64, squeeze permutation, digest at state[1]). The
+// crate-root `zkmist_merkle_tree::{build_tree_streaming, ...}` helpers use the
+// LEGACY light-poseidon / Circom convention (capacity 0, digest state[0]),
+// which produces a DIFFERENT root the circuit can never verify. A prior
+// revision imported those, so a root (re)derived here would silently mismatch
+// the committed `KNOWN_MERKLE_ROOT` and the on-chain verifier.
+use zkmist_merkle_tree::halo2base::{build_tree_streaming, compute_nullifier, hash_leaf, Hasher};
+use zkmist_merkle_tree::TREE_DEPTH;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -157,37 +164,35 @@ fn main() {
         Err(_) => eprintln!("⚠ PRD test vector address NOT in eligibility list"),
     }
 
-    // Verify test vector leaf hash
-    let mut leaf_hasher = Poseidon::<Fr>::new_circom(1).expect("Invalid leaf params");
-    let leaf = hash_leaf(&test_addr, &mut leaf_hasher);
+    // Verify test vector leaf hash (halo2-base convention — same as the circuit).
+    let hasher = Hasher::new();
+    let leaf = hash_leaf(&test_addr, &hasher);
     let leaf_hex = hex::encode(leaf);
     eprintln!("  PRD test leaf: 0x{}", leaf_hex);
-    if leaf_hex == "1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9" {
-        eprintln!("  ✓ Leaf hash matches PRD test vector");
+    // Expected vector computed under the halo2-base sponge convention
+    // (`Hasher::hash_leaf`), which is what the axiom circuit verifies. The
+    // legacy light-poseidon value (1b074e63…) is a DIFFERENT convention and
+    // would never match the circuit.
+    if leaf_hex == "229aea1f7386e8e4fd3a84fe9ee12a1d16c480842d143416a34f28551fabae34" {
+        eprintln!("  ✓ Leaf hash matches halo2-base PRD test vector");
     } else {
         eprintln!("  ✗ Leaf hash MISMATCH!");
     }
 
-    // Verify test vector nullifier
+    // Verify test vector nullifier (halo2-base convention).
     let test_key: [u8; 32] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
         0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
         0xcd, 0xef,
     ];
-    let mut interior_hasher = Poseidon::<Fr>::new_circom(2).expect("Invalid interior params");
-    let nullifier = compute_nullifier(&test_key, &mut interior_hasher);
+    let nullifier = compute_nullifier(&test_key, &hasher);
     let nullifier_hex = hex::encode(nullifier);
-    // `compute_nullifier` uses the V2 domain separator ("ZKMist_V2_NULLIFIER",
-    // see zkmist_merkle_tree::NULLIFIER_DOMAIN), so the expected vector MUST be
-    // the V2 nullifier — NOT the V1 value 0x078f972a… (which is
-    // poseidon(key, "ZKMist_V1_NULLIFIER"), pinned by
-    // circuits::poseidon::test_prd_nullifier_test_vector). A previous revision
-    // compared the V2 output against the V1 constant, so this check ALWAYS
-    // printed a spurious "Nullifier MISMATCH" for a perfectly correct nullifier
-    // — misleading a deployer running `compute-root` into thinking the
-    // nullifier derivation was broken.
-    if nullifier_hex == "2ebc3e6c2b56becfab676e0503ad2640467c21b30f3601553097f7df07d71da8" {
-        eprintln!("  ✓ Nullifier matches PRD V2 test vector");
+    // Expected vector under the halo2-base convention (V2 domain
+    // "ZKMist_V2_NULLIFIER"), matching the circuit. The legacy
+    // light-poseidon V2 value (2ebc3e6c…) and the V1 value (078f972a…) are
+    // different conventions/domains and must NOT be used here.
+    if nullifier_hex == "17492a09c7900c4fa5a796da0ae8edb24b0219e00978f1aec2a8e43510550266" {
+        eprintln!("  ✓ Nullifier matches halo2-base PRD V2 test vector");
     } else {
         eprintln!("  ✗ Nullifier MISMATCH: 0x{}", nullifier_hex);
     }
