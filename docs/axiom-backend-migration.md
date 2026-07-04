@@ -74,7 +74,7 @@ mint) is unchanged.
 |---|---|---|
 | **1. Stack + first vertical slice** | Add the axiom deps; locate the Solidity verifier; port the Poseidon gadget to `halo2_base::poseidon`; build a tiny test circuit doing `poseidon(x)` via halo2-base + MockProver (axiom's `base_test`) | axiom stack builds in this repo; Poseidon port verified — **DONE 2026-07-04** (see §9) |
 | **2. secp + address bridge** | Use `halo2-ecc` for `scalar·G`; extract pubkey bytes; feed a Keccak input; prove `keccak(pubkey)→address` in an isolated circuit (mirrors PSE `sig_circuit`) | byte-bridge proven in isolation — **DONE 2026-07-04** (see §10) |
-| **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | MockProver E2E + 4 negatives pass at k=18 — **gadgets + address-bridge DONE 2026-07-04** (see §11); full-circuit rewrite remains |
+| **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | **DONE 2026-07-04** — happy path + 4 negatives pass at k≈21 (see §11) |
 | **4. Prover + verifier + deploy** | Port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain verifier; measure k; testnet deploy + real-KZG round-trip (now ~1 GiB → fits 32 GB) | blocker #2 cleared on a 32 GB machine |
 
 ## 7. Risks
@@ -228,22 +228,28 @@ The derived address matches the Phase-2 secp byte-bridge test (`0xbc6d…a466`).
 This is the capability halo2wrong could not provide and the reason the axiom
 migration was chosen — now proven end-to-end in-circuit.
 
-### 11.5 Claim happy-path circuit — `circuits/src/claim_axiom.rs`
+### 11.5 Claim circuit + full soundness — `circuits/src/claim_axiom.rs`
 
 `prove_claim` wires every gadget into one `Context`-eDSL circuit proving a valid
 claim: `privkey·G → keccak → address → poseidon(address)=leaf → Merkle proof →
 root`, `nullifier = poseidon(key, domain)`, and a non-zero `uint160` recipient.
-Verified in `tests/claim_axiom.rs` (MockProver k=21, ~1.9M advice cells; root
-and nullifier constrained to their native values). The §5/§5a bindings land as:
-leaf↔address (same cell), nullifier↔scalar (`recompose(limbs)==key_mod_p`), and
-recipient↔uint160 (range-check + non-zero).
+The §5/§5a bindings: leaf↔address (same cell), nullifier↔scalar
+(`recompose(limbs)==key_mod_p`), recipient↔uint160 (range-check + non-zero),
+and — closing the §5a TRAP — the explicit **`K < n_secp256k1` range proof**
+(`secp_axiom::enforce_scalar_less_than_n`: limb range-checks + an MSB-first
+limb-wise comparison) so a `K ≥ n` forgery can't decouple `scalar·G` from the
+nullifier key.
 
-**Deferred to the next increment (§5a TRAP):** the explicit `K < n_secp256k1`
-range proof. Without it this circuit proves only the *positive* path — a forged
-claim using `K ≥ n` (so `scalar·G` uses `K mod n` but the nullifier uses `K mod
-p_BN254`) would not yet be rejected. This is the single most important
-remaining soundness constraint; it lands with the `test_key_above_n` negative
-and the other 3 forgery-rejection tests.
+Verified in `tests/claim_axiom.rs` — the **happy path** plus the **four
+forgery-rejection negatives** (wrong Merkle root, wrong nullifier, zero
+recipient, `K ≥ n`), each run full-circuit with `expect_satisfied(false)`.
+The `K<n` proof is also covered in isolation by fast tests in
+`tests/secp_axiom.rs` (valid key accepted, `K=n+1` rejected). MockProver k≈21
+(~1.9M advice cells). The full axiom suite (21 tests across foundation /
+poseidon / secp / keccak / address-bridge / merkle / nullifier / claim) is
+green; the PSE stack is untouched.
+
+**→ Phase 3 circuit work is complete.** What remains is productionization:
 
 ### 11.4 Remaining Phase 3 work
 

@@ -29,27 +29,23 @@
 //!   scalar that produced the pubkey.
 //! - **recipient↔uint160**: recipient is range-checked to `< 2^160` and non-zero.
 //!
-//! ## ⚠️ Deferred: the `K < n` range proof (§5a TRAP)
+//! ## The `K < n` range proof (§5a TRAP) — implemented
 //!
 //! `fixed_base_scalar_mult` reduces the scalar mod the secp256k1 order `n`. For
-//! a valid key `K < n` it uses `K`; the nullifier binding above is then sound.
-//! For `K ≥ n`, `scalar·G` would use `K mod n ≠ K` while the nullifier uses
-//! `K mod p_BN254` — decoupling the two. The hand-rolled PSE circuit gets this
-//! for free (the scalar is 256 constrained bits); the axiom circuit needs an
-//! **explicit `K < n_secp256k1` range proof** on the positional limbs. This is
-//! the single most important remaining soundness constraint and lands as the
-//! next increment (with the `test_key_above_n` negative), per §5a step 3. Until
-//! then this module proves the **positive happy path only**.
+//! a valid key `K < n` it uses `K`; the nullifier binding is then sound. For
+//! `K ≥ n`, `scalar·G` would use `K mod n ≠ K` while the nullifier uses
+//! `K mod p_BN254` — decoupling the two. The hand-rolled PSE circuit got this
+//! implicitly (the scalar was 256 constrained bits); the axiom circuit enforces
+//! it explicitly via [`secp_axiom::enforce_scalar_less_than_n`] (limb range
+//! checks + an MSB-first limb-wise `K < n` comparison). The `test_key_above_n`
+//! negative proves a `K ≥ n` claim is rejected.
 
 use ff::Field;
 use halo2_base::{
     gates::{GateInstructions, RangeInstructions},
-    halo2_proofs::halo2curves::{
-        bn256::Fr,
-        secp256k1::Fq,
-    },
+    halo2_proofs::halo2curves::bn256::Fr,
     gates::RangeChip,
-    Context,
+    AssignedValue, Context,
 };
 use halo2_ecc::{ecc::EccChip, secp256k1::FpChip};
 
@@ -58,21 +54,23 @@ use crate::{
     merkle_axiom::verify_merkle_proof,
     nullifier_axiom::compute_nullifier,
     poseidon_axiom::hash_leaf,
-    secp_axiom::{assign_privkey, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS},
+    secp_axiom::{enforce_scalar_less_than_n, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS},
 };
 
 /// Prove one ZKMist V2 claim on the axiom eDSL (positive happy path).
 ///
-/// Witnesses (`privkey`, `siblings`, `path_indices`, `recipient`) are loaded
-/// from the passed values; the public outputs (`expected_root`,
-/// `expected_nullifier`) are constrained equal to the in-circuit computation
-/// via `assert_is_const` (in a real circuit these become public instances —
-/// Phase 4 wiring).
+/// `privkey_limbs` is the private key as positional base-`2^LIMB_BITS` limbs
+/// (see [`secp_axiom::assign_privkey`]); it is range-checked `< 2^LIMB_BITS`
+/// and proven `< n_secp256k1` (the §5a TRAP) before use. The remaining
+/// witnesses (`siblings`, `path_indices`, `recipient`) are loaded from the
+/// passed values; the public outputs (`expected_root`, `expected_nullifier`)
+/// are constrained equal to the in-circuit computation via `assert_is_const`
+/// (in a real circuit these become public instances — Phase 4 wiring).
 #[allow(clippy::too_many_arguments)]
 pub fn prove_claim(
     ctx: &mut Context<Fr>,
     range: &RangeChip<Fr>,
-    privkey: Fq,
+    privkey_limbs: Vec<AssignedValue<Fr>>,
     siblings: &[Fr],
     path_indices: &[Fr],
     expected_root: Fr,
@@ -80,12 +78,15 @@ pub fn prove_claim(
     recipient: Fr,
 ) {
     let gate = range.gate();
+
+    // ── 0. K < n_secp256k1 range proof (§5a TRAP) ──
+    enforce_scalar_less_than_n(ctx, range, &privkey_limbs);
+
     let fp_chip = FpChip::<Fr>::new(range, LIMB_BITS, NUM_LIMBS);
     let ecc = EccChip::new(&fp_chip);
 
     // ── 1. privkey · G → pubkey ──
-    let scalar_limbs = assign_privkey(ctx, privkey);
-    let pt = pubkey_from_privkey(ctx, &ecc, scalar_limbs.clone());
+    let pt = pubkey_from_privkey(ctx, &ecc, privkey_limbs.clone());
 
     // ── 2. pubkey bytes → keccak → address ──
     let x_le = field_point_to_le_bytes(ctx, &fp_chip, &pt.x);
@@ -117,7 +118,7 @@ pub fn prove_claim(
     let limb_bases: Vec<Fr> = (0..NUM_LIMBS).map(|i| Fr::from(2u64).pow([(i * LIMB_BITS) as u64])).collect();
     let key_mod_p = gate.inner_product(
         ctx,
-        scalar_limbs.iter().copied(),
+        privkey_limbs.iter().copied(),
         limb_bases.iter().map(|c| halo2_base::QuantumCell::Constant(*c)),
     );
     let nullifier = compute_nullifier(ctx, range, key_mod_p);

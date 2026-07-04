@@ -20,12 +20,12 @@
 //! the two stacks use different `Fr` types and cannot mix in one circuit.
 
 use halo2_base::{
-    gates::GateInstructions,
+    gates::{GateInstructions, RangeInstructions},
     halo2_proofs::halo2curves::{
         bn256::Fr,
         secp256k1::{Fq, Secp256k1Affine},
     },
-    utils::{decompose_biguint, fe_to_biguint},
+    utils::{decompose_biguint, fe_to_biguint, modulus},
     AssignedValue, Context, QuantumCell::Constant,
 };
 use halo2_ecc::{
@@ -58,6 +58,61 @@ pub const WINDOW_BITS: usize = 4;
 pub fn assign_privkey(ctx: &mut Context<Fr>, privkey: Fq) -> Vec<AssignedValue<Fr>> {
     let limbs = decompose_biguint::<Fr>(&fe_to_biguint(&privkey), NUM_LIMBS, LIMB_BITS);
     ctx.assign_witnesses(limbs)
+}
+
+/// Decompose an arbitrary 256-bit integer (as a native `Fr` witness) into
+/// `NUM_LIMBS` positional `LIMB_BITS`-bit limbs. Used by the `test_key_above_n`
+/// negative to inject a scalar `K ≥ n` (which an `Fq` cannot represent, since
+/// `Fq` is already reduced mod `n`).
+pub fn assign_scalar_biguint(ctx: &mut Context<Fr>, value: num_bigint::BigUint) -> Vec<AssignedValue<Fr>> {
+    let limbs = decompose_biguint::<Fr>(&value, NUM_LIMBS, LIMB_BITS);
+    ctx.assign_witnesses(limbs)
+}
+
+/// The secp256k1 group order `n` (scalar-field modulus) as a `BigUint`.
+pub fn secp_n_biguint() -> num_bigint::BigUint {
+    modulus::<Fq>()
+}
+
+/// Enforce `K < n_secp256k1` on the positional scalar limbs (the §5a TRAP).
+///
+/// `fixed_base_scalar_mult` reduces the scalar mod `n`; for a valid key `K < n`
+/// it uses `K` and the nullifier↔scalar binding is sound. For `K ≥ n`, `scalar·G`
+/// would use `K mod n ≠ K` while the nullifier uses `K mod p_BN254`, decoupling
+/// them. This range proof closes that gap. It range-checks each limb `< 2^LIMB_BITS`,
+/// then proves the limb-wise comparison `K < n` (MSB limb first, with equality
+/// short-circuit): `(k2<n2) ∨ (k2=n2∧k1<n1) ∨ (k2=n2∧k1=n1∧k0<n0)`.
+pub fn enforce_scalar_less_than_n(
+    ctx: &mut Context<Fr>,
+    range: &impl RangeInstructions<Fr>,
+    limbs: &[AssignedValue<Fr>],
+) {
+    assert_eq!(limbs.len(), NUM_LIMBS, "scalar must be NUM_LIMBS positional limbs");
+    let gate = range.gate();
+
+    // Each limb must be a valid positional component (< 2^LIMB_BITS) for the
+    // comparisons to be sound.
+    for limb in limbs {
+        range.range_check(ctx, *limb, LIMB_BITS);
+    }
+
+    // n_secp256k1 decomposed into the same base-2^LIMB_BITS layout.
+    let n_limbs = decompose_biguint::<Fr>(&secp_n_biguint(), NUM_LIMBS, LIMB_BITS);
+
+    // MSB-limb-first comparison with equality short-circuit:
+    //   K < n  =  (k2<n2) ∨ (k2=n2∧k1<n1) ∨ (k2=n2∧k1=n1∧k0<n0)
+    let lt2 = range.is_less_than(ctx, limbs[2], Constant(n_limbs[2]), LIMB_BITS);
+    let eq2 = gate.is_equal(ctx, limbs[2], Constant(n_limbs[2]));
+    let lt1 = range.is_less_than(ctx, limbs[1], Constant(n_limbs[1]), LIMB_BITS);
+    let eq1 = gate.is_equal(ctx, limbs[1], Constant(n_limbs[1]));
+    let lt0 = range.is_less_than(ctx, limbs[0], Constant(n_limbs[0]), LIMB_BITS);
+
+    let term2 = gate.and(ctx, eq2, lt1);
+    let eq2_eq1 = gate.and(ctx, eq2, eq1);
+    let term3 = gate.and(ctx, eq2_eq1, lt0);
+    let lt2_or_t2 = gate.or(ctx, lt2, term2);
+    let k_lt_n = gate.or(ctx, lt2_or_t2, term3);
+    gate.assert_is_const(ctx, &k_lt_n, &Fr::from(1u64));
 }
 
 /// Compute the secp256k1 public key `privkey · G` via halo2-ecc's audited

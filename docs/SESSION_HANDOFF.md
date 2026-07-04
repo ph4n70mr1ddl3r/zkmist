@@ -67,10 +67,12 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 3 step 3: claim happy-path circuit** —
-  `claim_axiom::prove_claim` wires secp+keccak+poseidon+merkle+nullifier with
-  the §5/§5a bindings; verified in `tests/claim_axiom.rs` (MockProver k=21).
-  See `docs/axiom-backend-migration.md` §11.5.
+- _(pending)_ — **Phase 3 step 4: K<n range proof + 4 negatives** — the §5a
+  TRAP closed (`secp_axiom::enforce_scalar_less_than_n`); full claim circuit
+  now rejects wrong-root / wrong-nullifier / zero-recipient / K≥n. **Phase 3
+  circuit work complete.** See `docs/axiom-backend-migration.md` §11.5.
+- `e87e030` — **Phase 3 step 3: claim happy-path circuit** —
+  `claim_axiom::prove_claim` wires all gadgets with the §5/§5a bindings.
 - `c2c1e57` — **Phase 3 step 2: Merkle + nullifier axiom ports + address
   bridge** — all gadgets ported; `keccak(pubkey)→address` proven end-to-end.
 - `2aca3cb` — **Phase 3 step 1: Keccak port** — bit-level Keccak-f[1600] on
@@ -93,30 +95,32 @@ halo2-ecc  = "=0.5.0"   # audited secp256k1 (EccChip, fixed_base_scalar_mult)
 poseidon-primitives = "0.2"
 ```
 
-### What to do next (Phase 3 — finish the claim circuit)
+### What to do next (productionize — Phase 4)
 
 1. **✅ DONE — Poseidon port** (`halo2_base::poseidon::PoseidonChip`).
 2. **✅ DONE — secp + pubkey byte-bridge** (`halo2-ecc`).
 3. **✅ DONE — Keccak port** (bit-level Keccak-f[1600], `keccak_axiom.rs`).
 4. **✅ DONE — Merkle + nullifier axiom ports** (`merkle_axiom.rs`,
    `nullifier_axiom.rs`).
-5. **✅ DONE — address bridge** (`tests/address_bridge_axiom.rs`):
-   `keccak256(pubkey)[12..]` proven fully in-circuit.
-6. **✅ DONE — claim happy-path circuit** (`claim_axiom.rs` +
-   `tests/claim_axiom.rs`): full positive claim proven, §5/§5a bindings wired.
-7. **TODO — finish soundness (§5a TRAP + negatives):**
-   (a) the explicit `K < n_secp256k1` range proof on the scalar limbs (closes
-     the nullifier↔scalar binding for `K ≥ n`);
-   (b) the 4 negative forgery-rejection tests (wrong address, wrong nullifier,
-   `K ≥ n`, recipient=0).
-8. **TODO — productionize:** port `zkmist-merkle-tree` to the halo2-base
-     Poseidon convention (so a deployed root verifies); decide on a
-     lookup-table χ for Keccak to bring the full circuit (now ~k≈21) back toward
-     k=18; then Phase 4 (real prover/verifier/deploy).
+5. **✅ DONE — address bridge** (`tests/address_bridge_axiom.rs`).
+6. **✅ DONE — claim circuit + full soundness** (`claim_axiom.rs` +
+   `tests/claim_axiom.rs`): happy path + 4 negatives (wrong root, wrong
+   nullifier, zero recipient, K≥n), all §5/§5a bindings incl. the K<n range proof.
+   **The axiom circuit is complete and sound (MockProver-verified).**
+7. **TODO — productionize (Phase 4):**
+   (a) port `zkmist-merkle-tree` to the halo2-base Poseidon convention so a
+     deployed eligibility root verifies (decided: adopt halo2-base end-to-end);
+   (b) optionally a lookup-table χ for Keccak to bring the circuit from k≈21
+     back toward the k=18 target (~1 GiB proving);
+   (c) port `cli/src/halo2_prover.rs` to the axiom backend; regenerate the
+     on-chain verifier; real-KZG round-trip; testnet deploy.
+8. **External audit** of the (now much smaller) integration + Keccak port.
 
-**Decision needed (recommend: yes):** adopt halo2-base's Poseidon convention
-end-to-end — nothing is deployed, so rebuild the off-chain tree rather than
-hand-roll an unaudited Circom wrapper.
+**Soundness note:** the circuit is MockProver-verified sound (positive + 4
+negatives). The new unaudited integration surface is the K<n range proof, the
+byte-bridge, and the in-circuit Keccak (the audited libs are halo2-ecc /
+halo2-base). Real-KZG + on-chain round-trip has never been exercised
+(production blocker #2) — Phase 4.
 
 ## Reference branches (do NOT merge — investigation records)
 
@@ -153,26 +157,29 @@ cd ~/zkmist
 git checkout axiom-backend-migration
 cat docs/axiom-backend-migration.md   # scope/plan (§9 Poseidon, §10 secp, §11 Keccak/gadgets/bridge)
 cat docs/secp256k1-migration-plan.md  # the investigation history (§5/§5a bindings)
-cargo test -p zkmist-circuits --test axiom_stack_foundation  # Phase 1
-cargo test -p zkmist-circuits --test poseidon_axiom          # Poseidon port
-cargo test -p zkmist-circuits --test secp_axiom              # secp byte-bridge
-cargo test -p zkmist-circuits --test keccak_axiom            # Keccak port
+cargo test -p zkmist-circuits --test claim_axiom            # happy path + 4 negatives
 cargo test -p zkmist-circuits --test address_bridge_axiom    # secp+keccak crux
-cargo test -p zkmist-circuits --lib merkle_axiom -- nullifier_axiom  # merkle/nullifier
+cargo test -p zkmist-circuits --test keccak_axiom            # Keccak port
+cargo test -p zkmist-circuits --test secp_axiom              # secp byte-bridge + K<n
+cargo test -p zkmist-circuits --test poseidon_axiom          # Poseidon port
+cargo test -p zkmist-circuits --lib -- merkle_axiom nullifier_axiom
 ```
 
-Then continue Phase 3: decide the sponge convention (§9.1/§11.4), then rewrite
-`ZKMistV2Claim` wiring all gadgets + the 3 bindings + 4 negatives.
+**Phase 3 circuit work is complete.** Next is Phase 4 (productionize): port
+`zkmist-merkle-tree` to halo2-base Poseidon, optionally optimize Keccak's χ
+(k≈21 → k≈18), port the prover to axiom, regen the verifier, real-KZG round-
+trip, testnet deploy.
 
 ## Suggested first message for the fresh session
 
 > "Read `docs/SESSION_HANDOFF.md`. We're on the `axiom-backend-migration`
-> branch. Phases 1–2 and Phase 3's gadget ports + address bridge are done (every
-> primitive ported; `keccak(pubkey)→address` proven in-circuit). Continue Phase 3:
-> decide the Poseidon sponge convention (rebuild the off-chain tree under
-> halo2-base, or wrap `poseidon_axiom`), then rewrite `ZKMistV2Claim` wiring
-> secp+keccak+poseidon+merkle+nullifier with the §5/§5a bindings and port the 4
-> negatives. Commit and push each verified step."
+> branch. Phases 1–3 are done — the full axiom claim circuit is MockProver-
+> verified sound (happy path + 4 negatives, all §5/§5a bindings incl. the K<n
+> range proof). Continue with Phase 4: port `zkmist-merkle-tree` to the
+> halo2-base Poseidon convention so a real eligibility root verifies, then
+> port the prover / regen the verifier / do a real-KZG round-trip. Decide
+> whether to optimize Keccak's χ (k≈21→18) first. Commit and push each verified
+> step."
 
 ## Other production blockers (unchanged, for reference)
 

@@ -32,7 +32,8 @@ use num_bigint::BigUint;
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 use zkmist_circuits::secp_axiom::{
-    assign_privkey, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS,
+    assign_privkey, enforce_scalar_less_than_n, field_point_to_le_bytes, pubkey_from_privkey,
+    secp_n_biguint, LIMB_BITS, NUM_LIMBS,
 };
 
 /// Native `privkey · G` → `(x, y)` on secp256k1.
@@ -156,4 +157,32 @@ fn test_halo2ecc_secp256k1_pubkey_byte_bridge() {
         "Phase 2 byte-bridge OK: privkey 0x1234…DEF0 → address 0x{}",
         hex::encode(addr)
     );
+}
+
+// ── §5a TRAP: the K < n_secp256k1 range proof (fast, isolated) ────────────
+
+/// A valid key (K < n) is accepted by the range proof.
+#[test]
+fn test_enforce_scalar_less_than_n_accepts_valid_key() {
+    base_test().k(12).lookup_bits(8).run(|ctx, range| {
+        let limbs = assign_privkey(ctx, Fq::from(0x0A11CE_5EC7E7u64));
+        enforce_scalar_less_than_n(ctx, range, &limbs);
+    });
+}
+
+/// A key K = n + 1 (≥ n) is rejected — the §5a TRAP. An `Fq` cannot represent
+/// K ≥ n (it's already reduced mod n), so we inject the limbs directly via
+/// `assign_scalar_biguint`.
+#[test]
+fn test_enforce_scalar_less_than_n_rejects_key_above_n() {
+    use zkmist_circuits::secp_axiom::assign_scalar_biguint;
+    let n_plus_1 = secp_n_biguint() + 1u32;
+    base_test()
+        .k(12)
+        .lookup_bits(8)
+        .expect_satisfied(false)
+        .run(|ctx, range| {
+            let limbs = assign_scalar_biguint(ctx, n_plus_1);
+            enforce_scalar_less_than_n(ctx, range, &limbs);
+        });
 }
