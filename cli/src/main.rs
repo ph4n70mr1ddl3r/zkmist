@@ -50,10 +50,10 @@ enum Commands {
         /// Ensure the file has restricted permissions (e.g., chmod 600).
         #[arg(long)]
         key_file: Option<String>,
-        /// Use the axiom backend prover (Phase 4 migration; see
-        /// docs/axiom-backend-migration.md). Default is the legacy PSE prover.
+        /// Use the legacy PSE prover (default is the axiom backend; see
+        /// docs/axiom-backend-migration.md).
         #[arg(long, default_value_t = false)]
-        axiom: bool,
+        pse: bool,
     },
 
     /// Submit proof to ZKMAirdrop contract on Base.
@@ -102,6 +102,9 @@ enum Commands {
         /// Does NOT change the proof, which is always full-depth (TREE_DEPTH=26).
         #[arg(long, default_value = "4")]
         tree_depth: usize,
+        /// Use the legacy PSE prover (default is the axiom backend).
+        #[arg(long, default_value_t = false)]
+        pse: bool,
     },
 
     /// Generate the real-KZG round-trip fixture (proof + public inputs) for
@@ -112,6 +115,9 @@ enum Commands {
         /// Output path for the fixture JSON.
         #[arg(long, default_value = "contracts/fixtures/real_roundtrip.json")]
         out: String,
+        /// Use the legacy PSE prover (default is the axiom backend).
+        #[arg(long, default_value_t = false)]
+        pse: bool,
     },
 }
 
@@ -120,7 +126,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Fetch { no_verify } => cmd_fetch(no_verify),
-        Commands::Prove { key_file, axiom } => cmd_prove(key_file.as_deref(), axiom),
+        Commands::Prove { key_file, pse } => cmd_prove(key_file.as_deref(), pse),
         Commands::Submit {
             proof_file,
             rpc_url,
@@ -135,8 +141,8 @@ fn main() {
         Commands::Verify { proof_file } => cmd_verify(&proof_file),
         Commands::Check { address } => cmd_check(&address),
         Commands::Status { rpc_url } => cmd_status(rpc_url.as_deref()),
-        Commands::Bench { tree_depth } => cmd_bench(tree_depth),
-        Commands::GenRoundtripFixture { out } => cmd_gen_roundtrip_fixture(&out),
+        Commands::Bench { tree_depth, pse } => cmd_bench(tree_depth, pse),
+        Commands::GenRoundtripFixture { out, pse } => cmd_gen_roundtrip_fixture(&out, pse),
     };
 
     if let Err(e) = result {
