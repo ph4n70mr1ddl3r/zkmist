@@ -349,7 +349,7 @@ fn test_generate_claim_solidity_verifier() {
         fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
     }
 
-    let c = build_valid_claim(4, 5);
+    let c = build_synthetic_claim(26); // PRODUCTION depth-26 (k=21)
     let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
         .use_k(21)
         .use_instance_columns(1);
@@ -380,4 +380,54 @@ fn test_generate_claim_solidity_verifier() {
     std::fs::create_dir_all(out.parent().unwrap()).ok();
     std::fs::write(&out, &sol).expect("write Halo2Verifier.axiom.sol");
     eprintln!("wrote {}", out.display());
+}
+
+// ── Production depth (TREE_DEPTH = 26) ───────────────────────────────────
+//
+// A real 2^26-leaf tree is infeasible in a test, but the circuit's cost depends
+// on the Merkle DEPTH (26 hash_interior levels), not the leaf count. A
+// *synthetic* valid 26-level proof (leaf → 26 parent hashes with chosen
+// siblings) exercises the exact depth-26 circuit the prover runs in production.
+
+fn build_synthetic_claim(depth: usize) -> Claim {
+    let privkey = Fq::from(0x0A11CE_5EC7E7u64);
+    let (x_fp, y_fp) = native_pubkey(privkey);
+    let mut h = Keccak::v256();
+    h.update(&fp_be_bytes(&x_fp));
+    h.update(&fp_be_bytes(&y_fp));
+    let mut digest = [0u8; 32];
+    h.finalize(&mut digest);
+    let mut current = native_hash_leaf(address_to_fr(digest[12..32].try_into().unwrap()));
+
+    let mut siblings = Vec::with_capacity(depth);
+    let mut path_indices = Vec::with_capacity(depth);
+    for i in 0..depth {
+        // a valid-Fr sibling (a Poseidon digest is a valid Fr); alternate side
+        let sib = native_hash_leaf(Fr::from(1_000_000u64 + i as u64));
+        let idx = (i % 2) as u8;
+        let (l, r) = if idx == 1 { (sib, current) } else { (current, sib) };
+        current = native_hash_interior(l, r);
+        siblings.push(sib);
+        path_indices.push(Fr::from(idx as u64));
+    }
+    let root = current;
+
+    let k_big = fe_to_biguint(&privkey);
+    let p: num_bigint::BigUint = modulus::<Fr>();
+    let nullifier = native_hash_interior(biguint_to_fe(&(k_big % p)), domain_field_element());
+
+    let mut r = [0u8; 20];
+    r[19] = 0x42;
+    Claim { privkey, siblings, path_indices, root, nullifier, recipient: address_to_fr(&r) }
+}
+
+/// Production depth-26 claim: MockProver-satisfied, and reports the cell count
+/// so the production k + verifier can be pinned.
+#[test]
+fn test_axiom_claim_production_depth26() {
+    let c = build_synthetic_claim(26);
+    base_test().k(21).lookup_bits(8).run(|ctx, range| {
+        let limbs = assign_privkey(ctx, c.privkey);
+        prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices, c.root, c.nullifier, c.recipient);
+    });
 }

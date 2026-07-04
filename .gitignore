@@ -73,4 +73,3 @@ coverage/
 
 # Third-party tool artifacts
 .antigravitycli/
-contracts/Halo2Verifier.axiom.sol
