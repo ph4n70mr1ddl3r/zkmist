@@ -27,7 +27,7 @@ use halo2_base::{
     AssignedValue, Context,
 };
 
-use crate::poseidon_axiom::{hash_interior, native_hash_interior, native_hash_leaf};
+use crate::poseidon_axiom::{hash_interior, native_hash_interior};
 
 /// Tree depth for the production eligibility tree.
 pub const TREE_DEPTH: usize = 26;
@@ -84,6 +84,7 @@ pub use crate::poseidon_axiom::native_hash_leaf as native_leaf_hash;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::poseidon_axiom::native_hash_leaf;
     use halo2_base::utils::testing::base_test;
 
     /// In-circuit Merkle verification matches the native computation for a small

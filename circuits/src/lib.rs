@@ -34,6 +34,10 @@ pub mod keccak_axiom;
 // axiom migration: thin Poseidon-based gadgets ported to axiom.
 pub mod merkle_axiom;
 pub mod nullifier_axiom;
+// Axiom-backend ZKMist V2 claim circuit — Phase 3 capstone. Wires every
+// ported gadget (secp + keccak + poseidon + merkle + nullifier) with the §5/§5a
+// bindings. Happy path only for now (the K<n range proof is the next increment).
+pub mod claim_axiom;
 // Non-native field arithmetic uses limb-indexed loops throughout.
 #[allow(clippy::needless_range_loop)]
 pub mod secp256k1;

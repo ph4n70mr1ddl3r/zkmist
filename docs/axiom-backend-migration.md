@@ -228,6 +228,23 @@ The derived address matches the Phase-2 secp byte-bridge test (`0xbc6d…a466`).
 This is the capability halo2wrong could not provide and the reason the axiom
 migration was chosen — now proven end-to-end in-circuit.
 
+### 11.5 Claim happy-path circuit — `circuits/src/claim_axiom.rs`
+
+`prove_claim` wires every gadget into one `Context`-eDSL circuit proving a valid
+claim: `privkey·G → keccak → address → poseidon(address)=leaf → Merkle proof →
+root`, `nullifier = poseidon(key, domain)`, and a non-zero `uint160` recipient.
+Verified in `tests/claim_axiom.rs` (MockProver k=21, ~1.9M advice cells; root
+and nullifier constrained to their native values). The §5/§5a bindings land as:
+leaf↔address (same cell), nullifier↔scalar (`recompose(limbs)==key_mod_p`), and
+recipient↔uint160 (range-check + non-zero).
+
+**Deferred to the next increment (§5a TRAP):** the explicit `K < n_secp256k1`
+range proof. Without it this circuit proves only the *positive* path — a forged
+claim using `K ≥ n` (so `scalar·G` uses `K mod n` but the nullifier uses `K mod
+p_BN254`) would not yet be rejected. This is the single most important
+remaining soundness constraint; it lands with the `test_key_above_n` negative
+and the other 3 forgery-rejection tests.
+
 ### 11.4 Remaining Phase 3 work
 
 Rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp + keccak + poseidon +
