@@ -96,7 +96,7 @@ contract RealRoundtrip is Test {
         verifier = new Halo2Verifier();
         vk = new Halo2VerifyingKey();
         token = new ZKMToken(predictedAirdrop);
-        airdrop = new ZKMAirdrop(address(token), address(verifier), address(vk), merkleRoot);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), merkleRoot);
 
         require(token.minter() == address(airdrop), "minter prediction failed");
         require(airdrop.merkleRoot() == merkleRoot, "root mismatch");
