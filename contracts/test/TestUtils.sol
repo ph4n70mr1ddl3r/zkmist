@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.19;
 
-/// @dev Mock Halo2 verifier for testing.
-///      Matches the production Halo2Verifier interface:
-///      verifyProof(address vk, bytes calldata proof, uint256[] calldata instances)
-///      Accepts any structurally valid proof (non-zero recipient).
-///      Used for testing airdrop logic without needing real Halo2 proofs.
+/// @dev Mock Halo2 verifier for testing — mirrors the production axiom
+///      `Halo2Verifier` (snark-verifier-generated) `fallback` interface.
+///      The contract calls `staticcall(encode_calldata(instances, proof))` where
+///      calldata = instances (32-byte big-endian each) ++ proof. This mock
+///      accepts any structurally valid calldata (non-zero recipient at
+///      instance[2]) so airdrop-logic tests run without real Halo2 proofs.
 contract MockHalo2Verifier {
-    function verifyProof(
-        address, /* vk */
-        bytes calldata, /* proof */
-        uint256[] calldata publicInputs
-    )
-        external
-        pure
-        returns (bool)
-    {
-        // Reject zero recipient (publicInputs[2])
-        if (publicInputs.length < 3) return false;
-        return publicInputs[2] != 0;
+    fallback(bytes calldata data) external returns (bytes memory) {
+        require(data.length >= 0x60, "bad calldata");
+        // instance[2] = recipient, at byte offset 0x40 (3rd 32-byte word).
+        uint256 recipient;
+        assembly {
+            recipient := calldataload(0x40)
+        }
+        require(recipient != 0, "zero recipient");
+        return "";
     }
 }

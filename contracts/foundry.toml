@@ -19,4 +19,4 @@ remappings = [
 # Auto-generated verifier has long inline assembly lines
 # that forge fmt cannot reformat. Exclude it.
 [fmt]
-ignore = ["src/Halo2Verifier.sol", "src/Halo2VerifyingKey.sol"]
+ignore = ["src/Halo2Verifier.axiom.sol", "src/Halo2Verifier.sol", "src/Halo2VerifyingKey.sol"]

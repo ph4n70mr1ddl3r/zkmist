@@ -191,7 +191,7 @@ pub fn preflight_ram_check() -> Result<(), String> {
 // readiness checker. See docs/kzg-srs.md for obtaining/verifying the real
 // transcript.
 
-fn get_cache_dir() -> Result<std::path::PathBuf, String> {
+pub(crate) fn get_cache_dir() -> Result<std::path::PathBuf, String> {
     let home = dirs::home_dir().ok_or("Cannot find home directory")?;
     let cache_dir = home.join(ZKMIST_DIR_NAME).join("cache");
     std::fs::create_dir_all(&cache_dir)

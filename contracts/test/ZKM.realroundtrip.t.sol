@@ -4,8 +4,7 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
-import {Halo2Verifier} from "../src/Halo2Verifier.sol";
-import {Halo2VerifyingKey} from "../src/Halo2VerifyingKey.sol";
+import {Halo2Verifier} from "../src/Halo2Verifier.axiom.sol";
 
 /// @title RealRoundtrip — real Halo2-KZG proof → on-chain verify → mint
 /// @notice The single end-to-end integration test that proves the CLI prover's
@@ -55,7 +54,6 @@ contract RealRoundtrip is Test {
     ZKMToken internal token;
     ZKMAirdrop internal airdrop;
     Halo2Verifier internal verifier;
-    Halo2VerifyingKey internal vk;
 
     /// `false` ⇒ the test is a no-op (fixture not ready / not opted in). When
     /// `RUN_REAL_ROUNDTRIP=1` is set, `setUp` REVERTS instead of leaving this
@@ -91,12 +89,11 @@ contract RealRoundtrip is Test {
         // deployer nonce and pass it into the token constructor.
         address deployer = address(this);
         uint256 nonce = vm.getNonce(deployer);
-        address predictedAirdrop = vm.computeCreateAddress(deployer, nonce + 3);
+        address predictedAirdrop = vm.computeCreateAddress(deployer, nonce + 2);
 
         verifier = new Halo2Verifier();
-        vk = new Halo2VerifyingKey();
         token = new ZKMToken(predictedAirdrop);
-        airdrop = new ZKMAirdrop(address(token), address(verifier), address(vk), merkleRoot);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), merkleRoot);
 
         require(token.minter() == address(airdrop), "minter prediction failed");
         require(airdrop.merkleRoot() == merkleRoot, "root mismatch");
@@ -120,10 +117,6 @@ contract RealRoundtrip is Test {
         bytes32 nullifier = vm.parseJsonBytes32(_fixtureJson, ".nullifier");
         address recipient = vm.parseJsonAddress(_fixtureJson, ".recipient");
 
-        // Sanity: the proof length must match Halo2Verifier's hardcoded 5888.
-        // (The contract re-checks this authoritatively; this gives a clearer
-        // failure than the verifier's boolean return.)
-        assertEq(proof.length, 5888, "proof length != 5888 (Halo2Verifier expects 0x1700)");
         assertNotEq(recipient, address(0), "fixture recipient is zero");
 
         // Pre-conditions the contract checks before the expensive pairing.

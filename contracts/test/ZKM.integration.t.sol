@@ -62,20 +62,22 @@ contract ZKMV2Integration is Test {
     }
 
     function test_integration_airdrop_rejects_short_proof() public {
+        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
         // Short proof is rejected by the airdrop contract's length check.
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), address(0), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
         bytes memory shortProof = new bytes(100);
         vm.expectRevert("Invalid proof length");
         a.claim(shortProof, bytes32(uint256(1)), address(0xB0B));
     }
 
     function test_integration_airdrop_rejects_long_proof() public {
+        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
         // Long proof is rejected by the airdrop contract's length check.
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), address(0), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
         bytes memory longProof = new bytes(10000);
         vm.expectRevert("Invalid proof length");
         a.claim(longProof, bytes32(uint256(1)), address(0xB0B));
@@ -86,7 +88,7 @@ contract ZKMV2Integration is Test {
         bytes memory fakeProof = new bytes(5888);
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), address(0), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
         vm.expectRevert("Recipient cannot be zero");
         a.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
@@ -158,7 +160,7 @@ contract ZKMV2Integration is Test {
         // real-KZG → on-chain round-trip is gated in ZKM.realroundtrip.t.sol.)
         vm.prank(DEPLOYER);
         ZKMToken t = new ZKMToken(address(0x999)); // dummy minter
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), address(0), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
         assertEq(address(a.verifier()), address(verifier));
     }
 
@@ -182,7 +184,7 @@ contract ZKMV2Integration is Test {
         Halo2VerifyingKey vk = new Halo2VerifyingKey();
         address predictedAirdrop = vm.computeCreateAddress(DEPLOYER, deployNonce + 3);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), address(vk), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), MERKLE_ROOT);
 
         vm.stopPrank();
 

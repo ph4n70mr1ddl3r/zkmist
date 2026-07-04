@@ -21,7 +21,7 @@ contract ZKMV2GasBench is Test {
     function setUp() public {
         verifier = new MockHalo2Verifier();
         token = new ZKMToken(MINTER);
-        airdrop = new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
+        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
     }
 
     // ── Token gas benchmarks ────────────────────────────────────────────
@@ -66,7 +66,7 @@ contract ZKMV2GasBench is Test {
     // ── Airdrop gas benchmarks ──────────────────────────────────────────
 
     function testGas_airdrop_deploy() public {
-        new ZKMAirdrop(address(token), address(verifier), address(0), MERKLE_ROOT);
+        new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
     }
 
     function testGas_airdrop_isClaimWindowOpen() public view {
@@ -87,7 +87,7 @@ contract ZKMV2GasBench is Test {
         MockHalo2Verifier v = new MockHalo2Verifier();
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), address(0), MERKLE_ROOT);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(v), MERKLE_ROOT);
         assert(t.minter() == address(a));
     }
 

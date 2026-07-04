@@ -13,6 +13,10 @@ ff = "0.13"
 group = "0.13"
 # Poseidon hash — used to extract round constants and validate against
 light-poseidon = "0.4"
+# Native Poseidon reference (raw Grain-LFSR constants + dense MDS) — shared by
+# the axiom Poseidon gadget's native helpers and tests. Same algorithm
+# light-poseidon / Circom use; already pulled in transitively by halo2-base.
+poseidon-primitives = "0.2"
 # Byte reversal for ark-bn254 ↔ halo2curves field element conversion
 num-bigint = "0.4"
 num-traits = "0.2"
@@ -22,6 +26,13 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 # the hand-rolled Secp256k1Chip is NOT yet replaced. Pins the SAME PSE halo2
 # v0.3.0 fork as this workspace (verified: cargo unifies to one halo2_proofs).
 halo2wrong = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2024_01_31", default-features = false }
+# Phase 1 axiom backend migration: the axiom stack (halo2-base eDSL + halo2-ecc
+# audited secp256k1). Coexists with the PSE stack until the circuit is migrated.
+# Pinned to the halo2-lib git repo (v0.5.3) — ahead of crates.io (max 0.5.1) and
+# required to unlock axiom-crypto/snark-verifier for on-chain Solidity
+# verification (see docs/axiom-backend-migration.md §14).
+halo2-base = { git = "https://github.com/axiom-crypto/halo2-lib.git", tag = "v0.5.3" }
+halo2-ecc = { git = "https://github.com/axiom-crypto/halo2-lib.git", tag = "v0.5.3" }
 # Phase B: the ECC/integer/maingate sub-crates (the umbrella `halo2wrong` crate
 # alone cannot do EC arithmetic). Same git tag → same PSE halo2 v0.3.0 fork.
 ecc = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2024_01_31" }
@@ -39,5 +50,8 @@ git-fork-api = []
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"
+# axiom on-chain Solidity verifier generation (see docs/axiom-backend-migration.md
+# §14). Pins the same halo2-lib v0.5.3 baseline as halo2-base/halo2-ecc above.
+snark-verifier-sdk = { git = "https://github.com/axiom-crypto/snark-verifier.git", features = ["revm"] }
 zkmist-merkle-tree = { path = "../merkle-tree" }
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }

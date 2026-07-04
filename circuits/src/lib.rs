@@ -18,6 +18,26 @@ pub mod keccak;
 pub mod merkle;
 pub mod nullifier;
 pub mod poseidon;
+// Axiom-backend Poseidon gadget (halo2-base). Phase 1 of the axiom migration
+// (docs/axiom-backend-migration.md): audited replacement for `poseidon.rs`,
+// for the future axiom circuit. Coexists with the PSE stack until Phase 3.
+pub mod poseidon_axiom;
+// Axiom-backend secp256k1 pubkey + byte-bridge gadget (halo2-ecc). Phase 2 of
+// the axiom migration (docs/axiom-backend-migration.md): audited scalar·G plus
+// the pubkey byte extraction halo2wrong could not do. Coexists with PSE until
+// Phase 3.
+pub mod secp_axiom;
+// Axiom-backend Keccak-256 gadget (bit-level, halo2-base eDSL). Phase 3 of the
+// axiom migration: the last hand-rolled crypto gadget ported to axiom.
+pub mod keccak_axiom;
+// Axiom-backend Merkle + nullifier gadgets (halo2-base eDSL). Phase 3 of the
+// axiom migration: thin Poseidon-based gadgets ported to axiom.
+pub mod merkle_axiom;
+pub mod nullifier_axiom;
+// Axiom-backend ZKMist V2 claim circuit — Phase 3 capstone. Wires every
+// ported gadget (secp + keccak + poseidon + merkle + nullifier) with the §5/§5a
+// bindings. Happy path only for now (the K<n range proof is the next increment).
+pub mod claim_axiom;
 // Non-native field arithmetic uses limb-indexed loops throughout.
 #[allow(clippy::needless_range_loop)]
 pub mod secp256k1;

@@ -14,6 +14,11 @@
 use std::io::{self, Read, Write};
 
 use ark_bn254::Fr;
+
+/// Halo2-base Poseidon convention — the convention the axiom circuit verifies
+/// (see `docs/axiom-backend-migration.md` §11). The default API below uses the
+/// light-poseidon / Circom convention for the legacy PSE circuit.
+pub mod halo2base;
 use ark_ff::{BigInteger, PrimeField};
 use light_poseidon::{Poseidon, PoseidonHasher};
 
