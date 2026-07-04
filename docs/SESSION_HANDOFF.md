@@ -67,7 +67,10 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(latest)_ — **Phase 1 cont.: Poseidon port** — hand-rolled Poseidon replaced
+- _(pending)_ — **Phase 2: secp + pubkey byte-bridge** — `scalar·G` via halo2-ecc
+  + pubkey byte extraction proven in `circuits/tests/secp_axiom.rs` (byte-bridge
+  matches canonical privkey=1 address). See `docs/axiom-backend-migration.md` §10.
+- `5d5a882` — **Phase 1 cont.: Poseidon port** — hand-rolled Poseidon replaced
   with `halo2_base::poseidon::PoseidonChip`; verified in
   `circuits/tests/poseidon_axiom.rs` (params byte-match light-poseidon; chip
   matches native sponge). See `docs/axiom-backend-migration.md` §9.
@@ -84,7 +87,7 @@ halo2-ecc  = "=0.5.0"   # audited secp256k1 (EccChip, fixed_base_scalar_mult)
 poseidon-primitives = "0.2"
 ```
 
-### What to do next (Phase 2 — secp + address bridge)
+### What to do next (Phase 3 — Keccak port + full circuit)
 
 1. **✅ DONE — Poseidon port** (`halo2_base::poseidon::PoseidonChip`). Gadget in
    `circuits/src/poseidon_axiom.rs`; verified in `circuits/tests/poseidon_axiom.rs`.
@@ -95,12 +98,23 @@ poseidon-primitives = "0.2"
    reconcile (adopt halo2-base's convention end-to-end, or wrap the chip).
    See `docs/axiom-backend-migration.md` §9.1.
 
-2. **halo2-ecc secp256k1 scalar·G** — use
-   `EccChip::fixed_base_scalar_mult(ctx, &Secp256k1Affine::generator(), scalar_limbs, 256, 4)`.
-   Extract pubkey bytes (halo2-ecc supports this — see PSE zkevm-circuits'
-   `sig_circuit.rs` / `pk_bytes_le`). Feed to Keccak for the address bridge.
+2. **✅ DONE — secp + pubkey byte-bridge** (`halo2-ecc`). Gadget in
+   `circuits/src/secp_axiom.rs` (`pubkey_from_privkey`,
+   `field_point_to_le_bytes`); verified in `circuits/tests/secp_axiom.rs`
+   (scalar·G correct; bytes match canonical privkey=1 address).
+   **Findings:** the scalar MUST be chunked (max_bits=limb_bits≤254, not 256);
+   limb config must give `carry_mod` headroom (88×3, NOT 64×4); byte extraction
+   reads the positional truncation's low 256 bits. See §10.1.
 
-3. **Then Phase 3-4** per `docs/axiom-backend-migration.md`.
+3. **Port Keccak to the axiom `Context` eDSL** — the last hand-rolled crypto
+   gadget (`circuits/src/keccak.rs`, 1250 lines, PSE backend). Either port it to
+   halo2-base or adopt PSE `zkevm-circuits`' axiom-stack Keccak. Then wire the
+   Phase-2 pubkey bytes → in-circuit `keccak256 → address`.
+
+4. **Rewrite `ZKMistV2Claim` in the `Context` eDSL** wiring secp + keccak +
+   poseidon + merkle + nullifier. MockProver E2E + 4 negatives at k=18.
+
+5. **Then Phase 4** (prover/verifier/deploy) per `docs/axiom-backend-migration.md`.
 
 ## Reference branches (do NOT merge — investigation records)
 
@@ -135,21 +149,24 @@ poseidon-primitives = "0.2"
 ```bash
 cd ~/zkmist
 git checkout axiom-backend-migration
-cat docs/axiom-backend-migration.md   # the scope/plan (§9 = Poseidon port done)
+cat docs/axiom-backend-migration.md   # the scope/plan (§9 Poseidon, §10 secp done)
 cat docs/secp256k1-migration-plan.md  # the investigation history
 cargo test -p zkmist-circuits --test axiom_stack_foundation -- --nocapture  # Phase 1
 cargo test -p zkmist-circuits --test poseidon_axiom -- --nocapture         # Poseidon port
+cargo test -p zkmist-circuits --test secp_axiom -- --nocapture             # secp byte-bridge
 ```
 
-Then continue with the halo2-ecc secp256k1 port (step 2 above — Phase 2).
+Then continue with Phase 3: port Keccak to the axiom eDSL, then rewrite
+`ZKMistV2Claim` wiring secp + keccak + poseidon + merkle + nullifier.
 
 ## Suggested first message for the fresh session
 
 > "Read `docs/SESSION_HANDOFF.md`. We're on the `axiom-backend-migration`
-> branch. Phase 1 (axiom stack foundation) and the Poseidon port are done.
-> Continue with Phase 2: use `halo2-ecc` for secp256k1 `scalar·G`, extract the
-> pubkey bytes, and prove the `keccak(pubkey)→address` bridge in an isolated
-> circuit. Then commit and push."
+> branch. Phases 1–2 are done (axiom stack, Poseidon port, secp byte-bridge).
+> Continue with Phase 3: port the Keccak gadget to the axiom `Context` eDSL
+> (or adopt PSE zkevm-circuits' axiom Keccak), then start the `ZKMistV2Claim`
+> rewrite wiring secp + keccak + poseidon + merkle + nullifier. Commit and push
+> each verified step."
 
 ## Other production blockers (unchanged, for reference)
 

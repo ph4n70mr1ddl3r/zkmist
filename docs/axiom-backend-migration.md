@@ -73,7 +73,7 @@ mint) is unchanged.
 | Phase | Work | Gate |
 |---|---|---|
 | **1. Stack + first vertical slice** | Add the axiom deps; locate the Solidity verifier; port the Poseidon gadget to `halo2_base::poseidon`; build a tiny test circuit doing `poseidon(x)` via halo2-base + MockProver (axiom's `base_test`) | axiom stack builds in this repo; Poseidon port verified — **DONE 2026-07-04** (see §9) |
-| **2. secp + address bridge** | Use `halo2-ecc` for `scalar·G`; extract pubkey bytes; feed a Keccak input; prove `keccak(pubkey)→address` in an isolated circuit (mirrors PSE `sig_circuit`) | byte-bridge proven in isolation |
+| **2. secp + address bridge** | Use `halo2-ecc` for `scalar·G`; extract pubkey bytes; feed a Keccak input; prove `keccak(pubkey)→address` in an isolated circuit (mirrors PSE `sig_circuit`) | byte-bridge proven in isolation — **DONE 2026-07-04** (see §10) |
 | **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | MockProver E2E + 4 negatives pass at k=18 |
 | **4. Prover + verifier + deploy** | Port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain verifier; measure k; testnet deploy + real-KZG round-trip (now ~1 GiB → fits 32 GB) | blocker #2 cleared on a 32 GB machine |
 
@@ -142,3 +142,50 @@ circuit verifies the *same* tree that is committed on-chain — either:
 
 This does not affect Phase 1/2 — the chip and its parameters are correct either
 way. It is a wiring decision for the full-circuit rewrite (Phase 3).
+
+## 10. Phase 2 — secp256k1 `scalar·G` + pubkey byte-bridge (DONE 2026-07-04)
+
+Proved, in an isolated circuit, the capability halo2wrong could NOT provide and
+that motivated this whole migration: deriving the secp256k1 **public key bytes**
+from `privkey · G` so they can feed `keccak256 → Ethereum address`. Deliverables:
+
+- **`circuits/src/secp_axiom.rs`** — axiom-stack secp256k1 gadget exposing:
+  - `pubkey_from_privkey` — `privkey · G` via halo2-ecc's audited
+    `EccChip::fixed_base_scalar_mult`.
+  - `field_point_to_le_bytes` — the **byte-bridge**: extract an secp256k1-Fp
+    coordinate as 32 constrained little-endian bytes, ready for the Keccak
+    preimage. (halo2-ecc's `ProperCrtUint` keeps a **positional** truncation
+    alongside its CRT native cell — unlike halo2wrong's pure CRT residues — so
+    each limb decomposes cleanly into bits/bytes.)
+- **`circuits/tests/secp_axiom.rs`** — two tests:
+  1. `test_halo2ecc_secp256k1_pubkey_byte_bridge` — in-circuit `scalar·G` is
+     constrained equal to the native pubkey (`FpChip::assert_equal`); the pubkey
+     coordinates are extracted as 32 LE bytes each; the 64 bytes recompose to the
+     coordinates exactly AND `keccak256(x_be‖y_be)[12..]` equals the Ethereum
+     address. MockProver (k=18, ~131k advice cells) asserts every constraint.
+  2. `test_eth_address_known_vector_privkey_one` — anchors the native
+     `privkey·G → keccak(pubkey)` derivation to the canonical vector
+     `privkey=1 → 0x7E5F…5Bdf`, so the in-circuit-vs-native comparison is tied to
+     Ethereum ground truth (not merely self-consistent).
+
+### 10.1 Findings (don't re-discover)
+
+- **Scalar chunking (handoff correction).** The handoff's `fixed_base_scalar_mult(
+  …, 256, 4)` is wrong: halo2-ecc asserts `max_bits ≤ F::NUM_BITS` (= 254 for
+  bn254 `Fr`), so the 256-bit scalar must be split into multiple chunks, one per
+  limb, with `max_bits = limb_bits`. `assign_privkey` does this (`NUM_LIMBS`
+  limbs × `LIMB_BITS` bits).
+- **Limb config must give `carry_mod` headroom.** With 4×64-bit limbs the
+  `carry_mod` overflow bound (`n·k − 1 + Fr::NUM_BITS − 2 = 507`) is below a
+  256×256-bit product (512 bits) produced during scalar mult → panic. halo2-ecc
+  ships **88-bit × 3** limbs for secp256k1 (`configs/secp256k1/ecdsa_circuit.config`;
+  bound 515 ≥ 512); this crate uses the same.
+- **Byte extraction is limb-config-independent.** `field_point_to_le_bytes`
+  reads the low 256 bits of the positional truncation (range-checked to 256, so
+  bits ≥ 256 are constrained to 0), so the chip config can be chosen for
+  soundness/efficiency without affecting the bridge.
+- **Native Keccak in the test, in-circuit Keccak in Phase 3.** Phase 2 proves the
+  bytes are the correct preimage (native keccak check); the in-circuit Keccak
+  hash is Phase 3, after the Keccak gadget is ported to the axiom eDSL. Address
+  byte order: `keccak256(x_be‖y_be)` — reverse each 32-byte half to big-endian
+  before hashing.
