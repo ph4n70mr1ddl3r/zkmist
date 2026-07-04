@@ -714,7 +714,12 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String
         "[2/4] Building full-depth Merkle proof (depth={}, single leaf at index 0)...",
         TREE_DEPTH
     );
-    let (root, siblings_ark, path_indices_u8) = build_single_leaf_proof(&address, TREE_DEPTH);
+    let (root, siblings_ark, path_indices_u8) = if pse {
+        build_single_leaf_proof(&address, TREE_DEPTH)
+    } else {
+        // axiom circuit verifies the halo2-base Poseidon convention tree.
+        zkmist_merkle_tree::halo2base::build_single_leaf_proof(&address, TREE_DEPTH)
+    };
     let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
     let mut path_arr = [0u8; TREE_DEPTH];
     let copy_len = siblings_ark.len().min(TREE_DEPTH);

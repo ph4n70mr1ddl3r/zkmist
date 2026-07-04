@@ -174,3 +174,24 @@ pub fn generate_proof(
 ) -> (Vec<[u8; 32]>, Vec<u8>) {
     crate::generate_proof(layers, index)
 }
+
+/// O(depth) single-leaf proof under the halo2-base convention (leaf at index 0,
+/// sibling = all-padding subtree root). Mirrors `crate::build_single_leaf_proof`
+/// (light-poseidon) but for the axiom circuit — used by `gen-roundtrip-fixture`.
+pub fn build_single_leaf_proof(
+    addr: &[u8; 20],
+    depth: usize,
+) -> ([u8; 32], Vec<[u8; 32]>, Vec<u8>) {
+    let hasher = Hasher::new();
+    let mut node = hasher.hash_leaf(addr);
+    let mut padding = PADDING_SENTINEL;
+    let mut siblings = Vec::with_capacity(depth);
+    let mut path = Vec::with_capacity(depth);
+    for _ in 0..depth {
+        siblings.push(padding);
+        path.push(0);
+        node = hasher.hash_interior(&node, &padding);
+        padding = hasher.hash_interior(&padding, &padding);
+    }
+    (node, siblings, path)
+}
