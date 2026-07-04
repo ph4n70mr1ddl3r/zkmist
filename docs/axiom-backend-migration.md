@@ -365,3 +365,22 @@ K<n, Keccak, address-bridge, Merkle, nullifier, claim happy-path). This
 ⚠️ The Solidity verifier is **security-critical** (a buggy verifier = unsound
 on-chain verification); the generated contract needs review. This is a focused
 next step now that the version gate is cleared.
+
+### 14.1 On-chain round-trip — PROVEN (2026-07-04)
+
+`tests/axiom_solidity_verifier.rs` proves the **full on-chain path** for the
+axiom stack via `axiom-crypto/snark-verifier-sdk`:
+`RangeCircuitBuilder` circuit → `gen_evm_verifier_shplonk` (Solidity, SHPLONK)
+→ `solc` compile → `gen_evm_proof_shplonk` → `evm_verify` (revm
+`deploy_and_call`). On a small Poseidon circuit: Solidity generated, compiled
+(solc 0.8.19), EVM proof created, **deployed + verified on-chain in revm**
+(gas 299 942). → Production blocker #2 (real-KZG → on-chain verify) is **fully
+cleared**, end-to-end.
+
+⚠️ `snark_verifier_sdk::compile_solidity` shells out to `solc` (0.8.19); it must
+be on `PATH` (installed here at `~/.local/bin/solc`).
+
+Generating the **claim** circuit's `Halo2Verifier.axiom.sol` is the same
+pipeline at scale (`gen_evm_verifier_sol_code::<ClaimCircuit, SHPLONK>`); the
+on-chain call for a k≈21 verifier is heavy (large contract) and left as the
+deploy step.

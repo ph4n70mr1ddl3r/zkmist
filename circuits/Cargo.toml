@@ -50,5 +50,8 @@ git-fork-api = []
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"
+# axiom on-chain Solidity verifier generation (see docs/axiom-backend-migration.md
+# §14). Pins the same halo2-lib v0.5.3 baseline as halo2-base/halo2-ecc above.
+snark-verifier-sdk = { git = "https://github.com/axiom-crypto/snark-verifier.git", features = ["revm"] }
 zkmist-merkle-tree = { path = "../merkle-tree" }
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }
