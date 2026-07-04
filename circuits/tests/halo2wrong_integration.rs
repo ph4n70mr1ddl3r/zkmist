@@ -7,10 +7,14 @@
 //! (Phase B remainder): it verifies the dependency, the real API, and the
 //! construction pattern BEFORE touching the soundness-critical `ZKMistV2Claim`.
 //!
-//! Mirrors halo2wrong's own ecdsa test exactly — `NUMBER_OF_LIMBS = 4`,
-//! `BIT_LEN_LIMB = 68`, `window_size = 4` (the audited config, consistent
-//! across halo2wrong's ecc/integer/ecdsa/transcript tests). See
-//! `docs/secp256k1-migration-plan.md`.
+//! Mirrors halo2wrong's own ecdsa test, but at `NUMBER_OF_LIMBS = 4`,
+//! `BIT_LEN_LIMB = 72` (NOT halo2wrong's default 68). 72 is a multiple of 8
+//! (9 bytes/limb, byte-aligned), which is what makes the ZKMist
+//! `keccak(pubkey) → address` binding wirable — each limb maps cleanly to
+//! whole Keccak input bytes (the bridge that the 68-bit RNS breaks). Spike
+//! (2026-07-03): all 3 tests PASS at 72, confirming halo2wrong supports the
+//! byte-aligned config soundly — the grand-slam path (audited library +
+//! byte-aligned + the 38× k=18 RAM win) is viable. `window_size = 4`.
 //!
 //! What this does NOT do (Phase B remainder): rewire `ZKMistV2Claim` to use
 //! this chip (changes the VK digest), re-derive the nullifier↔scalar and
@@ -35,7 +39,7 @@ use maingate::{
 
 // Audited halo2wrong config for secp256k1 (see module doc).
 const NUMBER_OF_LIMBS: usize = 4;
-const BIT_LEN_LIMB: usize = 68;
+const BIT_LEN_LIMB: usize = 72;
 const WINDOW_SIZE: usize = 4;
 
 #[derive(Clone, Debug)]
