@@ -8,10 +8,6 @@ name = "compute-root"
 path = "src/compute_root.rs"
 
 [[bin]]
-name = "gen-verifier"
-path = "src/gen_verifier.rs"
-
-[[bin]]
 name = "monitor"
 path = "src/monitor.rs"
 required-features = ["monitoring"]

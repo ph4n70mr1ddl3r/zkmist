@@ -147,7 +147,7 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
 
 // ── Command: prove (Halo2-KZG) ──────────────────────────────────────────
 
-pub fn cmd_prove(key_file: Option<&str>, pse: bool) -> Result<(), String> {
+pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     // ── Step 1: Credentials ──────────────────────────────────────────────
     eprintln!("[1/4] Enter credentials:");
     let private_key = if let Some(path) = key_file {
@@ -300,20 +300,14 @@ pub fn cmd_prove(key_file: Option<&str>, pse: bool) -> Result<(), String> {
     let timestamp = timestamp_string();
     let proof_path = proofs_dir().join(format!("zkmist_proof_{}.json", timestamp));
 
-    let _nullifier_result = if pse {
-        crate::halo2_prover::generate_v2_proof(
-            &private_key, &sibling_arr, &path_arr, &root, &recipient, &proof_path,
-        )?
-    } else {
-        crate::halo2_prover_axiom::generate_v2_proof_axiom(
-            &private_key,
-            &sibling_arr[..TREE_DEPTH],
-            &path_arr[..TREE_DEPTH],
-            &root,
-            &recipient,
-            &proof_path,
-        )?
-    };
+    let _nullifier_result = crate::halo2_prover_axiom::generate_v2_proof_axiom(
+        &private_key,
+        &sibling_arr[..TREE_DEPTH],
+        &path_arr[..TREE_DEPTH],
+        &root,
+        &recipient,
+        &proof_path,
+    )?;
 
     eprintln!();
     eprintln!("      ✓ Proof saved: {}", proof_path.display());
@@ -515,8 +509,8 @@ pub fn cmd_submit(
 ///   3. VK/PK generation
 ///   4. Proof creation
 ///   5. Local verification
-pub fn cmd_bench(tree_depth: usize, pse: bool) -> Result<(), String> {
-    use zkmist_circuits::merkle::TREE_DEPTH;
+pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
+    use zkmist_circuits::merkle_axiom::TREE_DEPTH;
     use zkmist_merkle_tree::halo2base::{build_single_leaf_proof, build_tree_streaming_with_depth};
 
     let depth = tree_depth.clamp(1, 26);
@@ -586,15 +580,9 @@ pub fn cmd_bench(tree_depth: usize, pse: bool) -> Result<(), String> {
     recipient[18] = 0xB0;
 
     let total_start = std::time::Instant::now();
-    if pse {
-        crate::halo2_prover::generate_v2_proof(
-            &key, &sibling_arr, &path_arr, &root_ark, &recipient, &proof_path,
-        )?;
-    } else {
-        crate::halo2_prover_axiom::generate_v2_proof_axiom(
-            &key, &sibling_arr, &path_arr, &root_ark, &recipient, &proof_path,
-        )?;
-    }
+    crate::halo2_prover_axiom::generate_v2_proof_axiom(
+        &key, &sibling_arr, &path_arr, &root_ark, &recipient, &proof_path,
+    )?;
     let total_time = total_start.elapsed();
 
     // Report proof file size
@@ -672,10 +660,9 @@ pub fn cmd_bench(tree_depth: usize, pse: bool) -> Result<(), String> {
 // constants.rs) or ZKMIST_DEV_SRS=1 for a local forgeable SRS (dev/test
 // only — the proof verifies but is forgeable, so it validates the verifier
 // code path, not soundness).
-pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String> {
+pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     use serde::Serialize;
-    use zkmist_circuits::merkle::TREE_DEPTH;
-    use zkmist_merkle_tree::halo2base::build_single_leaf_proof;
+    use zkmist_circuits::merkle_axiom::TREE_DEPTH;
 
     eprintln!("ZKMist real-KZG round-trip fixture generator");
     eprintln!("─\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
@@ -714,12 +701,8 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String
         "[2/4] Building full-depth Merkle proof (depth={}, single leaf at index 0)...",
         TREE_DEPTH
     );
-    let (root, siblings_ark, path_indices_u8) = if pse {
-        build_single_leaf_proof(&address, TREE_DEPTH)
-    } else {
-        // axiom circuit verifies the halo2-base Poseidon convention tree.
-        zkmist_merkle_tree::halo2base::build_single_leaf_proof(&address, TREE_DEPTH)
-    };
+    let (root, siblings_ark, path_indices_u8) =
+        zkmist_merkle_tree::halo2base::build_single_leaf_proof(&address, TREE_DEPTH);
     let mut sibling_arr = [[0u8; 32]; TREE_DEPTH];
     let mut path_arr = [0u8; TREE_DEPTH];
     let copy_len = siblings_ark.len().min(TREE_DEPTH);
@@ -736,15 +719,9 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String
     // create_proof → transcript path (sufficient to validate the verifier).
     eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~5 min, peaks ≳26 GiB at k=23; the preflight refuses below ~31 GiB free RAM — needs a ≥36 GiB machine)...");
     let tmp = std::env::temp_dir().join("zkmist_roundtrip_proof.json");
-    let nullifier = if pse {
-        crate::halo2_prover::generate_v2_proof(
-            &key, &sibling_arr, &path_arr, &root, &recipient, &tmp,
-        )?
-    } else {
-        crate::halo2_prover_axiom::generate_v2_proof_axiom(
-            &key, &sibling_arr, &path_arr, &root, &recipient, &tmp,
-        )?
-    };
+    let nullifier = crate::halo2_prover_axiom::generate_v2_proof_axiom(
+        &key, &sibling_arr, &path_arr, &root, &recipient, &tmp,
+    )?;
     let proof_json = std::fs::read_to_string(&tmp)
         .map_err(|e| format!("Failed to read generated proof: {}", e))?;
     let proof_file: ProofFile = serde_json::from_str(&proof_json)
@@ -812,8 +789,12 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String
 
 // ── Command: verify ──────────────────────────────────────────────────────
 
-pub fn cmd_verify(proof_file: &str) -> Result<(), String> {
-    crate::halo2_prover::verify_v2_proof(std::path::Path::new(proof_file))
+pub fn cmd_verify(_proof_file: &str) -> Result<(), String> {
+    // The PSE Rust-side verifier was removed with the PSE stack. On-chain
+    // verification (ZKMAirdrop.claim → axiom Halo2Verifier) is authoritative;
+    // for off-chain checks use `RUN_REAL_ROUNDTRIP=1 forge test --match-contract
+    // RealRoundtrip`.
+    Err("local proof verification is on-chain only (the PSE verifier was removed)".into())
 }
 
 // ── Command: check ───────────────────────────────────────────────────────

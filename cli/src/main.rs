@@ -12,7 +12,7 @@ mod abi;
 mod commands;
 mod constants;
 mod download;
-mod halo2_prover;
+
 mod halo2_prover_axiom;
 mod helpers;
 mod types;
@@ -50,10 +50,6 @@ enum Commands {
         /// Ensure the file has restricted permissions (e.g., chmod 600).
         #[arg(long)]
         key_file: Option<String>,
-        /// Use the legacy PSE prover (default is the axiom backend; see
-        /// docs/axiom-backend-migration.md).
-        #[arg(long, default_value_t = false)]
-        pse: bool,
     },
 
     /// Submit proof to ZKMAirdrop contract on Base.
@@ -102,9 +98,6 @@ enum Commands {
         /// Does NOT change the proof, which is always full-depth (TREE_DEPTH=26).
         #[arg(long, default_value = "4")]
         tree_depth: usize,
-        /// Use the legacy PSE prover (default is the axiom backend).
-        #[arg(long, default_value_t = false)]
-        pse: bool,
     },
 
     /// Generate the real-KZG round-trip fixture (proof + public inputs) for
@@ -115,9 +108,6 @@ enum Commands {
         /// Output path for the fixture JSON.
         #[arg(long, default_value = "contracts/fixtures/real_roundtrip.json")]
         out: String,
-        /// Use the legacy PSE prover (default is the axiom backend).
-        #[arg(long, default_value_t = false)]
-        pse: bool,
     },
 }
 
@@ -126,7 +116,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Fetch { no_verify } => cmd_fetch(no_verify),
-        Commands::Prove { key_file, pse } => cmd_prove(key_file.as_deref(), pse),
+        Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
         Commands::Submit {
             proof_file,
             rpc_url,
@@ -141,8 +131,8 @@ fn main() {
         Commands::Verify { proof_file } => cmd_verify(&proof_file),
         Commands::Check { address } => cmd_check(&address),
         Commands::Status { rpc_url } => cmd_status(rpc_url.as_deref()),
-        Commands::Bench { tree_depth, pse } => cmd_bench(tree_depth, pse),
-        Commands::GenRoundtripFixture { out, pse } => cmd_gen_roundtrip_fixture(&out, pse),
+        Commands::Bench { tree_depth } => cmd_bench(tree_depth),
+        Commands::GenRoundtripFixture { out } => cmd_gen_roundtrip_fixture(&out),
     };
 
     if let Err(e) = result {
@@ -911,31 +901,5 @@ mod axiom_prover_tests {
         let mut b = [0u8; 32];
         b[31] = 7;
         assert_eq!(bytes_be_to_fq(&b), Fq::from(7u64));
-    }
-}
-
-
-
-#[cfg(test)]
-mod srs_format_compat_tests {
-    /// Is the axiom `ParamsKZG::<Bn256>` serialization readable by PSE (and
-    /// vice-versa)? Both derive from the same halo2 KZG-params layout, so this
-    /// checks whether the PSE ceremony SRS is loadable by the axiom backend.
-    #[test]
-    fn test_axiom_write_pse_read() {
-        use halo2_base::halo2_proofs::poly::commitment::Params as AxParams;
-        use halo2_proofs::poly::commitment::Params as PseParams;
-        use halo2_proofs::poly::kzg::commitment::ParamsKZG as PseParamsKZG;
-        use std::io::Cursor;
-
-        let axiom_params = halo2_base::utils::fs::gen_srs(8);
-        let mut buf = Vec::new();
-        AxParams::write(&axiom_params, &mut buf).unwrap();
-
-        let pse_ok =
-            PseParamsKZG::<halo2curves::bn256::Bn256>::read(&mut Cursor::new(&buf)).is_ok();
-        eprintln!("PSE reads axiom-written SRS: {pse_ok}");
-        // Symmetry assumption: if PSE reads axiom's format, axiom reads PSE's
-        // (ceremony) format too. Don't hard-fail — report.
     }
 }

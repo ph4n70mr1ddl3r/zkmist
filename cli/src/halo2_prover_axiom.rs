@@ -30,6 +30,15 @@ use halo2_base::{
 use num_bigint::BigUint;
 use snark_verifier_sdk::evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk};
 
+/// Cache dir for the KZG SRS (~/.zkmist/cache).
+pub(crate) fn get_cache_dir() -> Result<std::path::PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let cache_dir = home.join(crate::constants::ZKMIST_DIR_NAME).join("cache");
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache dir: {}", e))?;
+    Ok(cache_dir)
+}
+
 use zkmist_circuits::{
     claim_axiom::prove_claim_to_cells,
     nullifier_axiom::domain_field_element,
@@ -63,7 +72,7 @@ pub fn load_srs_axiom(circuit_k: u32) -> Result<ParamsKZG<Bn256>, String> {
         return Ok(gen_srs(circuit_k));
     }
 
-    let path = crate::halo2_prover::get_cache_dir()?.join("v2_axiom_srs.bin");
+    let path = get_cache_dir()?.join("v2_axiom_srs.bin");
     if !path.exists()
         || !matches!(crate::download::verify_file_sha256(&path, pinned_hash), Ok(true))
     {
