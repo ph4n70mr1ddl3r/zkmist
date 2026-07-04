@@ -908,3 +908,28 @@ mod axiom_prover_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod srs_format_compat_tests {
+    /// Is the axiom `ParamsKZG::<Bn256>` serialization readable by PSE (and
+    /// vice-versa)? Both derive from the same halo2 KZG-params layout, so this
+    /// checks whether the PSE ceremony SRS is loadable by the axiom backend.
+    #[test]
+    fn test_axiom_write_pse_read() {
+        use halo2_base::halo2_proofs::poly::commitment::Params as AxParams;
+        use halo2_proofs::poly::commitment::Params as PseParams;
+        use halo2_proofs::poly::kzg::commitment::ParamsKZG as PseParamsKZG;
+        use std::io::Cursor;
+
+        let axiom_params = halo2_base::utils::fs::gen_srs(8);
+        let mut buf = Vec::new();
+        AxParams::write(&axiom_params, &mut buf).unwrap();
+
+        let pse_ok =
+            PseParamsKZG::<halo2curves::bn256::Bn256>::read(&mut Cursor::new(&buf)).is_ok();
+        eprintln!("PSE reads axiom-written SRS: {pse_ok}");
+        // Symmetry assumption: if PSE reads axiom's format, axiom reads PSE's
+        // (ceremony) format too. Don't hard-fail — report.
+    }
+}

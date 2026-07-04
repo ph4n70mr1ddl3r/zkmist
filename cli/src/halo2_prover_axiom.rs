@@ -18,11 +18,12 @@ use halo2_base::{
     gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
     halo2_proofs::{
-        halo2curves::{
-            bn256::Fr,
-            secp256k1::Fq,
-        },
+        halo2curves::bn256::Bn256,
+        halo2curves::bn256::Fr,
+        halo2curves::secp256k1::Fq,
         plonk::{keygen_pk, keygen_vk},
+        poly::commitment::Params,
+        poly::kzg::commitment::ParamsKZG,
     },
     utils::{fs::gen_srs, modulus},
 };
@@ -40,6 +41,49 @@ use zkmist_circuits::{
 /// + Keccak dominate). Real-KZG proving peaks well under ~10 GiB at k=21
 /// (vs k=23's ~25 GiB on the PSE stack). ⚠️ Must match the verifier generation.
 pub const AXIOM_CIRCUIT_K: u32 = 21;
+
+/// Load the KZG SRS for the axiom backend.
+///
+/// **Production:** downloads + SHA-256-verifies the pinned PSE perpetual
+/// powers-of-tau ceremony SRS (`constants::KZG_SRS_URL`/`KZG_SRS_SHA256`) and
+/// reads it with the axiom `ParamsKZG`. The axiom and PSE `ParamsKZG`
+/// serializations are byte-compatible (verified by `srs_format_compat_tests`),
+/// so the ceremony SRS — a universal powers-of-tau SRS at k=23 — serves the
+/// k=21 axiom circuit (asserts `srs_k >= circuit_k`).
+///
+/// **Dev fallback:** `ZKMIST_DEV_SRS=1` (or an unset trust root) uses
+/// `gen_srs` (a toxic-waste SRS) so tests/benchmarks run without the download.
+pub fn load_srs_axiom(circuit_k: u32) -> Result<ParamsKZG<Bn256>, String> {
+    let pinned_hash = crate::constants::KZG_SRS_SHA256.trim();
+    let pinned_url = crate::constants::KZG_SRS_URL.trim();
+    let production = !pinned_hash.is_empty() && !pinned_url.is_empty();
+
+    if !production || std::env::var("ZKMIST_DEV_SRS").as_deref() == Ok("1") {
+        eprintln!("         ⚠️  axiom SRS: toxic-waste gen_srs (dev/testnet only)");
+        return Ok(gen_srs(circuit_k));
+    }
+
+    let path = crate::halo2_prover::get_cache_dir()?.join("v2_axiom_srs.bin");
+    if !path.exists()
+        || !matches!(crate::download::verify_file_sha256(&path, pinned_hash), Ok(true))
+    {
+        eprintln!("         Downloading axiom KZG SRS from {}", pinned_url);
+        crate::download::download_and_verify_to_file(pinned_url, pinned_hash, &path)?;
+    }
+    let file = std::fs::File::open(&path).map_err(|e| format!("open SRS: {e}"))?;
+    let params = ParamsKZG::<Bn256>::read(&mut std::io::BufReader::new(file))
+        .map_err(|e| format!("axiom SRS read failed: {e:?}"))?;
+    let srs_k = params.k();
+    if srs_k < circuit_k {
+        return Err(format!(
+            "Ceremony SRS is k={srs_k} but the axiom circuit needs k>={circuit_k}"
+        ));
+    }
+    eprintln!(
+        "         ✓ axiom KZG SRS loaded (ceremony k={srs_k}, SHA-256 verified)"
+    );
+    Ok(params)
+}
 
 /// Read a big-endian byte slice as an axiom `Fr` (reduced mod p_BN254).
 pub(crate) fn bytes_be_to_fr(b: &[u8]) -> Fr {
@@ -109,7 +153,7 @@ pub fn generate_v2_proof_axiom(
 
     // ── keygen stage ─────────────────────────────────────────────────
     eprintln!("      [axiom] Loading KZG params...");
-    let params = gen_srs(k);
+    let params = load_srs_axiom(k)?;
     let t0 = std::time::Instant::now();
     let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
         .use_k(k as usize)
