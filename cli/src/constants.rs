@@ -76,14 +76,20 @@ pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 /// The range below is deliberately wide so it never rejects a legitimate
 /// proof; it only catches truncated/corrupt files. See `PROOF_LENGTH_EXPECTED`
 /// for the expected production length (diagnostic, not an on-chain gate).
-pub const PROOF_LENGTH_MIN: usize = 4000;
-pub const PROOF_LENGTH_MAX: usize = 8000;
+pub const PROOF_LENGTH_MIN: usize = 500;
+pub const PROOF_LENGTH_MAX: usize = 4000;
 
-/// Expected production proof byte length (~5888 bytes for the axiom SHPLONK
-/// proof). Diagnostic only — NOT enforced on-chain (the verifier has no
-/// `calldatasize` check; it rejects bad proofs via the pairing math). Used to
-/// size buffers and sanity-check fixture files.
-pub const PROOF_LENGTH_EXPECTED: usize = 5888;
+/// Expected production proof byte length for the axiom SHPLONK proof at k=21
+/// (instances ++ commitments ++ evaluation proofs). Diagnostic only — NOT
+/// enforced on-chain (the verifier has no `calldatasize` check; it rejects
+/// bad proofs via the pairing math). Used to size buffers and sanity-check
+/// fixture files.
+///
+/// Measured: 1376 bytes from `cmd_prove` and 1375 bytes in the
+/// `real_roundtrip.json` fixture (both via `gen_evm_proof_shplonk`). The prior
+/// value (5888) and bounds (4000..8000) were stale estimates that would have
+/// REJECTED every valid proof at the `submit` pre-filter.
+pub const PROOF_LENGTH_EXPECTED: usize = 1376;
 
 /// Proof format version.
 pub const PROOF_FORMAT_VERSION: u64 = 2;
