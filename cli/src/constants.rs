@@ -27,9 +27,14 @@ pub const ELIGIBILITY_RELEASE_TAG: &str = "v1.0.0-eligibility";
 pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 
 /// Known Merkle root for the v1.0.0 eligibility list.
-/// Sourced from the GitHub Release manifest and the `compute-root` tool output. This compile-time constant provides an
-/// out-of-band integrity check: even if the download source is compromised,
-/// the manifest root must match this value or the CLI refuses to proceed.
+/// Sourced from the GitHub Release manifest and the `compute-root` tool output.
+/// This compile-time constant provides an out-of-band integrity check: even
+/// if the download source is compromised, the manifest root must match this
+/// value or the CLI refuses to proceed.
+///
+/// Single source of truth for the committed root — MUST be kept in lockstep
+/// with `MERKLE_ROOT` in `contracts/script/Deploy.s.sol` (the on-chain
+/// commitment to the same tree).
 ///
 /// 64,116,228 qualified addresses (≥0.004 ETH gas fees, mainnet, before 2026-01-01).
 pub const KNOWN_MERKLE_ROOT: &str =
@@ -50,18 +55,20 @@ pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
 /// Client-side proof byte-length pre-filter (loose range).
 ///
 /// This is a NON-authoritative sanity check on loaded proof files only — it
-/// rejects obvious garbage before submitting. The authoritative check is the
-/// EXACT length `eq(0x1700, ...)` (= 5888 bytes) hardcoded in
-/// `Halo2Verifier.sol`, which rejects any proof whose length differs. The
-/// range below is deliberately wide so it never rejects a legitimate proof;
-/// it only catches truncated/corrupt files. See `PROOF_LENGTH_EXPECTED` for
-/// the real production length.
+/// rejects obvious garbage before submitting. NOTE: the axiom
+/// `Halo2Verifier.axiom.sol` does NOT enforce an exact calldata length (it
+/// has no `calldatasize` check); a structurally wrong proof is rejected by
+/// the pairing math itself (invalid EC points / pairing result → `revert`).
+/// The range below is deliberately wide so it never rejects a legitimate
+/// proof; it only catches truncated/corrupt files. See `PROOF_LENGTH_EXPECTED`
+/// for the expected production length (diagnostic, not an on-chain gate).
 pub const PROOF_LENGTH_MIN: usize = 4000;
 pub const PROOF_LENGTH_MAX: usize = 8000;
 
-/// Exact proof byte length enforced by `Halo2Verifier.sol` (`0x1700`).
-/// Single source of truth — keep in lockstep with the contract's
-/// `PROOF_LENGTH` constant and the generated verifier's hardcoded check.
+/// Expected production proof byte length (~5888 bytes for the axiom SHPLONK
+/// proof). Diagnostic only — NOT enforced on-chain (the verifier has no
+/// `calldatasize` check; it rejects bad proofs via the pairing math). Used to
+/// size buffers and sanity-check fixture files.
 pub const PROOF_LENGTH_EXPECTED: usize = 5888;
 
 /// Proof format version.

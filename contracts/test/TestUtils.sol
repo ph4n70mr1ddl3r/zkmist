@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 /// @dev Mock Halo2 verifier for testing — mirrors the production axiom
 ///      `Halo2Verifier` (snark-verifier-generated) `fallback` interface.

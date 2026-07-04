@@ -13,13 +13,15 @@
 //! path_index[i] = 1 → current is RIGHT child → parent = poseidon(sibling, current)
 //! ```
 //!
-//! # Sponge-convention note (Phase 3 reconciliation)
+//! # Sponge-convention note (RESOLVED)
 //!
 //! This gadget hashes with halo2-base's Poseidon sponge (see the note in
-//! `poseidon_axiom.rs`), which differs from the light-poseidon/Circom convention
-//! used by the off-chain `zkmist-merkle-tree`. The committed tree root must be
-//! rebuilt under halo2-base's convention (or the hasher wrapped) before this
-//! gadget can verify it — the wiring decision for the full-circuit rewrite.
+//! `poseidon_axiom.rs`), which differs from the light-poseidon/Circom
+//! convention. The committed tree is rebuilt under halo2-base's convention by
+//! the off-chain `zkmist_merkle_tree::halo2base` module — the CLI's production
+//! path — so this gadget verifies exactly the tree that is committed on-chain.
+//! Agreement is proven end-to-end by
+//! `tests/claim_axiom.rs::test_axiom_claim_verifies_offchain_tree`.
 
 use halo2_base::{
     gates::{GateInstructions, RangeInstructions},

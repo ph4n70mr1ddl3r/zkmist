@@ -69,6 +69,24 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
 
     for file_entry in &manifest.files {
         let filename = &file_entry.file;
+        // Defense-in-depth path-traversal guard. `filename` drives
+        // `dir.join(filename)` below and is read from the manifest (each file
+        // is SHA-256 verified, but the manifest itself is not integrity-pinned
+        // at fetch time). The compile-time `KNOWN_MERKLE_ROOT` check blocks a
+        // *fake eligibility list*, but a crafted name like `../../.bashrc`
+        // could still write outside the eligibility dir on a compromised
+        // release. Require a bare basename (no separators, not `.`/`..`).
+        let is_bare_basename = std::path::Path::new(filename)
+            .file_name()
+            .map(|f| f == std::ffi::OsStr::new(filename.as_str()))
+            .unwrap_or(false);
+        if !is_bare_basename {
+            return Err(format!(
+                "manifest contains a filename that is not a bare basename \
+                 (path-traversal guard): {:?}",
+                filename
+            ));
+        }
         // Normalize the manifest's expected hash to bare lowercase hex so the
         // comparison against `hex::encode(...)` (always lowercase) is robust to
         // a manifest that carries a `0x` prefix, surrounding whitespace, or
@@ -590,7 +608,8 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
         .map_err(|e| format!("Failed to read bench proof: {}", e))?;
     let proof_file: crate::types::ProofFile = serde_json::from_str(&proof_content)
         .map_err(|e| format!("Failed to parse bench proof: {}", e))?;
-    let proof_bytes = hex::decode(&proof_file.proof).unwrap();
+    let proof_bytes = hex::decode(&proof_file.proof)
+        .map_err(|e| format!("bench proof is not valid hex: {}", e))?;
 
     // Cleanup
     std::fs::remove_file(&proof_path).ok();

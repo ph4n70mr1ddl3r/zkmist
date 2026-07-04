@@ -41,15 +41,16 @@ import {Halo2Verifier} from "../src/Halo2Verifier.axiom.sol";
 ///       RUN_REAL_ROUNDTRIP=1 forge test --match-contract RealRoundtrip \
 ///         --fork-url $RPC -vvv
 ///
-/// ## Current status of the on-chain VK
+/// ## Current status of the on-chain verifier
 ///
-/// `contracts/src/Halo2VerifyingKey.sol` is the REAL, regenerated VK at k=23
-/// (0x17) with non-zero fixed + permutation commitments (emitted by
-/// `gen-production-verifier --emit` against the pinned PSE SRS). The earlier
-/// "k=21 placeholder with all-zero fixed commitments" no longer applies. The
-/// remaining blocker is therefore generating the fixture + running THIS test
-/// green (plus confirming SRS transcript provenance and an external audit —
-/// see SECURITY.md).
+/// The verifying key is embedded directly in `Halo2Verifier.axiom.sol`
+/// (snark-verifier-generated for the axiom claim circuit at `k=21`, with
+/// non-zero fixed + permutation commitments). There is no separate
+/// `Halo2VerifyingKey.sol` and no k=23 placeholder — the earlier PSE-stack
+/// split no longer applies. The remaining blockers before mainnet are:
+/// generating this fixture against the PINNED PSE SRS, running THIS test green
+/// (with `RUN_REAL_ROUNDTRIP=1`), confirming SRS transcript provenance, and
+/// an external audit — see SECURITY.md.
 contract RealRoundtrip is Test {
     ZKMToken internal token;
     ZKMAirdrop internal airdrop;

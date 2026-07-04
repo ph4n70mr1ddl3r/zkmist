@@ -22,9 +22,10 @@
 //! Parameter equivalence is proven in `tests/poseidon_axiom.rs` (the spec's raw
 //! permutation reproduces `light-poseidon::Poseidon::hash` byte-for-byte).
 //!
-//! # Sponge convention — Phase 3 reconciliation required
+//! # Sponge convention — RESOLVED (halo2-base, the production convention)
 //!
-//! The PERMUTATIONS match, but the HASH functions differ by construction:
+//! The PERMUTATIONS match light-poseidon/Circom, but the HASH functions differ
+//! by construction:
 //!
 //! | Aspect            | halo2-base (this gadget) | light-poseidon / Circom (`zkmist-merkle-tree`) |
 //! |-------------------|--------------------------|------------------------------------------------|
@@ -33,13 +34,14 @@
 //! | Squeeze           | extra empty permutation when absorbed length ≡ 0 (mod RATE) | single permutation |
 //! | Digest output     | `state[1]`               | `state[0]`                                     |
 //!
-//! The off-chain Merkle tree (`zkmist-merkle-tree`) and the existing PSE
-//! circuit commit to the light-poseidon convention. Phase 3 must reconcile
-//! this so the circuit verifies the *same* tree that is committed on-chain:
-//! either (a) rebuild the off-chain tree / nullifier under halo2-base's
-//! convention (audited, standard), or (b) wrap this chip to replicate the
-//! Circom convention. This decision does not affect Phase 1 — the chip and its
-//! parameters are correct either way (verified below).
+//! Resolution: the circuit uses halo2-base's convention, and the off-chain
+//! tree + nullifier are rebuilt under the SAME convention by
+//! `zkmist_merkle_tree::halo2base` (the CLI's production path). Option (a) of
+//! the original Phase-3 decision was taken. This is proven end-to-end by
+//! `tests/claim_axiom.rs::test_axiom_claim_verifies_offchain_tree`, which
+//! builds a tree with the off-chain tooling and verifies it inside the circuit.
+//! The legacy light-poseidon/Circom API in `merkle-tree/src/lib.rs` is retained
+//! only for the removed PSE stack and is NOT what the axiom circuit verifies.
 
 use halo2_base::{
     gates::RangeInstructions,

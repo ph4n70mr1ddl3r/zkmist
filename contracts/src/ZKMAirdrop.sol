@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import {ZKMToken} from "./ZKMToken.sol";
 import {Halo2Verifier} from "./Halo2Verifier.axiom.sol";
@@ -29,6 +29,11 @@ contract ZKMAirdrop {
     event Claimed(bytes32 indexed nullifier, uint256 amount, address indexed recipient, uint256 totalClaims);
 
     constructor(address _token, address _verifier, bytes32 _merkleRoot) {
+        // Defense-in-depth: a zero `verifier` would make the `staticcall` in
+        // `claim` return `ok = true` (no code at address(0)) and accept ANY
+        // proof — a full drain. Both are immutable, so a bad value can never
+        // be corrected after deployment.
+        require(_token != address(0) && _verifier != address(0), "Zero address");
         token = ZKMToken(_token);
         verifier = Halo2Verifier(_verifier);
         merkleRoot = _merkleRoot;

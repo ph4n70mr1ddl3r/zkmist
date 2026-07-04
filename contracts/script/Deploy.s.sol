@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
@@ -25,7 +25,10 @@ contract Deploy is Script {
     // ── Configuration ────────────────────────────────────────────────────
 
     /// Merkle root of the eligibility tree (halo2-base Poseidon convention,
-    /// 26-level, BN254). Replace with the real committed root before mainnet.
+    /// 26-level, BN254). Single source of truth on-chain: MUST equal
+    /// `KNOWN_MERKLE_ROOT` in `cli/src/constants.rs` (the CLI's compile-time
+    /// pin and out-of-band integrity check for the same eligibility build).
+    /// Keep the two in lockstep — they are the same committed root.
     bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
 
     uint256 constant EXPECTED_CLAIM_DEADLINE = 1_798_761_600; // 2027-01-01 UTC
