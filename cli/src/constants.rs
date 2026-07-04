@@ -26,8 +26,16 @@ pub const ELIGIBILITY_RELEASE_TAG: &str = "v1.0.0-eligibility";
 /// GitHub repository hosting the eligibility list release.
 pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 
-/// Known Merkle root for the v1.0.0 eligibility list.
-/// Sourced from the GitHub Release manifest and the `compute-root` tool output.
+/// Known Merkle root for the v1.0.0 eligibility list, under the HALO2-BASE
+/// Poseidon sponge convention — the SAME convention the axiom claim circuit
+/// verifies (capacity 2^64, squeeze permutation, digest at state[1]).
+///
+/// Re-derived independently from the 64,116,228-address eligibility list via
+/// a parallel halo2-base tree build (validated bit-for-bit against the serial
+/// `zkmist_merkle_tree::halo2base::build_tree_streaming` production builder,
+/// and against `build_single_leaf_proof` via the `real_roundtrip.json`
+/// fixture root `0x1e415cba…`).
+///
 /// This compile-time constant provides an out-of-band integrity check: even
 /// if the download source is compromised, the manifest root must match this
 /// value or the CLI refuses to proceed.
@@ -37,8 +45,14 @@ pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 /// commitment to the same tree).
 ///
 /// 64,116,228 qualified addresses (≥0.004 ETH gas fees, mainnet, before 2026-01-01).
+///
+/// NOTE: the previous value `0x1eafd6f3…` was a LEGACY light-poseidon (Circom)
+/// root — a DIFFERENT sponge convention the axiom circuit can never verify.
+/// It was replaced after re-derivation revealed the mismatch (the on-chain
+/// verifier would have reverted every claim). See the commit that introduced
+/// this value for the investigation.
 pub const KNOWN_MERKLE_ROOT: &str =
-    "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844";
+    "0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba";
 
 /// ZKMAirdrop contract address on Base.
 /// ⚠️  PLACEHOLDER — must be updated after deploying to Base mainnet.

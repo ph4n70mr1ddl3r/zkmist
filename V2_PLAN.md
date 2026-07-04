@@ -597,7 +597,7 @@ Transaction 3: Deploy ZKMAirdropV2 (token, verifier, merkleRoot)
 All 3 contracts are deployed in one transaction via CREATE nonce prediction, or in 3 separate transactions.
 
 **Constructor parameters:**
-- `merkleRoot`: `0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844`
+- `merkleRoot`: `0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba`
 - `CLAIM_DEADLINE`: `1798761600` (2027-01-01 00:00:00 UTC)
 - `CLAIM_AMOUNT`: `10_000e18`
 - `MAX_CLAIMS`: `1_000_000`
@@ -637,7 +637,7 @@ The CLI provides the following commands:
     "proofFormatVersion": "halo2-kzg-v1",
     "proof": "0x...halo2_proof_hex",
     "publicInputs": {
-        "merkleRoot": "0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844",
+        "merkleRoot": "0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba",
         "nullifier": "0x...nullifier_hex",
         "recipient": "0x...recipient_hex"
     },
@@ -692,7 +692,7 @@ The following components from the existing codebase and data pipeline are reused
 |-----------|-------|
 | **Eligibility list** | 64,116,228 addresses, same CSV files |
 | **Merkle tree parameters** | 26 levels, Poseidon, BN254, same R_F/R_P |
-| **Merkle root** | `0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844` |
+| **Merkle root** | `0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba` |
 | **Tree library** | `zkmist-merkle-tree` crate (unchanged) |
 | **Poseidon parameters** | Same round constants, MDS matrix, S-box |
 | **Poseidon crate** | `light-poseidon` v0.4 with `ark-bn254` |
@@ -898,7 +898,15 @@ Test vectors verify that the circuit produces identical results to native comput
 
 ### 13.2 Merkle Root Verification
 
-The circuit computes the same Poseidon hashes over the same Merkle tree, so the root must be `0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844`. Any discrepancy indicates a circuit bug.
+The circuit verifies the eligibility tree under the **halo2-base Poseidon sponge
+convention** (capacity `2^64`, squeeze permutation, digest at `state[1]`) — NOT
+the legacy light-poseidon/Circom convention (capacity `0`, digest `state[0]`).
+The committed root under the halo2-base convention is
+`0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba`.
+Any discrepancy between the on-chain/CLI committed root and a fresh halo2-base
+re-derivation indicates a bug; in particular, a root that matches under
+light-poseidon but not halo2-base means the wrong convention was committed
+(the axiom verifier would revert every claim).
 
 ### 13.3 Circuit Test Strategy
 

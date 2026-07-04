@@ -21,7 +21,7 @@ contract ZKMV2Integration is Test {
     ZKMAirdrop public airdrop;
     Halo2Verifier public verifier;
 
-    bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    bytes32 constant MERKLE_ROOT = 0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba;
 
     address constant DEPLOYER = address(0x1);
     address constant CLAIMANT = address(0x2);

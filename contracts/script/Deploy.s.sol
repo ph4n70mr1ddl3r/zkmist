@@ -25,11 +25,15 @@ contract Deploy is Script {
     // ── Configuration ────────────────────────────────────────────────────
 
     /// Merkle root of the eligibility tree (halo2-base Poseidon convention,
-    /// 26-level, BN254). Single source of truth on-chain: MUST equal
-    /// `KNOWN_MERKLE_ROOT` in `cli/src/constants.rs` (the CLI's compile-time
-    /// pin and out-of-band integrity check for the same eligibility build).
-    /// Keep the two in lockstep — they are the same committed root.
-    bytes32 constant MERKLE_ROOT = 0x1eafd6f3b8f30af949ff5493e9102853a7c22f8cffdcf018daa31d4245797844;
+    /// 26-level, BN254) — the SAME convention the axiom claim circuit verifies.
+    /// Re-derived from the 64,116,228-address list via a parallel halo2-base
+    /// build (validated against the serial production builder). Single source
+    /// of truth on-chain: MUST equal `KNOWN_MERKLE_ROOT` in `cli/src/constants.rs`
+    /// (the CLI's compile-time pin and out-of-band integrity check for the same
+    /// eligibility build). Keep the two in lockstep — they are the same
+    /// committed root. NOTE: the prior value `0x1eafd6f3…` was a legacy
+    /// light-poseidon (Circom) root that the axiom circuit cannot verify.
+    bytes32 constant MERKLE_ROOT = 0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba;
 
     uint256 constant EXPECTED_CLAIM_DEADLINE = 1_798_761_600; // 2027-01-01 UTC
     uint256 constant EXPECTED_CLAIM_AMOUNT = 10_000e18;
