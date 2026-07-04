@@ -419,3 +419,32 @@ The heavy k=21 end-to-end proof is the same `RangeCircuitBuilder` + keygen +
 The CLI now carries both stacks (PSE `halo2_proofs` + axiom `halo2-base`), like
 `zkmist-circuits`. The legacy `gen-roundtrip-fixture` / `bench` commands still
 use the PSE prover (port them when the axiom path is the default).
+
+## 15b. Keccak k≈21 → k=18 — analysis (optional optimization, 2026-07-04)
+
+**Goal:** shrink the axiom circuit from k≈21 (~1.9M advice cells; Keccak alone
+≈1.69M) to k=18 (~262k rows, ~1 GiB proving) via a lookup-table χ.
+
+**Finding — χ-lookup alone is insufficient, and the API is blocked:**
+- The Keccak-f[1600] cost is split across θ (column parity + D-XOR into all 25
+  lanes) and χ (the non-linear ANDNOT/XOR). Measured ~1.69M advice cells; k=18
+  needs ≈250k, an ~85% cut. Eliminating χ alone (the lookup target) leaves θ+ι,
+  which still lands around k≈20 — **k=18 needs BOTH θ and χ lookup-based**
+  (the design PSE `zkevm-circuits` uses).
+- **halo2-base's public API exposes no custom lookup tables.** `LookupAnyManager`
+  is a single, fixed range table (0..2^lookup_bits); there is no public way to
+  add a second table for a 5-bit→5-bit χ (or a θ parity table) without forking
+  `RangeCircuitBuilder`/`RangeConfig`. So a lookup-χ is not an incremental change
+  on top of `keccak_axiom.rs` — it requires either (a) extending halo2-base with
+  a custom-lookup API + rewriting Keccak θ+χ over it, or (b) adopting PSE
+  `zkevm-circuits`' axiom-stack Keccak (which ships lookup-based θ+χ).
+
+**Done now (minor):** removed a redundant `range_check(byte, 8)` before
+`num_to_bits` in `keccak256` (the bit decomposition already forces byte < 256);
+saves the input-byte lookups (no effect on the no-input-byte cell count; small
+win for the 64-byte pubkey case).
+
+**Recommendation:** k=18 is a real but sizable follow-up — adopt PSE
+`zkevm-circuits`' axiom Keccak (preferred: audited, lookup-based θ+χ) or extend
+halo2-base's lookup API. Until then the axiom circuit is k≈21 (~6–10 GiB
+proving), already a large win over the PSE k=23 (~25 GiB).

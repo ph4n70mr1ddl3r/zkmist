@@ -236,9 +236,9 @@ pub fn keccak256(
     // Decompose each input byte into 8 constrained LE bits.
     let mut input_bits: Vec<Vec<AssignedValue<Fr>>> = Vec::with_capacity(n);
     for byte in input {
-        // range-check the byte, then bit-decompose (num_to_bits forces the byte
-        // value = Σ bit·2^k with each bit constrained to {0,1}).
-        range.range_check(ctx, *byte, 8);
+        // Bit-decompose: num_to_bits constrains byte = Σ bit·2^k with each bit
+        // in {0,1}, which already forces byte < 256 (no separate range_check
+        // needed).
         input_bits.push(gate.num_to_bits(ctx, *byte, 8));
     }
 
