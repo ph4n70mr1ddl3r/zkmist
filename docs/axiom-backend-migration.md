@@ -391,3 +391,31 @@ The **claim circuit's** `Halo2Verifier.axiom.sol` is generated the same way
 verifier (SHPLONK, pragma 0.8.19) that `solc` compiles cleanly. (The file is a
 regenerable artifact — gitignored; the production depth-26 verifier is
 generated identically with the real eligibility-tree circuit.)
+
+## 15. CLI prover — axiom backend port (2026-07-04)
+
+`cli/src/halo2_prover_axiom.rs::generate_v2_proof_axiom` is the axiom
+counterpart to the legacy PSE `generate_v2_proof`: it builds the
+`claim_axiom` circuit (`RangeCircuitBuilder` + `prove_claim_to_cells`, exposing
+`(root, nullifier, recipient)` as a public instance), keygens, and creates a
+real-KZG **SHPLONK** proof with an EVM-compatible transcript
+(`snark-verifier-sdk::gen_evm_proof_shplonk`) — so the proof verifies in the
+generated `Halo2Verifier.axiom.sol`. It also regenerates + compiles the on-chain
+verifier (`gen_evm_verifier_shplonk`) inline as a soundness check.
+
+Wired into the CLI as `zkmist prove --axiom` (default remains the legacy PSE
+prover; `commands.rs` routes on the flag). Writes the same `ProofFile` format
+(proof hex + nullifier + recipient + chain metadata).
+
+`AXIOM_CIRCUIT_K = 21`. SRS via `halo2_base::utils::fs::gen_srs` (toxic-waste,
+fine for dev/testnet; production needs the ceremony SRS adapted to axiom).
+
+Tests (`cli/src/main.rs::axiom_prover_tests`): the byte↔`Fr`/`Fq` conversions
+are unit-tested (and caught a `resize` left-pad bug in nullifier serialization).
+The heavy k=21 end-to-end proof is the same `RangeCircuitBuilder` + keygen +
+`gen_evm_proof_shplonk` flow proven in `circuits/tests/claim_axiom.rs`; a full
+`zkmist prove --axiom` run is the manual integration check.
+
+The CLI now carries both stacks (PSE `halo2_proofs` + axiom `halo2-base`), like
+`zkmist-circuits`. The legacy `gen-roundtrip-fixture` / `bench` commands still
+use the PSE prover (port them when the axiom path is the default).

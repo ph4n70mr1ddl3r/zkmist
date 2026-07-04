@@ -16,6 +16,12 @@ alloy = { version = "1", features = ["providers", "signer-local", "contract", "t
 zkmist-circuits = { path = "../circuits" }
 halo2_proofs.workspace = true
 halo2curves.workspace = true
+# Axiom backend (Phase 4 CLI prover port — see docs/axiom-backend-migration.md §14).
+# Same halo2-lib v0.5.3 baseline as zkmist-circuits.
+halo2-base = { git = "https://github.com/axiom-crypto/halo2-lib.git", tag = "v0.5.3" }
+halo2-ecc = { git = "https://github.com/axiom-crypto/halo2-lib.git", tag = "v0.5.3" }
+snark-verifier-sdk = { git = "https://github.com/axiom-crypto/snark-verifier.git", features = ["revm"] }
+num-bigint = "0.4"
 rand = "0.8"
 # KZG verifier transcript — Keccak256-based, MUST match Halo2Verifier.sol's
 # squeeze_challenge. Sourced from the vendored halo2-solidity-verifier so the

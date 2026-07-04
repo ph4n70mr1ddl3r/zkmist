@@ -147,7 +147,7 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
 
 // ── Command: prove (Halo2-KZG) ──────────────────────────────────────────
 
-pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
+pub fn cmd_prove(key_file: Option<&str>, axiom: bool) -> Result<(), String> {
     // ── Step 1: Credentials ──────────────────────────────────────────────
     eprintln!("[1/4] Enter credentials:");
     let private_key = if let Some(path) = key_file {
@@ -300,14 +300,20 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     let timestamp = timestamp_string();
     let proof_path = proofs_dir().join(format!("zkmist_proof_{}.json", timestamp));
 
-    let _nullifier_result = crate::halo2_prover::generate_v2_proof(
-        &private_key,
-        &sibling_arr,
-        &path_arr,
-        &root,
-        &recipient,
-        &proof_path,
-    )?;
+    let _nullifier_result = if axiom {
+        crate::halo2_prover_axiom::generate_v2_proof_axiom(
+            &private_key,
+            &sibling_arr[..TREE_DEPTH],
+            &path_arr[..TREE_DEPTH],
+            &root,
+            &recipient,
+            &proof_path,
+        )?
+    } else {
+        crate::halo2_prover::generate_v2_proof(
+            &private_key, &sibling_arr, &path_arr, &root, &recipient, &proof_path,
+        )?
+    };
 
     eprintln!();
     eprintln!("      ✓ Proof saved: {}", proof_path.display());

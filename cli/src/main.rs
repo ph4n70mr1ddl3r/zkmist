@@ -13,6 +13,7 @@ mod commands;
 mod constants;
 mod download;
 mod halo2_prover;
+mod halo2_prover_axiom;
 mod helpers;
 mod types;
 
@@ -49,6 +50,10 @@ enum Commands {
         /// Ensure the file has restricted permissions (e.g., chmod 600).
         #[arg(long)]
         key_file: Option<String>,
+        /// Use the axiom backend prover (Phase 4 migration; see
+        /// docs/axiom-backend-migration.md). Default is the legacy PSE prover.
+        #[arg(long, default_value_t = false)]
+        axiom: bool,
     },
 
     /// Submit proof to ZKMAirdrop contract on Base.
@@ -115,7 +120,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Fetch { no_verify } => cmd_fetch(no_verify),
-        Commands::Prove { key_file } => cmd_prove(key_file.as_deref()),
+        Commands::Prove { key_file, axiom } => cmd_prove(key_file.as_deref(), axiom),
         Commands::Submit {
             proof_file,
             rpc_url,
@@ -871,3 +876,35 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod axiom_prover_tests {
+    use super::halo2_prover_axiom::{biguint_to_fr, bytes_be_to_fq, bytes_be_to_fr};
+    use halo2_base::{halo2_proofs::halo2curves::bn256::Fr, utils::fe_to_biguint};
+    use num_bigint::BigUint;
+
+    #[test]
+    fn test_bytes_be_to_fr_roundtrip() {
+        let mut b = [0u8; 32];
+        b[31] = 42;
+        assert_eq!(bytes_be_to_fr(&b), Fr::from(42u64));
+        let be = fe_to_biguint(&Fr::from(123_456u64)).to_bytes_be();
+        let mut padded = [0u8; 32];
+        padded[32 - be.len()..].copy_from_slice(&be);
+        assert_eq!(bytes_be_to_fr(&padded), Fr::from(123_456u64));
+    }
+
+    #[test]
+    fn test_biguint_to_fr() {
+        assert_eq!(biguint_to_fr(&BigUint::from(999u64)), Fr::from(999u64));
+    }
+
+    #[test]
+    fn test_bytes_be_to_fq() {
+        use halo2_base::halo2_proofs::halo2curves::secp256k1::Fq;
+        let mut b = [0u8; 32];
+        b[31] = 7;
+        assert_eq!(bytes_be_to_fq(&b), Fq::from(7u64));
+    }
+}
+
