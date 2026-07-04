@@ -264,3 +264,31 @@ Dependencies/decisions to settle first:
   circuit around k≈21, above the original k=18 target. A lookup-table χ (as
   PSE `zkevm-circuits` uses) would shrink Keccak substantially — worth doing
   before sizing the production circuit.
+
+## 12. Off-chain Merkle tree — halo2-base convention (DONE 2026-07-04)
+
+Resolved the §9.1 sponge-convention decision **adopt halo2-base end-to-end**:
+nothing is deployed, so the off-chain eligibility tree is rebuilt under the
+axiom circuit's convention rather than hand-rolling an unaudited Circom wrapper
+around halo2-base's (non-public) raw permutation.
+
+`merkle-tree/src/halo2base.rs` mirrors the crate's API under the halo2-base
+sponge (capacity `2^64`, squeeze permutation, digest `state[1]`) — the same
+Grain-LFSR permutation (via `light-poseidon::parameters::bn254_x5`) wrapped in
+the circuit's convention. The legacy light-poseidon (Circom) API is retained
+for the PSE circuit (17 existing tests still pass).
+
+Verified two ways:
+- **Byte-for-byte cross-check** (`circuits/tests/merkle_tree_halo2base.rs`):
+  `merkle_tree::halo2base` `hash_leaf` / `hash_interior` equal
+  `poseidon_axiom::native_hash_leaf` / `native_hash_interior`; plus an off-chain
+  build → proof → verify round-trip (and a tampered-proof rejection).
+- **End-to-end in-circuit** (`tests/claim_axiom.rs::
+  test_axiom_claim_verifies_offchain_tree`): a tree built by the OFF-CHAIN
+  tooling is verified by the IN-CIRCUIT claim logic — the real production flow
+  (eligibility list → off-chain tree → circuit proof), MockProver k≈21.
+
+This closes the loop: the axiom claim circuit can now verify a real,
+off-chain-built eligibility tree. (The streaming builder for the 64M-address
+production tree is the same logic, convention-agnostic in structure — port it
+when sizing the real deployment.)

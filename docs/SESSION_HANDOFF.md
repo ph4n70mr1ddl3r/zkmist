@@ -67,12 +67,14 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 3 step 4: K<n range proof + 4 negatives** — the §5a
-  TRAP closed (`secp_axiom::enforce_scalar_less_than_n`); full claim circuit
-  now rejects wrong-root / wrong-nullifier / zero-recipient / K≥n. **Phase 3
-  circuit work complete.** See `docs/axiom-backend-migration.md` §11.5.
-- `e87e030` — **Phase 3 step 3: claim happy-path circuit** —
-  `claim_axiom::prove_claim` wires all gadgets with the §5/§5a bindings.
+- _(pending)_ — **Phase 4 step 1: off-chain tree → halo2-base convention** —
+  `merkle-tree/src/halo2base.rs`; cross-checked byte-for-byte against
+  `poseidon_axiom` AND end-to-end (off-chain-built tree verified in-circuit).
+  Resolves the §9.1 sponge-convention decision (adopt halo2-base end-to-end).
+  See `docs/axiom-backend-migration.md` §12.
+- `19a01cc` — **Phase 3 step 4: K<n range proof + 4 negatives** — the §5a
+  TRAP closed; full claim circuit now rejects wrong-root / wrong-nullifier /
+  zero-recipient / K≥n. **Phase 3 circuit work complete.**
 - `c2c1e57` — **Phase 3 step 2: Merkle + nullifier axiom ports + address
   bridge** — all gadgets ported; `keccak(pubkey)→address` proven end-to-end.
 - `2aca3cb` — **Phase 3 step 1: Keccak port** — bit-level Keccak-f[1600] on
@@ -108,8 +110,7 @@ poseidon-primitives = "0.2"
    nullifier, zero recipient, K≥n), all §5/§5a bindings incl. the K<n range proof.
    **The axiom circuit is complete and sound (MockProver-verified).**
 7. **TODO — productionize (Phase 4):**
-   (a) port `zkmist-merkle-tree` to the halo2-base Poseidon convention so a
-     deployed eligibility root verifies (decided: adopt halo2-base end-to-end);
+   (a) ✅ off-chain tree → halo2-base convention (done, §12);
    (b) optionally a lookup-table χ for Keccak to bring the circuit from k≈21
      back toward the k=18 target (~1 GiB proving);
    (c) port `cli/src/halo2_prover.rs` to the axiom backend; regenerate the

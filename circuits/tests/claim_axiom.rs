@@ -25,7 +25,6 @@ use zkmist_circuits::{
     poseidon_axiom::{native_hash_interior, native_hash_leaf},
     secp_axiom::{assign_privkey, assign_scalar_biguint, secp_n_biguint},
 };
-
 fn native_pubkey(privkey: Fq) -> (Fp, Fp) {
     let g = Secp256k1Affine::generator();
     let pt = (g * privkey).to_affine();
@@ -167,4 +166,61 @@ fn test_axiom_claim_rejects_key_above_n() {
             prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
                         c.root, c.nullifier, c.recipient);
         });
+}
+
+/// End-to-end: a tree built by the OFF-CHAIN tooling
+/// (`zkmist_merkle_tree::halo2base`) is verified by the IN-CIRCUIT claim logic.
+/// This is the real production flow — eligibility list → off-chain tree →
+/// circuit proof — and proves the two agree on the Poseidon convention.
+#[test]
+fn test_axiom_claim_verifies_offchain_tree() {
+    use zkmist_merkle_tree::halo2base::{build_tree_with_depth, generate_proof, tree_root};
+
+    let depth = 4usize;
+    let privkey = Fq::from(0x0A11CE_5EC7E7u64);
+
+    // privkey → Ethereum address.
+    let (x_fp, y_fp) = native_pubkey(privkey);
+    let mut h = Keccak::v256();
+    h.update(&fp_be_bytes(&x_fp));
+    h.update(&fp_be_bytes(&y_fp));
+    let mut digest = [0u8; 32];
+    h.finalize(&mut digest);
+    let claim_addr: [u8; 20] = digest[12..32].try_into().unwrap();
+    let claim_idx = 9usize;
+
+    // Off-chain tree (halo2-base convention) containing the claim's address.
+    let mut addresses = vec![[0u8; 20]; 1 << depth];
+    for (i, a) in addresses.iter_mut().enumerate() {
+        a[19] = (i as u8).wrapping_add(1);
+    }
+    addresses[claim_idx] = claim_addr;
+    let layers = build_tree_with_depth(&addresses, depth);
+    let root_bytes = tree_root(&layers);
+    let (sib_bytes, path_u8) = generate_proof(&layers, claim_idx);
+
+    // Convert the off-chain proof (32-byte BE siblings, u8 indices) → axiom Fr
+    // witnesses, exactly as a prover would when filling the circuit.
+    let bytes32_to_fr = |b: &[u8; 32]| -> Fr {
+        let mut v = Fr::zero();
+        for &x in b { v = v * Fr::from(256u64) + Fr::from(x as u64); }
+        v
+    };
+    let siblings: Vec<Fr> = sib_bytes.iter().map(bytes32_to_fr).collect();
+    let path_indices: Vec<Fr> = path_u8.iter().map(|p| Fr::from(*p as u64)).collect();
+    let root = bytes32_to_fr(&root_bytes);
+
+    // Nullifier (matches the circuit's nullifier↔scalar binding).
+    let k_big = fe_to_biguint(&privkey);
+    let p: num_bigint::BigUint = modulus::<Fr>();
+    let nullifier = native_hash_interior(biguint_to_fe(&(k_big % p)), domain_field_element());
+
+    let mut r = [0u8; 20];
+    r[19] = 0x42;
+    let recipient = address_to_fr(&r);
+
+    base_test().k(21).lookup_bits(8).run(|ctx, range| {
+        let limbs = assign_privkey(ctx, privkey);
+        prove_claim(ctx, range, limbs, &siblings, &path_indices, root, nullifier, recipient);
+    });
 }
