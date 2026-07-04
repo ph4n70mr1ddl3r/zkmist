@@ -1,0 +1,185 @@
+//! Full axiom claim-circuit → on-chain verifier → EVM round-trip.
+//!
+//! The real gate for the FIXED claim circuit (including the Merkle path-index
+//! boolean constraint from `merkle_axiom`). It builds the full depth-26 claim
+//! circuit, keygens on a dev SRS, creates a real SHPLONK proof, generates the
+//! snark-verifier Solidity verifier from the SAME vk, and runs `evm_verify`
+//! (revm deploy + call) — proving the prover's transcript/instances match what
+//! the on-chain verifier accepts.
+//!
+//! ⚠️ Heavy: k=21 (~2M advice cells, keygen ~12s + proof ~23s + verifier gen).
+//! Gated behind `ZKMIST_RUN_CLAIM_ROUNDTRIP=1` so the default `cargo test`
+//! suite stays fast/green; opted-in it is a HARD gate (no silent skip).
+//!
+//! NOTE: uses `gen_srs` (toxic-waste dev SRS). That validates the
+//! circuit↔verifier↔EVM wiring and transcript, NOT proof soundness — the
+//! trapdoor holder could forge. Mainnet soundness needs the pinned PSE
+//! ceremony SRS (see cli/src/constants.rs KZG_SRS_SHA256).
+
+use ff::PrimeField;
+use group::Curve;
+use halo2_base::{
+    gates::circuit::CircuitBuilderStage,
+    gates::circuit::builder::RangeCircuitBuilder,
+    gates::RangeChip,
+    halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        halo2curves::{
+            bn256::Fr,
+            secp256k1::{Fp, Fq, Secp256k1Affine},
+            CurveAffine,
+        },
+        plonk::{keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
+    },
+    utils::{fs::gen_srs, modulus},
+};
+use num_bigint::BigUint;
+use snark_verifier_sdk::{
+    evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk, evm_verify},
+    CircuitExt,
+};
+use tiny_keccak::{Hasher as KeccakHasher, Keccak};
+
+use zkmist_circuits::{
+    claim_axiom::prove_claim_to_cells,
+    nullifier_axiom::domain_field_element,
+    poseidon_axiom::native_hash_interior,
+    secp_axiom::assign_privkey,
+};
+use zkmist_merkle_tree::halo2base::build_single_leaf_proof;
+
+const TREE_DEPTH: usize = 26;
+const K: u32 = 21;
+
+/// `CircuitExt` marker for snark-verifier verifier generation (num_instance =
+/// 3; non-aggregated → accumulator_indices = None). Mirrors the prover's
+/// `AxiomClaimMarker`.
+struct AxiomClaimMarker;
+impl Circuit<Fr> for AxiomClaimMarker {
+    type Config = ();
+    type FloorPlanner = SimpleFloorPlanner;
+    type Params = ();
+    fn without_witnesses(&self) -> Self { Self }
+    fn configure(_: &mut ConstraintSystem<Fr>) -> Self::Config {}
+    fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> { Ok(()) }
+}
+impl CircuitExt<Fr> for AxiomClaimMarker {
+    fn num_instance(&self) -> Vec<usize> { vec![3] }
+    fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
+}
+
+fn bytes_be_to_fr(b: &[u8]) -> Fr {
+    let mut v = Fr::zero();
+    for &x in b {
+        v = v * Fr::from(256u64) + Fr::from(x as u64);
+    }
+    v
+}
+
+fn bytes_be_to_fq(b: &[u8]) -> Fq {
+    let big = BigUint::from_bytes_be(b);
+    let mut limbs = [0u64; 4];
+    for (i, limb) in big.iter_u64_digits().enumerate().take(4) {
+        limbs[i] = limb;
+    }
+    Fq::from_raw(limbs)
+}
+
+fn native_pubkey(privkey: Fq) -> (Fp, Fp) {
+    let g = Secp256k1Affine::generator();
+    let pt = (g * privkey).to_affine();
+    let c = pt.coordinates().unwrap();
+    (*c.x(), *c.y())
+}
+
+fn fp_be_bytes(fp: &Fp) -> [u8; 32] {
+    let mut b = fp.to_repr();
+    b.reverse();
+    b
+}
+
+#[test]
+fn test_claim_circuit_evm_roundtrip() {
+    if !matches!(std::env::var("ZKMIST_RUN_CLAIM_ROUNDTRIP").as_deref(), Ok("1")) {
+        eprintln!(
+            "claim EVM round-trip: skipped (set ZKMIST_RUN_CLAIM_ROUNDTRIP=1 to enable). \
+             Heavy (k=21); validates the fixed claim circuit verifies on-chain."
+        );
+        return;
+    }
+
+    // ── Witness: PRD test key → address → single-leaf depth-26 Merkle proof ──
+    let privkey: [u8; 32] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
+        0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+        0xcd, 0xef,
+    ];
+    let privkey_fq = bytes_be_to_fq(&privkey);
+    let (x_fp, y_fp) = native_pubkey(privkey_fq);
+    let mut h = Keccak::v256();
+    h.update(&fp_be_bytes(&x_fp));
+    h.update(&fp_be_bytes(&y_fp));
+    let mut digest = [0u8; 32];
+    h.finalize(&mut digest);
+    let addr: [u8; 20] = digest[12..32].try_into().unwrap();
+    assert_eq!(
+        hex::encode(addr),
+        "fcad0b19bb29d4674531d6f115237e16afce377c",
+        "test-vector address mismatch"
+    );
+
+    let (root, siblings, path) = build_single_leaf_proof(&addr, TREE_DEPTH);
+    let siblings_fr: Vec<Fr> = siblings.iter().map(|s| bytes_be_to_fr(s)).collect();
+    let path_fr: Vec<Fr> = path.iter().map(|p| Fr::from(*p as u64)).collect();
+    let root_fr = bytes_be_to_fr(&root);
+
+    let mut recipient = [0u8; 20];
+    recipient[18] = 0xB0;
+    recipient[19] = 0x0B;
+    let mut recip_padded = [0u8; 32];
+    recip_padded[12..32].copy_from_slice(&recipient);
+    let recipient_fr = bytes_be_to_fr(&recip_padded);
+
+    // Nullifier (native): poseidon(privkey mod p_BN254, domain).
+    let privkey_big = BigUint::from_bytes_be(&privkey);
+    let key_mod_p = bytes_be_to_fr(&(&privkey_big % &modulus::<Fr>()).to_bytes_be());
+    let nullifier_fr = native_hash_interior(key_mod_p, domain_field_element());
+
+    let instances = vec![vec![root_fr, nullifier_fr, recipient_fr]];
+
+    let build = |b: &mut RangeCircuitBuilder<Fr>| {
+        let range = RangeChip::new(8, b.lookup_manager().clone());
+        let ctx = b.pool(0).main();
+        let limbs = assign_privkey(ctx, privkey_fq);
+        let (r, n, rc) =
+            prove_claim_to_cells(ctx, &range, limbs, &siblings_fr, &path_fr, recipient_fr);
+        b.assigned_instances[0] = vec![r, n, rc];
+    };
+
+    // ── keygen ──
+    eprintln!("[roundtrip] keygen stage (k={K})...");
+    let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
+        .use_k(K as usize)
+        .use_instance_columns(1);
+    kb.set_lookup_bits(8);
+    build(&mut kb);
+    let config_params = kb.calculate_params(Some(9));
+    let params = gen_srs(K);
+    let vk = keygen_vk(&params, &kb).expect("vk");
+    let pk = keygen_pk(&params, vk.clone(), &kb).expect("pk");
+    let break_points = kb.break_points();
+    drop(kb);
+
+    // ── prover ──
+    eprintln!("[roundtrip] prover stage...");
+    let mut pb = RangeCircuitBuilder::prover(config_params, break_points);
+    build(&mut pb);
+    let proof = gen_evm_proof_shplonk(&params, &pk, pb, instances.clone());
+    eprintln!("[roundtrip] proof = {} bytes", proof.len());
+
+    // ── generate + compile the on-chain verifier, then evm_verify ──
+    eprintln!("[roundtrip] generating Solidity verifier + evm_verify...");
+    let deployment = gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![3], None);
+    let gas = evm_verify(deployment, instances, proof).expect("EVM verify failed");
+    eprintln!("[roundtrip] ✅ claim circuit on-chain round-trip OK: gas = {gas}");
+}
