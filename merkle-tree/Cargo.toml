@@ -7,7 +7,12 @@ edition = "2021"
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 light-poseidon = "0.4"
+# Parallel Poseidon hashing in the tree builders (`build_tree_*`). Each
+# poseidon(a,b) pair is independent, so levels parallelize with identical
+# output to the serial version. The non-optimized halo2-base permutation is
+# the bottleneck at 2^26 leaves (~60min single-threaded); rayon brings a full
+# production-tree build to ~5min on a 32-core box.
+rayon = "1.12"
 
 [dev-dependencies]
 hex = "0.4"
-rayon = "1.12"

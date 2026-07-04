@@ -4,7 +4,8 @@
 //!   cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv
 //!   cargo run --release -p zkmist-tools --bin compute-root -- /path/to/addresses.csv --output /path/to/root.txt
 //!
-//! Requirements: ~2 GB RAM, ~5-15 minutes for 64M addresses.
+//! Requirements: parallel halo2-base build (rayon) — ~5-10 min and ~4-6 GB
+//! RAM for 64M addresses on a modern multicore box.
 
 use std::io::Write;
 use std::path::Path;

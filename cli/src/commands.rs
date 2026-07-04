@@ -146,7 +146,8 @@ pub fn cmd_fetch(no_verify: bool) -> Result<(), String> {
         eprintln!("      File-level SHA-256 integrity verified ✓");
     } else {
         eprintln!("[3/3] Verifying Merkle root (streaming build)...");
-        eprintln!("      ⚠️  This requires ~2 GB RAM and may take 1–2 minutes.");
+        eprintln!("      ⚠️  Builds the full 2^26 Poseidon tree (halo2-base). Parallel across");
+        eprintln!("         CPU cores (~5-10 min on a modern multicore box); needs ~4-6 GB RAM.");
 
         let addresses = load_eligibility_list()?;
         eprintln!("      Loaded {} addresses", addresses.len());
@@ -203,7 +204,8 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
         (cached_root, cached_siblings, cached_path)
     } else {
         eprintln!("      No cached proof — building via streaming tree...");
-        eprintln!("      ⚠️  This requires ~2 GB RAM. The result will be cached for future use.");
+        eprintln!("      ⚠️  Builds the full 2^26 Poseidon tree (halo2-base), parallel across CPU");
+        eprintln!("         cores (~5-10 min on a modern multicore box, ~4-6 GB RAM). Cached after.");
 
         let addresses = load_eligibility_list()?;
         eprintln!("      Loaded {} eligible addresses", addresses.len());

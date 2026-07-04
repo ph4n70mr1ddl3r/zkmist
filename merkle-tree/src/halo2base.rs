@@ -17,6 +17,7 @@ use ark_bn254::Fr;
 use ark_ff::{Field, PrimeField};
 use light_poseidon::parameters::bn254_x5::get_poseidon_parameters;
 use light_poseidon::PoseidonParameters;
+use rayon::prelude::*;
 
 use crate::{field_element_to_bytes, PADDING_SENTINEL};
 
@@ -123,19 +124,20 @@ pub fn build_tree_with_depth(addresses: &[[u8; 20]], depth: usize) -> Vec<Vec<[u
     let num_leaves = 1usize << depth;
     let mut layers = Vec::with_capacity(depth + 1);
 
-    let mut current_layer: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
-    for addr in addresses {
-        current_layer.push(hasher.hash_leaf(addr));
-    }
+    // Leaf + interior layers parallelize: each poseidon(a,b) is independent,
+    // and rayon preserves order, so the output is bit-for-bit identical to the
+    // serial version (`test_halo2base_streaming_matches_in_memory` locks this).
+    let mut current_layer: Vec<[u8; 32]> =
+        addresses.par_iter().map(|a| hasher.hash_leaf(a)).collect();
     current_layer.resize(num_leaves, PADDING_SENTINEL);
     layers.push(current_layer);
 
     for level in 0..depth {
         let prev = &layers[level];
-        let mut next = Vec::with_capacity(prev.len() / 2);
-        for chunk in prev.chunks(2) {
-            next.push(hasher.hash_interior(&chunk[0], &chunk[1]));
-        }
+        let next: Vec<[u8; 32]> = prev
+            .par_chunks(2)
+            .map(|chunk| hasher.hash_interior(&chunk[0], &chunk[1]))
+            .collect();
         layers.push(next);
     }
     layers
@@ -150,6 +152,10 @@ pub fn tree_root(layers: &[Vec<[u8; 32]>]) -> [u8; 32] {
 /// layer-by-layer (current + next), tracking the target leaf's sibling/path.
 /// Mirrors `crate::build_tree_streaming_with_depth` (light-poseidon) but for
 /// the axiom circuit. Returns `(root, Option<(siblings, path)>)`.
+///
+/// Level hashing is parallelized across rayon threads (each pair is
+/// independent); the per-level sibling/path bookkeeping stays serial (O(1)).
+/// Output is identical to the serial version.
 pub fn build_tree_streaming_with_depth(
     addresses: &[[u8; 20]],
     depth: usize,
@@ -158,10 +164,8 @@ pub fn build_tree_streaming_with_depth(
     let hasher = Hasher::new();
     let num_leaves = 1usize << depth;
 
-    let mut current: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
-    for addr in addresses {
-        current.push(hasher.hash_leaf(addr));
-    }
+    let mut current: Vec<[u8; 32]> =
+        addresses.par_iter().map(|a| hasher.hash_leaf(a)).collect();
     current.resize(num_leaves, PADDING_SENTINEL);
 
     let mut target_siblings: Option<Vec<[u8; 32]>> =
@@ -170,10 +174,10 @@ pub fn build_tree_streaming_with_depth(
     let mut idx = target_index.unwrap_or(0);
 
     for _level in 0..depth {
-        let mut next = Vec::with_capacity(current.len() / 2);
-        for chunk in current.chunks(2) {
-            next.push(hasher.hash_interior(&chunk[0], &chunk[1]));
-        }
+        let next: Vec<[u8; 32]> = current
+            .par_chunks(2)
+            .map(|chunk| hasher.hash_interior(&chunk[0], &chunk[1]))
+            .collect();
         if let (Some(ref mut sibs), Some(ref mut path)) =
             (&mut target_siblings, &mut target_path)
         {
