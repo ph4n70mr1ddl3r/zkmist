@@ -1,5 +1,23 @@
-# Replace the hand-rolled secp256k1 gadget with `halo2wrong`
+# Replace the hand-rolled secp256k1 gadget (target: `halo2-ecc`)
 
+> **PIVOT (2026-07-03): `halo2wrong` → `halo2-ecc`.** The halo2wrong rewiring
+> (branch `phase-b-halo2wrong-rewiring`) hit a hard wall: its RNS limb
+> representation does **not** expose the secp256k1 pubkey as bytes, so the
+> `keccak(pubkey) → address` binding — unique to ZKMist (zkEVM-style) — cannot
+> be wired (both `native()` and per-limb binding fail). PSE's *own* `zkevm-
+> circuits` solves exactly this operation with **`halo2-ecc`** (axiom-crypto),
+> whose `sig_circuit.rs` literally does `keccak(pub_key_bytes)` "where
+> pub_key_bytes is built from the pub_key" — i.e. halo2-ecc CAN build the
+> pubkey bytes (the bridge halo2wrong can't) and ships `pk_bytes_le`/
+> `pk_bytes_swap_endianness` helpers. **halo2-ecc is the new target.**
+>
+> **Spike (2026-07-03): PASS.** `halo2-ecc = "=0.5.0"` resolves cleanly and
+> `cargo tree -i halo2_proofs` shows **one** unified `halo2_proofs v0.3.0`
+> (the project's existing PSE fork pin, `#73408a14`) — **no backend switch,
+> no version conflict.** halo2-ecc is already a proven-compatible transitive
+> dep (via `snark-verifier`, used by `zkmist-tools`). The dep is added to
+> `circuits/Cargo.toml` ready for the integration.
+>
 > **Status:** DESIGN / SCOPE — not yet implemented. This is the production track
 > for both (a) removing the #1 audit blocker and (b) potentially halving the
 > proving RAM by reaching k=22.
