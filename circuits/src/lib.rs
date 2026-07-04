@@ -30,6 +30,10 @@ pub mod secp_axiom;
 // Axiom-backend Keccak-256 gadget (bit-level, halo2-base eDSL). Phase 3 of the
 // axiom migration: the last hand-rolled crypto gadget ported to axiom.
 pub mod keccak_axiom;
+// Axiom-backend Merkle + nullifier gadgets (halo2-base eDSL). Phase 3 of the
+// axiom migration: thin Poseidon-based gadgets ported to axiom.
+pub mod merkle_axiom;
+pub mod nullifier_axiom;
 // Non-native field arithmetic uses limb-indexed loops throughout.
 #[allow(clippy::needless_range_loop)]
 pub mod secp256k1;

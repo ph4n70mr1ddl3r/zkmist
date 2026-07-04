@@ -74,7 +74,7 @@ mint) is unchanged.
 |---|---|---|
 | **1. Stack + first vertical slice** | Add the axiom deps; locate the Solidity verifier; port the Poseidon gadget to `halo2_base::poseidon`; build a tiny test circuit doing `poseidon(x)` via halo2-base + MockProver (axiom's `base_test`) | axiom stack builds in this repo; Poseidon port verified — **DONE 2026-07-04** (see §9) |
 | **2. secp + address bridge** | Use `halo2-ecc` for `scalar·G`; extract pubkey bytes; feed a Keccak input; prove `keccak(pubkey)→address` in an isolated circuit (mirrors PSE `sig_circuit`) | byte-bridge proven in isolation — **DONE 2026-07-04** (see §10) |
-| **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | MockProver E2E + 4 negatives pass at k=18 |
+| **3. Keccak + full circuit** | Port the Keccak gadget (or adopt PSE zkevm-circuits'); rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp+keccak+poseidon+merkle+nullifier | MockProver E2E + 4 negatives pass at k=18 — **gadgets + address-bridge DONE 2026-07-04** (see §11); full-circuit rewrite remains |
 | **4. Prover + verifier + deploy** | Port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain verifier; measure k; testnet deploy + real-KZG round-trip (now ~1 GiB → fits 32 GB) | blocker #2 cleared on a 32 GB machine |
 
 ## 7. Risks
@@ -189,3 +189,55 @@ from `privkey · G` so they can feed `keccak256 → Ethereum address`. Deliverab
   hash is Phase 3, after the Keccak gadget is ported to the axiom eDSL. Address
   byte order: `keccak256(x_be‖y_be)` — reverse each 32-byte half to big-endian
   before hashing.
+
+## 11. Phase 3 — axiom gadget ports + address bridge (in progress, 2026-07-04)
+
+All three remaining gadgets are ported to the axiom `Context` eDSL, and the
+migration's crux — `keccak(pubkey)→address` — is proven end-to-end in one
+axiom circuit. The only remaining Phase 3 work is the `ZKMistV2Claim` rewrite
+wiring everything together (plus the binding logic + 4 negatives).
+
+### 11.1 Keccak port — `circuits/src/keccak_axiom.rs`
+
+Bit-level Keccak-f[1600] on halo2-base: 1600 boolean cells; θ/χ/ι as polynomial
+identities on bits (`XOR=a+b−2ab`, `AND=ab`, `ANDNOT=(1−a)·b`); ρ/π free
+reindexing. Single-block ≤135-byte sponge (ZKMist's 64-byte pubkey only).
+Verified in `tests/keccak_axiom.rs` (empty vector, 64-byte vs `tiny_keccak`,
+and the privkey=1→address ground truth). Cost ~1.7M advice cells (algebraic χ).
+A hand-copy typo in RC[17] (0x…0080 vs the correct 0x8000000000000080) silently
+broke rounds 17-23 and was caught by the round-limited differential helper
+`keccak_f1600_rounds`; the gadget's RC is now byte-identical to `keccak.rs`.
+
+### 11.2 Merkle + nullifier ports — `merkle_axiom.rs`, `nullifier_axiom.rs`
+
+Thin wrappers over `poseidon_axiom` (halo2-base sponge). Merkle verifies a
+26-level path via `gate.select` routing + `hash_interior`; nullifier is
+`poseidon(key, domain)`. Both have self-consistency tests (circuit == native
+halo2-base convention). They inherit the **sponge-convention caveat** (§9.1):
+the off-chain `zkmist-merkle-tree` uses light-poseidon, so the committed root /
+nullifier must be rebuilt under halo2-base's convention (or the hasher wrapped)
+before these verify a deployed tree.
+
+### 11.3 Address bridge (the crux) — `tests/address_bridge_axiom.rs`
+
+Proves `address = keccak256(privkey·G)[12..]` in ONE axiom circuit, wiring
+`secp_axiom` (pubkey → 64 LE bytes) → reverse to BE → `keccak_axiom` → address.
+Each of the 20 address bytes is constrained equal to the native Ethereum
+derivation; MockProver (k=21, ~1.86M advice cells) asserts every constraint.
+The derived address matches the Phase-2 secp byte-bridge test (`0xbc6d…a466`).
+This is the capability halo2wrong could not provide and the reason the axiom
+migration was chosen — now proven end-to-end in-circuit.
+
+### 11.4 Remaining Phase 3 work
+
+Rewrite `ZKMistV2Claim` in the `Context` eDSL wiring secp + keccak + poseidon +
+merkle + nullifier, with the three bindings from
+`docs/secp256k1-migration-plan.md` §5/§5a (leaf↔address, nullifier↔scalar,
+recipient↔uint160), then port the 4 negative forgery-rejection tests.
+Dependencies/decisions to settle first:
+- **Sponge convention (§9.1):** adopt halo2-base's convention end-to-end
+  (rebuild the off-chain tree) or wrap `poseidon_axiom` to replicate Circom.
+- **k budget:** the heavy Keccak (~1.7M cells) + secp (~0.13M) put the full
+  circuit around k≈21, above the original k=18 target. A lookup-table χ (as
+  PSE `zkevm-circuits` uses) would shrink Keccak substantially — worth doing
+  before sizing the production circuit.

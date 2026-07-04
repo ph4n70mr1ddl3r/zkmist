@@ -47,6 +47,122 @@ use halo2_base::{
     poseidon::hasher::{spec::OptimizedPoseidonSpec, PoseidonHasher},
     AssignedValue, Context,
 };
+use ff::{Field, PrimeField};
+use poseidon_primitives::poseidon::primitives::Spec;
+use std::marker::PhantomData;
+
+// ── Native reference (halo2-base sponge convention) ──────────────────────
+//
+// A native (non-circuit) Poseidon under halo2-base's sponge convention
+// (capacity 2^64, squeeze permutation, output state[1]), using the same raw
+// Grain-LFSR permutation as the in-circuit chip. Used to generate expected
+// digests for the Merkle / nullifier gadgets and their tests. See
+// `tests/poseidon_axiom.rs` for the proof that this permutation matches
+// light-poseidon byte-for-byte.
+
+#[derive(Debug)]
+struct Pow5Gen<
+    const T: usize,
+    const RATE: usize,
+    const R_F: usize,
+    const R_P: usize,
+    const SECURE_MDS: usize,
+>(PhantomData<Fr>);
+
+impl<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize, const SECURE_MDS: usize>
+    Spec<Fr, T, RATE> for Pow5Gen<T, RATE, R_F, R_P, SECURE_MDS>
+{
+    fn full_rounds() -> usize {
+        R_F
+    }
+    fn partial_rounds() -> usize {
+        R_P
+    }
+    fn sbox(val: Fr) -> Fr {
+        val.pow([5u64])
+    }
+    fn secure_mds() -> usize {
+        SECURE_MDS
+    }
+}
+
+/// Standard (non-optimized) Poseidon permutation on `T`-element state, using
+/// raw Grain-LFSR round constants + dense MDS. Mirrors the reference in
+/// `poseidon-primitives`.
+fn native_permute(state: &mut [Fr], mds: &[Vec<Fr>], rc: &[Vec<Fr>], r_f: usize, r_p: usize) {
+    let t = state.len();
+    let half = r_f / 2;
+    let apply_mds = |state: &mut [Fr]| {
+        let mut ns = vec![Fr::zero(); t];
+        for i in 0..t {
+            for j in 0..t {
+                ns[i] += mds[i][j] * state[j];
+            }
+        }
+        state.copy_from_slice(&ns);
+    };
+    let mut round = 0usize;
+    for _ in 0..half {
+        for i in 0..t {
+            state[i] = (state[i] + rc[round][i]).pow([5u64]);
+        }
+        apply_mds(state);
+        round += 1;
+    }
+    for _ in 0..r_p {
+        for i in 0..t {
+            state[i] += rc[round][i];
+        }
+        state[0] = state[0].pow([5u64]);
+        apply_mds(state);
+        round += 1;
+    }
+    for _ in 0..half {
+        for i in 0..t {
+            state[i] = (state[i] + rc[round][i]).pow([5u64]);
+        }
+        apply_mds(state);
+        round += 1;
+    }
+}
+
+/// Native Poseidon hash under halo2-base's sponge convention, matching the
+/// in-circuit [`hash_leaf`] / [`hash_interior`]. `inputs.len()` must equal
+/// `RATE` (the only arity ZKMist uses: 1 for leaf, 2 for interior/nullifier).
+pub fn native_poseidon<
+    const T: usize,
+    const RATE: usize,
+    const R_F: usize,
+    const R_P: usize,
+>(
+    inputs: &[Fr],
+) -> Fr {
+    assert_eq!(inputs.len(), RATE);
+    let (rc_arr, mds_arr, _mds_inv) =
+        <Pow5Gen<T, RATE, R_F, R_P, 0> as Spec<Fr, T, RATE>>::constants();
+    let rc: Vec<Vec<Fr>> = rc_arr.iter().map(|r| r.to_vec()).collect();
+    let mds: Vec<Vec<Fr>> = mds_arr.iter().map(|r| r.to_vec()).collect();
+    let mut state = vec![Fr::zero(); T];
+    state[0] = Fr::from_u128(1u128 << 64); // halo2-base capacity
+    for (j, inp) in inputs.iter().enumerate() {
+        state[1 + j] += inp;
+    }
+    native_permute(&mut state, &mds, &rc, R_F, R_P);
+    // halo2-base squeezes an extra empty permutation when len % RATE == 0.
+    state[1] += Fr::one();
+    native_permute(&mut state, &mds, &rc, R_F, R_P);
+    state[1]
+}
+
+/// Native leaf hash `poseidon(x)` (halo2-base convention): t=2.
+pub fn native_hash_leaf(x: Fr) -> Fr {
+    native_poseidon::<2, 1, 8, 56>(&[x])
+}
+
+/// Native interior hash `poseidon(a, b)` (halo2-base convention): t=3.
+pub fn native_hash_interior(a: Fr, b: Fr) -> Fr {
+    native_poseidon::<3, 2, 8, 57>(&[a, b])
+}
 
 /// Build the leaf-hash spec: t=2, RATE=1, R_F=8, R_P=56 (`light-poseidon`
 /// `new_circom(1)` equivalent). One permutation input.

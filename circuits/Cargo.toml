@@ -13,6 +13,10 @@ ff = "0.13"
 group = "0.13"
 # Poseidon hash — used to extract round constants and validate against
 light-poseidon = "0.4"
+# Native Poseidon reference (raw Grain-LFSR constants + dense MDS) — shared by
+# the axiom Poseidon gadget's native helpers and tests. Same algorithm
+# light-poseidon / Circom use; already pulled in transitively by halo2-base.
+poseidon-primitives = "0.2"
 # Byte reversal for ark-bn254 ↔ halo2curves field element conversion
 num-bigint = "0.4"
 num-traits = "0.2"
@@ -43,9 +47,5 @@ git-fork-api = []
 [dev-dependencies]
 rand = "0.8"
 hex = "0.4"
-# Native Poseidon reference (raw Grain-LFSR round constants + dense MDS) for
-# the axiom Poseidon port test — same algorithm light-poseidon / Circom use.
-# Already pulled in transitively by halo2-base; pinned explicitly here.
-poseidon-primitives = "0.2"
 zkmist-merkle-tree = { path = "../merkle-tree" }
 halo2_solidity_verifier = { path = "../vendor/halo2-solidity-verifier" }

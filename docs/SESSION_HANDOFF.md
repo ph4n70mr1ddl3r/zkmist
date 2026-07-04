@@ -67,7 +67,13 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 2: secp + pubkey byte-bridge** — `scalar·G` via halo2-ecc
+- _(pending)_ — **Phase 3 step 2: Merkle + nullifier axiom ports + address
+  bridge** — all gadgets now ported; `keccak(pubkey)→address` proven
+  end-to-end in-circuit (`tests/address_bridge_axiom.rs`). See
+  `docs/axiom-backend-migration.md` §11.
+- `2aca3cb` — **Phase 3 step 1: Keccak port** — bit-level Keccak-f[1600] on
+  halo2-base; verified vs tiny_keccak + privkey=1 vector.
+- `06cdfe4` — **Phase 2: secp + pubkey byte-bridge** — `scalar·G` via halo2-ecc
   + pubkey byte extraction proven in `circuits/tests/secp_axiom.rs` (byte-bridge
   matches canonical privkey=1 address). See `docs/axiom-backend-migration.md` §10.
 - `5d5a882` — **Phase 1 cont.: Poseidon port** — hand-rolled Poseidon replaced
@@ -87,34 +93,24 @@ halo2-ecc  = "=0.5.0"   # audited secp256k1 (EccChip, fixed_base_scalar_mult)
 poseidon-primitives = "0.2"
 ```
 
-### What to do next (Phase 3 — Keccak port + full circuit)
+### What to do next (Phase 3 — full circuit rewrite)
 
-1. **✅ DONE — Poseidon port** (`halo2_base::poseidon::PoseidonChip`). Gadget in
-   `circuits/src/poseidon_axiom.rs`; verified in `circuits/tests/poseidon_axiom.rs`.
-   **Caveat for Phase 3:** halo2-base's sponge convention DIFFERS from
-   light-poseidon/Circom (capacity `2^64` vs `0`, squeeze perm, output
-   `state[1]` vs `state[0]`) — same permutation, different hash. The off-chain
-   Merkle tree (`zkmist-merkle-tree`) uses light-poseidon, so Phase 3 must
-   reconcile (adopt halo2-base's convention end-to-end, or wrap the chip).
-   See `docs/axiom-backend-migration.md` §9.1.
-
-2. **✅ DONE — secp + pubkey byte-bridge** (`halo2-ecc`). Gadget in
-   `circuits/src/secp_axiom.rs` (`pubkey_from_privkey`,
-   `field_point_to_le_bytes`); verified in `circuits/tests/secp_axiom.rs`
-   (scalar·G correct; bytes match canonical privkey=1 address).
-   **Findings:** the scalar MUST be chunked (max_bits=limb_bits≤254, not 256);
-   limb config must give `carry_mod` headroom (88×3, NOT 64×4); byte extraction
-   reads the positional truncation's low 256 bits. See §10.1.
-
-3. **Port Keccak to the axiom `Context` eDSL** — the last hand-rolled crypto
-   gadget (`circuits/src/keccak.rs`, 1250 lines, PSE backend). Either port it to
-   halo2-base or adopt PSE `zkevm-circuits`' axiom-stack Keccak. Then wire the
-   Phase-2 pubkey bytes → in-circuit `keccak256 → address`.
-
-4. **Rewrite `ZKMistV2Claim` in the `Context` eDSL** wiring secp + keccak +
-   poseidon + merkle + nullifier. MockProver E2E + 4 negatives at k=18.
-
-5. **Then Phase 4** (prover/verifier/deploy) per `docs/axiom-backend-migration.md`.
+1. **✅ DONE — Poseidon port** (`halo2_base::poseidon::PoseidonChip`).
+2. **✅ DONE — secp + pubkey byte-bridge** (`halo2-ecc`).
+3. **✅ DONE — Keccak port** (bit-level Keccak-f[1600] on halo2-base,
+   `keccak_axiom.rs`).
+4. **✅ DONE — Merkle + nullifier axiom ports** (`merkle_axiom.rs`,
+   `nullifier_axiom.rs`, thin Poseidon wrappers).
+5. **✅ DONE — address bridge** (`tests/address_bridge_axiom.rs`):
+   `keccak256(pubkey)[12..]` proven fully in-circuit (secp+keccak, k=21).
+6. **TODO — full `ZKMistV2Claim` rewrite:** wire secp+keccak+poseidon+merkle+
+   nullifier in the `Context` eDSL with the 3 bindings (§5/§5a:
+   leaf↔address, nullifier↔scalar, recipient↔uint160), then port the 4 negative
+   forgery-rejection tests. **Decide first:** sponge convention (§9.1 — adopt
+   halo2-base end-to-end, rebuild the off-chain tree, or wrap `poseidon_axiom`),
+   and whether to optimize Keccak's χ with a lookup table (full circuit is
+   ~k≈21 now, vs the k=18 target). See §11.4.
+7. **Then Phase 4** (prover/verifier/deploy) per `docs/axiom-backend-migration.md`.
 
 ## Reference branches (do NOT merge — investigation records)
 
@@ -149,24 +145,28 @@ poseidon-primitives = "0.2"
 ```bash
 cd ~/zkmist
 git checkout axiom-backend-migration
-cat docs/axiom-backend-migration.md   # the scope/plan (§9 Poseidon, §10 secp done)
-cat docs/secp256k1-migration-plan.md  # the investigation history
-cargo test -p zkmist-circuits --test axiom_stack_foundation -- --nocapture  # Phase 1
-cargo test -p zkmist-circuits --test poseidon_axiom -- --nocapture         # Poseidon port
-cargo test -p zkmist-circuits --test secp_axiom -- --nocapture             # secp byte-bridge
+cat docs/axiom-backend-migration.md   # scope/plan (§9 Poseidon, §10 secp, §11 Keccak/gadgets/bridge)
+cat docs/secp256k1-migration-plan.md  # the investigation history (§5/§5a bindings)
+cargo test -p zkmist-circuits --test axiom_stack_foundation  # Phase 1
+cargo test -p zkmist-circuits --test poseidon_axiom          # Poseidon port
+cargo test -p zkmist-circuits --test secp_axiom              # secp byte-bridge
+cargo test -p zkmist-circuits --test keccak_axiom            # Keccak port
+cargo test -p zkmist-circuits --test address_bridge_axiom    # secp+keccak crux
+cargo test -p zkmist-circuits --lib merkle_axiom -- nullifier_axiom  # merkle/nullifier
 ```
 
-Then continue with Phase 3: port Keccak to the axiom eDSL, then rewrite
-`ZKMistV2Claim` wiring secp + keccak + poseidon + merkle + nullifier.
+Then continue Phase 3: decide the sponge convention (§9.1/§11.4), then rewrite
+`ZKMistV2Claim` wiring all gadgets + the 3 bindings + 4 negatives.
 
 ## Suggested first message for the fresh session
 
 > "Read `docs/SESSION_HANDOFF.md`. We're on the `axiom-backend-migration`
-> branch. Phases 1–2 are done (axiom stack, Poseidon port, secp byte-bridge).
-> Continue with Phase 3: port the Keccak gadget to the axiom `Context` eDSL
-> (or adopt PSE zkevm-circuits' axiom Keccak), then start the `ZKMistV2Claim`
-> rewrite wiring secp + keccak + poseidon + merkle + nullifier. Commit and push
-> each verified step."
+> branch. Phases 1–2 and Phase 3's gadget ports + address bridge are done (every
+> primitive ported; `keccak(pubkey)→address` proven in-circuit). Continue Phase 3:
+> decide the Poseidon sponge convention (rebuild the off-chain tree under
+> halo2-base, or wrap `poseidon_axiom`), then rewrite `ZKMistV2Claim` wiring
+> secp+keccak+poseidon+merkle+nullifier with the §5/§5a bindings and port the 4
+> negatives. Commit and push each verified step."
 
 ## Other production blockers (unchanged, for reference)
 
