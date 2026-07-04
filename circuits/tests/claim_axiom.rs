@@ -317,3 +317,67 @@ fn test_axiom_claim_public_instances_reject_wrong_root() {
         false,
     );
 }
+
+// ── Claim circuit → on-chain Solidity verifier ───────────────────────────
+//
+// Generates Halo2Verifier.axiom.sol for the claim circuit via snark-verifier-sdk
+// (SHPLONK). This is the deployable on-chain verifier. (Compilation + the
+// on-chain call are heavy for k≈21; the Poseidon round-trip in
+// tests/axiom_solidity_verifier.rs proves the full pipeline end-to-end.)
+
+#[test]
+fn test_generate_claim_solidity_verifier() {
+    use halo2_base::halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        plonk::{Circuit, ConstraintSystem, Error},
+    };
+    use snark_verifier_sdk::{evm::gen_evm_verifier_sol_code, CircuitExt, SHPLONK};
+
+    // CircuitExt marker (num_instance = 3: root, nullifier, recipient;
+    // non-aggregated → accumulator_indices = None).
+    struct ClaimSolCircuit;
+    impl Circuit<Fr> for ClaimSolCircuit {
+        type Config = ();
+        type FloorPlanner = SimpleFloorPlanner;
+        type Params = ();
+        fn without_witnesses(&self) -> Self { Self }
+        fn configure(_: &mut ConstraintSystem<Fr>) -> Self::Config {}
+        fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> { Ok(()) }
+    }
+    impl CircuitExt<Fr> for ClaimSolCircuit {
+        fn num_instance(&self) -> Vec<usize> { vec![3] }
+        fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
+    }
+
+    let c = build_valid_claim(4, 5);
+    let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
+        .use_k(21)
+        .use_instance_columns(1);
+    kb.set_lookup_bits(8);
+    {
+        let range = RangeChip::new(8, kb.lookup_manager().clone());
+        let ctx = kb.pool(0).main();
+        let limbs = assign_privkey(ctx, c.privkey);
+        let (root, null, recip) =
+            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        kb.assigned_instances[0] = vec![root, null, recip];
+    }
+    let params = gen_srs(21);
+    let _config_params = kb.calculate_params(Some(9));
+    let vk = keygen_vk(&params, &kb).unwrap();
+    drop(kb);
+
+    let sol = gen_evm_verifier_sol_code::<ClaimSolCircuit, SHPLONK>(&params, &vk, vec![3]);
+    assert!(sol.contains("pragma solidity"), "not a Solidity source");
+    eprintln!("generated claim Halo2Verifier.axiom.sol: {} bytes", sol.len());
+
+    // Write next to the (PSE) vendored verifier, for the contract side to pick up.
+    let out = std::env::current_dir()
+        .unwrap()
+        .join("..")
+        .join("contracts")
+        .join("Halo2Verifier.axiom.sol");
+    std::fs::create_dir_all(out.parent().unwrap()).ok();
+    std::fs::write(&out, &sol).expect("write Halo2Verifier.axiom.sol");
+    eprintln!("wrote {}", out.display());
+}

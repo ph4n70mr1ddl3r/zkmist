@@ -384,3 +384,10 @@ Generating the **claim** circuit's `Halo2Verifier.axiom.sol` is the same
 pipeline at scale (`gen_evm_verifier_sol_code::<ClaimCircuit, SHPLONK>`); the
 on-chain call for a k≈21 verifier is heavy (large contract) and left as the
 deploy step.
+
+The **claim circuit's** `Halo2Verifier.axiom.sol` is generated the same way
+(`tests/claim_axiom.rs::test_generate_claim_solidity_verifier` →
+`gen_evm_verifier_sol_code::<ClaimCircuit, SHPLONK>`): a 47.8 KB Solidity
+verifier (SHPLONK, pragma 0.8.19) that `solc` compiles cleanly. (The file is a
+regenerable artifact — gitignored; the production depth-26 verifier is
+generated identically with the real eligibility-tree circuit.)
