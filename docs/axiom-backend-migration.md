@@ -448,3 +448,33 @@ win for the 64-byte pubkey case).
 `zkevm-circuits`' axiom Keccak (preferred: audited, lookup-based θ+χ) or extend
 halo2-base's lookup API. Until then the axiom circuit is k≈21 (~6–10 GiB
 proving), already a large win over the PSE k=23 (~25 GiB).
+
+## 16. PSE stack removal — blocker (2026-07-04)
+
+The legacy PSE stack removal is **blocked** on the off-chain Merkle-tree builder
+convention. Findings from attempting it:
+
+- The axiom claim circuit uses the **halo2-base** Poseidon convention; the CLI's
+  production `prove`/`bench`/`fetch` tree-building (`build_tree_streaming`,
+  `ark_poseidon_hasher`) is **light-poseidon (Circom)**. So `zkmist prove`
+  (axiom, the default) currently feeds a *light-poseidon* witness to a
+  *halo2-base* circuit — the proof would be rejected (root mismatch). This is a
+  latent bug the PSE removal exposes. (The fixture path — `gen-roundtrip-fixture`
+  — was fixed to halo2-base; the production `prove` flow was not.)
+- `merkle-tree/src/halo2base.rs` only has an **in-memory** builder
+  (`build_tree_with_depth`); there is **no streaming** halo2-base builder for the
+  ~64M-address production tree. `build_tree_streaming` / `build_single_leaf_proof`
+  (light-poseidon) have no halo2-base streaming equivalent.
+- The circuits PSE removal is **clean and tested in isolation**, but can't land
+  alone: `cli/src/halo2_prover.rs` (PSE) references the deleted circuits modules
+  (`ZKMistV2Claim`, `poseidon`, `nullifier`, …), so the CLI removal is forced at
+  the same time — and that's where the tree-builder blocker sits.
+
+**Unblock (prerequisite):** port `build_tree_streaming_with_depth` (+ the cache /
+manifest logic) to the halo2-base convention in `merkle-tree`, then switch the
+CLI's `prove`/`bench`/`gen-roundtrip-fixture` tree-building to it. Then the
+coordinated removal (circuits + CLI + contracts PSE verifier) can land.
+
+This is the same item as the deployment-gap "eligibility Merkle tree (halo2-base
+convention)" — the production tree-build path. Until then, the PSE stack stays as
+`--pse` opt-in and the axiom `prove` flow is dev/fixture-only.

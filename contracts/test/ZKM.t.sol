@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
-import {Halo2Verifier} from "../src/Halo2Verifier.sol";
+import {Halo2Verifier} from "../src/Halo2Verifier.axiom.sol";
 import {MockHalo2Verifier} from "./TestUtils.sol";
 
 /// @title ZKM V2 Contract Tests
@@ -101,7 +101,7 @@ contract ZKMV2Test is Test {
     }
 
     function test_airdrop_deploy_with_production_verifier() public {
-        // Deploy with the production Halo2Verifier (from halo2-solidity-verifier).
+        // Deploy with the production axiom Halo2Verifier (snark-verifier-generated).
         // The production verifier always performs real KZG pairing verification.
         Halo2Verifier prodVerifier = new Halo2Verifier();
         ZKMAirdrop a = new ZKMAirdrop(address(token), address(prodVerifier), MERKLE_ROOT);

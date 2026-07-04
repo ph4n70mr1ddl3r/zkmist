@@ -110,3 +110,29 @@ fn test_merkle_tree_halo2base_round_trip() {
         "tampered proof unexpectedly verified"
     );
 }
+
+#[test]
+fn test_halo2base_streaming_matches_in_memory() {
+    use zkmist_merkle_tree::halo2base::{build_tree_streaming_with_depth, build_tree_with_depth,
+                                       generate_proof, tree_root};
+    let depth = 5;
+    let mut addresses = vec![[0u8; 20]; 1 << depth];
+    for (i, a) in addresses.iter_mut().enumerate() {
+        a[19] = (i + 1) as u8;
+    }
+    let claim_idx = 13usize;
+
+    // In-memory build.
+    let layers = build_tree_with_depth(&addresses, depth);
+    let in_mem_root = tree_root(&layers);
+    let (in_mem_sib, in_mem_path) = generate_proof(&layers, claim_idx);
+
+    // Streaming build (the production path).
+    let (stream_root, stream_proof) =
+        build_tree_streaming_with_depth(&addresses, depth, Some(claim_idx));
+    let (stream_sib, stream_path) = stream_proof.expect("proof for claim_idx");
+
+    assert_eq!(stream_root, in_mem_root, "streaming root != in-memory root");
+    assert_eq!(stream_sib, in_mem_sib, "streaming siblings != in-memory");
+    assert_eq!(stream_path, in_mem_path, "streaming path != in-memory");
+}

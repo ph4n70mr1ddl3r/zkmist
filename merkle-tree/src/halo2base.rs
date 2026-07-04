@@ -146,6 +146,87 @@ pub fn tree_root(layers: &[Vec<[u8; 32]>]) -> [u8; 32] {
     crate::tree_root(layers)
 }
 
+/// O(N) streaming tree build under the halo2-base convention: processes
+/// layer-by-layer (current + next), tracking the target leaf's sibling/path.
+/// Mirrors `crate::build_tree_streaming_with_depth` (light-poseidon) but for
+/// the axiom circuit. Returns `(root, Option<(siblings, path)>)`.
+pub fn build_tree_streaming_with_depth(
+    addresses: &[[u8; 20]],
+    depth: usize,
+    target_index: Option<usize>,
+) -> crate::StreamingResult {
+    let hasher = Hasher::new();
+    let num_leaves = 1usize << depth;
+
+    let mut current: Vec<[u8; 32]> = Vec::with_capacity(num_leaves);
+    for addr in addresses {
+        current.push(hasher.hash_leaf(addr));
+    }
+    current.resize(num_leaves, PADDING_SENTINEL);
+
+    let mut target_siblings: Option<Vec<[u8; 32]>> =
+        target_index.map(|_| Vec::with_capacity(depth));
+    let mut target_path: Option<Vec<u8>> = target_index.map(|_| Vec::with_capacity(depth));
+    let mut idx = target_index.unwrap_or(0);
+
+    for _level in 0..depth {
+        let mut next = Vec::with_capacity(current.len() / 2);
+        for chunk in current.chunks(2) {
+            next.push(hasher.hash_interior(&chunk[0], &chunk[1]));
+        }
+        if let (Some(ref mut sibs), Some(ref mut path)) =
+            (&mut target_siblings, &mut target_path)
+        {
+            if idx % 2 == 0 {
+                sibs.push(current[idx + 1]);
+                path.push(0);
+            } else {
+                sibs.push(current[idx - 1]);
+                path.push(1);
+            }
+            idx /= 2;
+        }
+        current = next;
+    }
+    let root = current[0];
+    (root, target_siblings.zip(target_path))
+}
+
+/// `crate::build_tree_streaming` equivalent under halo2-base (default depth).
+pub fn build_tree_streaming(
+    addresses: &[[u8; 20]],
+    target_index: Option<usize>,
+) -> crate::StreamingResult {
+    build_tree_streaming_with_depth(addresses, crate::TREE_DEPTH, target_index)
+}
+
+/// Compute the claim nullifier `poseidon(key, domain)` under the halo2-base
+/// convention (mirrors `crate::compute_nullifier` / `compute_nullifier_with_domain`).
+/// `domain` defaults to the V2 separator.
+pub fn compute_nullifier(key: &[u8; 32], hasher: &Hasher) -> [u8; 32] {
+    compute_nullifier_with_domain(key, crate::NULLIFIER_DOMAIN, hasher)
+}
+
+/// Free-function `hash_leaf(addr, &Hasher)` — mirrors the light-poseidon API
+/// (`crate::hash_leaf(addr, &mut Poseidon)`) for drop-in CLI compatibility.
+pub fn hash_leaf(addr: &[u8; 20], hasher: &Hasher) -> [u8; 32] {
+    hasher.hash_leaf(addr)
+}
+
+/// Compute a nullifier with an arbitrary domain separator (halo2-base convention).
+pub fn compute_nullifier_with_domain(
+    key: &[u8; 32],
+    domain: &[u8],
+    hasher: &Hasher,
+) -> [u8; 32] {
+    let mut domain_padded = [0u8; 32];
+    let len = domain.len().min(32);
+    domain_padded[..len].copy_from_slice(&domain[..len]);
+    // hash_interior reads both 32-byte args as big-endian field elements —
+    // matches crate::compute_nullifier_with_domain's from_be_bytes_mod_order.
+    hasher.hash_interior(key, &domain_padded)
+}
+
 /// Recompute the root from a leaf + siblings + path under the halo2-base
 /// convention. Mirrors `crate::verify_merkle_proof`.
 pub fn verify_merkle_proof(

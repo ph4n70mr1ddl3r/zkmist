@@ -227,11 +227,6 @@ pub fn format_bytes32(b: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(b))
 }
 
-/// Create a Poseidon hasher for the given number of inputs.
-pub fn ark_poseidon_hasher(nr_inputs: usize) -> Option<light_poseidon::Poseidon<ark_bn254::Fr>> {
-    light_poseidon::Poseidon::<ark_bn254::Fr>::new_circom(nr_inputs).ok()
-}
-
 pub fn timestamp_string() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
