@@ -157,7 +157,7 @@ fn main() {
 mod tests {
     use super::*;
     use alloy::sol_types::SolCall;
-    use zkmist_merkle_tree::{compute_nullifier, hash_leaf};
+    use zkmist_merkle_tree::halo2base::{compute_nullifier, hash_leaf, Hasher};
 
     // ── parse_address ──────────────────────────────────────────────────
 
@@ -755,8 +755,8 @@ mod tests {
             0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
             0x89, 0xab, 0xcd, 0xef,
         ];
-        let mut hasher = ark_poseidon_hasher(2).unwrap();
-        let cli_nullifier = compute_nullifier(&key, &mut hasher);
+        let hasher = Hasher::new();
+        let cli_nullifier = compute_nullifier(&key, &hasher);
 
         // Verify the nullifier is deterministic and matches expected test vector
         assert_eq!(
@@ -774,11 +774,11 @@ mod tests {
             0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
             0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
         ];
-        let mut hasher = ark_poseidon_hasher(1).unwrap();
-        let leaf = hash_leaf(&addr, &mut hasher);
+        let hasher = Hasher::new();
+        let leaf = hash_leaf(&addr, &hasher);
         assert_eq!(
             hex::encode(leaf),
-            "1b074e636009c422c17f904b91d117b96f506bc28f55c428ccdbe5e80d4d18e9"
+            "229aea1f7386e8e4fd3a84fe9ee12a1d16c480842d143416a34f28551fabae34"
         );
     }
 

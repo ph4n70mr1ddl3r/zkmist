@@ -5,9 +5,9 @@
 
 use std::io::{self, Write};
 
-use zkmist_merkle_tree::{
-    build_tree_streaming, compute_nullifier, deserialize_proof, hash_leaf, serialize_proof,
-    verify_merkle_proof, TREE_DEPTH,
+use zkmist_merkle_tree::{deserialize_proof, serialize_proof, TREE_DEPTH};
+use zkmist_merkle_tree::halo2base::{
+    build_tree_streaming, compute_nullifier, hash_leaf, verify_merkle_proof, Hasher,
 };
 
 use crate::abi::*;
@@ -242,8 +242,8 @@ pub fn cmd_prove(key_file: Option<&str>, pse: bool) -> Result<(), String> {
     }
 
     // Verify Merkle proof locally
-    let mut leaf_hasher = ark_poseidon_hasher(1).ok_or("Failed to create leaf hasher")?;
-    let leaf = hash_leaf(&address, &mut leaf_hasher);
+    let leaf_hasher = Hasher::new();
+    let leaf = hash_leaf(&address, &leaf_hasher);
     let computed_root = verify_merkle_proof(&leaf, &siblings, &path_indices);
     if computed_root != root {
         return Err(format!(
@@ -255,8 +255,8 @@ pub fn cmd_prove(key_file: Option<&str>, pse: bool) -> Result<(), String> {
     eprintln!("      ✓ Merkle proof verified locally");
 
     // Compute nullifier
-    let mut interior_hasher = ark_poseidon_hasher(2).ok_or("Failed to create interior hasher")?;
-    let nullifier = compute_nullifier(&private_key, &mut interior_hasher);
+    let interior_hasher = Hasher::new();
+    let nullifier = compute_nullifier(&private_key, &interior_hasher);
     eprintln!("      → Nullifier: {}", format_bytes32(&nullifier));
 
     // ── Step 3: Recipient ────────────────────────────────────────────────
@@ -517,7 +517,7 @@ pub fn cmd_submit(
 ///   5. Local verification
 pub fn cmd_bench(tree_depth: usize, pse: bool) -> Result<(), String> {
     use zkmist_circuits::merkle::TREE_DEPTH;
-    use zkmist_merkle_tree::{build_single_leaf_proof, build_tree_streaming_with_depth};
+    use zkmist_merkle_tree::halo2base::{build_single_leaf_proof, build_tree_streaming_with_depth};
 
     let depth = tree_depth.clamp(1, 26);
 
@@ -675,7 +675,7 @@ pub fn cmd_bench(tree_depth: usize, pse: bool) -> Result<(), String> {
 pub fn cmd_gen_roundtrip_fixture(out_path: &str, pse: bool) -> Result<(), String> {
     use serde::Serialize;
     use zkmist_circuits::merkle::TREE_DEPTH;
-    use zkmist_merkle_tree::build_single_leaf_proof;
+    use zkmist_merkle_tree::halo2base::build_single_leaf_proof;
 
     eprintln!("ZKMist real-KZG round-trip fixture generator");
     eprintln!("─\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
