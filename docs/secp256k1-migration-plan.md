@@ -1,22 +1,38 @@
-# Replace the hand-rolled secp256k1 gadget (target: `halo2-ecc`)
+# Replace the hand-rolled secp256k1 gadget — candidate investigation
 
-> **PIVOT (2026-07-03): `halo2wrong` → `halo2-ecc`.** The halo2wrong rewiring
-> (branch `phase-b-halo2wrong-rewiring`) hit a hard wall: its RNS limb
-> representation does **not** expose the secp256k1 pubkey as bytes, so the
-> `keccak(pubkey) → address` binding — unique to ZKMist (zkEVM-style) — cannot
-> be wired (both `native()` and per-limb binding fail). PSE's *own* `zkevm-
-> circuits` solves exactly this operation with **`halo2-ecc`** (axiom-crypto),
-> whose `sig_circuit.rs` literally does `keccak(pub_key_bytes)` "where
-> pub_key_bytes is built from the pub_key" — i.e. halo2-ecc CAN build the
-> pubkey bytes (the bridge halo2wrong can't) and ships `pk_bytes_le`/
-> `pk_bytes_swap_endianness` helpers. **halo2-ecc is the new target.**
+> **STATUS (2026-07-03): both audited-library candidates have a hard blocker.
+> Neither is a clean drop-in. The realistic remaining paths are (1) byte-align
+> halo2wrong's limb config to 72-bit, or (2) audit the hand-rolled circuit.**
 >
-> **Spike (2026-07-03): PASS.** `halo2-ecc = "=0.5.0"` resolves cleanly and
-> `cargo tree -i halo2_proofs` shows **one** unified `halo2_proofs v0.3.0`
-> (the project's existing PSE fork pin, `#73408a14`) — **no backend switch,
-> no version conflict.** halo2-ecc is already a proven-compatible transitive
-> dep (via `snark-verifier`, used by `zkmist-tools`). The dep is added to
-> `circuits/Cargo.toml` ready for the integration.
+> **halo2wrong (PSE):** backend-compatible (same PSE halo2 v0.3.0 — verified),
+> BUT its RNS limb representation does **not** expose the secp256k1 pubkey as
+> bytes, so the `keccak(pubkey) → address` binding (unique to ZKMist,
+> zkEVM-style) cannot be wired — both `native()` and per-limb binding fail
+> (root-caused on branch `phase-b-halo2wrong-rewiring`).
+>
+> **halo2-ecc (axiom):** WOULD solve the bridge (PSE's own `zkevm-circuits`
+> uses it to build `pub_key_bytes` from the secp result), BUT it requires the
+> **entire axiom halo2 stack**: `halo2-ecc → halo2-base → halo2-axiom →
+> halo2curves-axiom v0.7.2`, a *different curves crate* from the project's
+> `halo2curves 0.6.1` (PSE) → incompatible `Fr` types (the `ScalarField`
+> bound fails). It is **not a chip swap** — it forces a full backend switch
+> (PSE → axiom) affecting the on-chain verifier generation and every existing
+> circuit. **Not viable as scoped.**
+>
+> ⚠️ The earlier "halo2-ecc spike: PASS" note was a **false positive** — it
+> checked `halo2_proofs` (which unifies) but missed `halo2curves-axiom`, the
+> real conflict. The halo2-ecc dependency has been removed.
+>
+> **Open paths:**
+> 1. **Byte-align halo2wrong** to `BIT_LEN_LIMB=72` (multiple of 8 →
+>     byte-aligned limbs → the Keccak binding works exactly like the hand-rolled
+>     64-bit-limb circuit). PSE-backend-compatible. Risk: halo2wrong's RNS may
+>     need its overflow params retuned for 72; needs a soundness check.
+> 2. **Audit the hand-rolled secp256k1** — it already uses byte-aligned 64-bit
+>     limbs (which is *why* it works with Keccak) and passes Phase 0 at k=23.
+>     Abandons the drop-in-library goal but sidesteps both blockers; the audit
+>     scope is "review 3700 lines of working code," not "build a novel
+>     Fp↔Keccak bridge no halo2 user has built."
 >
 > **Status:** DESIGN / SCOPE — not yet implemented. This is the production track
 > for both (a) removing the #1 audit blocker and (b) potentially halving the

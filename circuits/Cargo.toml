@@ -17,8 +17,6 @@ light-poseidon = "0.4"
 num-bigint = "0.4"
 num-traits = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
-# SPIKE (temp): halo2-ecc viability — pin =0.5.0 to match snark-verifier
-halo2-ecc = "=0.5.0"
 # Audited secp256k1 / non-native field arithmetic (PSE halo2wrong). Phase A of
 # the migration in docs/secp256k1-migration-plan.md: dependency is available;
 # the hand-rolled Secp256k1Chip is NOT yet replaced. Pins the SAME PSE halo2
