@@ -59,24 +59,20 @@ use crate::{
 
 /// Prove one ZKMist V2 claim on the axiom eDSL (positive happy path).
 ///
-/// `privkey_limbs` is the private key as positional base-`2^LIMB_BITS` limbs
-/// (see [`secp_axiom::assign_privkey`]); it is range-checked `< 2^LIMB_BITS`
-/// and proven `< n_secp256k1` (the §5a TRAP) before use. The remaining
-/// witnesses (`siblings`, `path_indices`, `recipient`) are loaded from the
-/// passed values; the public outputs (`expected_root`, `expected_nullifier`)
-/// are constrained equal to the in-circuit computation via `assert_is_const`
-/// (in a real circuit these become public instances — Phase 4 wiring).
+/// Compute the claim's public outputs in-circuit: `(merkle_root, nullifier,
+/// recipient)`, with all §5/§5a bindings enforced (K<n range proof,
+/// leaf↔address, nullifier↔scalar, recipient↔uint160) but **without** asserting
+/// them to expected values. A caller exposes them as public instances (on-chain
+/// verifier checks) or asserts them as constants (test harness).
 #[allow(clippy::too_many_arguments)]
-pub fn prove_claim(
+pub fn prove_claim_to_cells(
     ctx: &mut Context<Fr>,
     range: &RangeChip<Fr>,
     privkey_limbs: Vec<AssignedValue<Fr>>,
     siblings: &[Fr],
     path_indices: &[Fr],
-    expected_root: Fr,
-    expected_nullifier: Fr,
     recipient: Fr,
-) {
+) -> (AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>) {
     let gate = range.gate();
 
     // ── 0. K < n_secp256k1 range proof (§5a TRAP) ──
@@ -109,12 +105,11 @@ pub fn prove_claim(
     let sib_cells: Vec<_> = siblings.iter().map(|s| ctx.load_witness(*s)).collect();
     let idx_cells: Vec<_> = path_indices.iter().map(|i| ctx.load_witness(*i)).collect();
     let root = verify_merkle_proof(ctx, range, leaf, &sib_cells, &idx_cells);
-    gate.assert_is_const(ctx, &root, &expected_root);
 
     // ── 4. nullifier = poseidon(key, domain), key bound to the scalar ──
-    //    key_mod_p = Σ limb_i · 2^(LIMB_BITS·i)  (= privkey mod p_BN254), then
-    //    constrain the nullifier to the expected value. The key cell fed to
-    //    Poseidon is the scalar's own recomposition, so nullifier↔scalar binds.
+    //    key_mod_p = Σ limb_i · 2^(LIMB_BITS·i)  (= privkey mod p_BN254). The
+    //    key cell fed to Poseidon is the scalar's own recomposition, so
+    //    nullifier↔scalar binds.
     let limb_bases: Vec<Fr> = (0..NUM_LIMBS).map(|i| Fr::from(2u64).pow([(i * LIMB_BITS) as u64])).collect();
     let key_mod_p = gate.inner_product(
         ctx,
@@ -122,11 +117,33 @@ pub fn prove_claim(
         limb_bases.iter().map(|c| halo2_base::QuantumCell::Constant(*c)),
     );
     let nullifier = compute_nullifier(ctx, range, key_mod_p);
-    gate.assert_is_const(ctx, &nullifier, &expected_nullifier);
 
     // ── 5. recipient: non-zero uint160 ──
     let recipient_cell = ctx.load_witness(recipient);
     range.range_check(ctx, recipient_cell, 160);
     let recipient_is_zero = gate.is_zero(ctx, recipient_cell);
     gate.assert_is_const(ctx, &recipient_is_zero, &Fr::zero());
+
+    (root, nullifier, recipient_cell)
+}
+
+/// Prove one ZKMist V2 claim and assert the public outputs to the expected
+/// values via `assert_is_const` (test-harness convenience; a real circuit uses
+/// [`prove_claim_to_cells`] + public instances).
+#[allow(clippy::too_many_arguments)]
+pub fn prove_claim(
+    ctx: &mut Context<Fr>,
+    range: &RangeChip<Fr>,
+    privkey_limbs: Vec<AssignedValue<Fr>>,
+    siblings: &[Fr],
+    path_indices: &[Fr],
+    expected_root: Fr,
+    expected_nullifier: Fr,
+    recipient: Fr,
+) {
+    let gate = range.gate();
+    let (root, nullifier, _recipient) =
+        prove_claim_to_cells(ctx, range, privkey_limbs, siblings, path_indices, recipient);
+    gate.assert_is_const(ctx, &root, &expected_root);
+    gate.assert_is_const(ctx, &nullifier, &expected_nullifier);
 }

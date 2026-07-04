@@ -67,10 +67,13 @@ Scope documented in `docs/axiom-backend-migration.md` (4-phase plan, ~2-4 weeks)
 ## Active branch: `axiom-backend-migration`
 
 **This is where to continue.** Commits (latest first):
-- _(pending)_ — **Phase 4 step 2: real-KZG round-trip** — the full claim
-  circuit produces a verifying real-KZG proof (keygen 32s + pk 21s + prove 150s
-  + verify 19ms, 960 B, k=21, fits the 28 GiB box). **Production blocker #2
-  cleared at the circuit level.** See `docs/axiom-backend-migration.md` §13.
+- _(pending)_ — **Phase 4 step 3: public instances** — `prove_claim_to_cells`
+  exposes `(root, nullifier, recipient)` as a public instance column; real-KZG
+  proof verifies against the correct instance and is REJECTED against a wrong
+  root (the on-chain verifier model). The circuit is now deployable in
+  principle. See `docs/axiom-backend-migration.md` §13.
+- `58ba8ce` — **Phase 4 step 2: real-KZG round-trip** — the full claim circuit
+  produces a verifying real-KZG proof (960 B, k=21). Blocker #2 cleared.
 - `d25b0d8` — **Phase 4 step 1: off-chain tree → halo2-base convention** —
   cross-checked byte-for-byte AND end-to-end (off-chain tree verified in-circuit).
 - `c2c1e57` — **Phase 3 step 2: Merkle + nullifier axiom ports + address
@@ -111,8 +114,8 @@ poseidon-primitives = "0.2"
    (a) ✅ off-chain tree → halo2-base convention (done, §12);
    (b) ✅ real-KZG round-trip on the full claim circuit (done, §13 — blocker #2
      cleared at the circuit level);
-   (c) expose root/nullifier/recipient as **public instances** (currently
-     `assert_is_const`) so the on-chain verifier can check them;
+   (c) ✅ public instances `(root, nullifier, recipient)` (done, §13.1 —
+     on-chain verifier model: verifies / wrong-root rejected);
    (d) optionally a lookup-table χ for Keccak (k≈21 → k≈18);
    (e) port `cli/src/halo2_prover.rs` to axiom; regenerate the on-chain
      verifier; **on-chain** round-trip; testnet deploy.

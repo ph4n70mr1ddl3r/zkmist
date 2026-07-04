@@ -10,17 +10,25 @@
 use ff::PrimeField;
 use group::Curve;
 use halo2_base::{
-    halo2_proofs::halo2curves::{
-        bn256::Fr,
-        secp256k1::{Fp, Fq, Secp256k1Affine},
-        CurveAffine,
+    gates::circuit::CircuitBuilderStage,
+    gates::circuit::builder::RangeCircuitBuilder,
+    gates::RangeChip,
+    halo2_proofs::{
+        halo2curves::{
+            bn256::Fr,
+            secp256k1::{Fp, Fq, Secp256k1Affine},
+            CurveAffine,
+        },
+        plonk::{keygen_pk, keygen_vk},
     },
-    utils::{biguint_to_fe, fe_to_biguint, modulus, testing::base_test},
+    utils::{biguint_to_fe, fe_to_biguint, fs::gen_srs, modulus, testing::{
+        base_test, check_proof_with_instances, gen_proof_with_instances,
+    }},
 };
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 use zkmist_circuits::{
-    claim_axiom::prove_claim,
+    claim_axiom::{prove_claim, prove_claim_to_cells},
     nullifier_axiom::domain_field_element,
     poseidon_axiom::{native_hash_interior, native_hash_leaf},
     secp_axiom::{assign_privkey, assign_scalar_biguint, secp_n_biguint},
@@ -246,4 +254,66 @@ fn test_axiom_claim_verifies_offchain_tree() {
         let limbs = assign_privkey(ctx, privkey);
         prove_claim(ctx, range, limbs, &siblings, &path_indices, root, nullifier, recipient);
     });
+}
+
+// ── Public instances (the on-chain verifier model) ───────────────────────
+//
+// The claim's (merkle_root, nullifier, recipient) are exposed as a public
+// instance column. The proof verifies against the correct instance and is
+// REJECTED against a wrong one — exactly what the on-chain verifier (holding
+// the real root / checking the nullifier map) does.
+
+/// Full real-KZG round-trip on the claim circuit exposing 1 instance column
+/// `[root, nullifier, recipient]`, verified against `instances`.
+fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: bool) {
+    // keygen stage
+    let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
+        .use_k(21)
+        .use_instance_columns(1);
+    kb.set_lookup_bits(8);
+    {
+        let range = RangeChip::new(8, kb.lookup_manager().clone());
+        let ctx = kb.pool(0).main();
+        let limbs = assign_privkey(ctx, c.privkey);
+        let (root, null, recip) =
+            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        kb.assigned_instances[0] = vec![root, null, recip];
+    }
+    let config_params = kb.calculate_params(Some(9));
+    let params = gen_srs(21);
+    let vk = keygen_vk(&params, &kb).unwrap();
+    let pk = keygen_pk(&params, vk.clone(), &kb).unwrap();
+    let break_points = kb.break_points();
+    drop(kb);
+
+    // prover stage
+    let mut pb = RangeCircuitBuilder::prover(config_params, break_points);
+    {
+        let range = RangeChip::new(8, pb.lookup_manager().clone());
+        let ctx = pb.pool(0).main();
+        let limbs = assign_privkey(ctx, c.privkey);
+        let (root, null, recip) =
+            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        pb.assigned_instances[0] = vec![root, null, recip];
+    }
+    let proof = gen_proof_with_instances(&params, &pk, pb, &[instances.as_slice()]);
+    check_proof_with_instances(&params, &vk, &proof, &[instances.as_slice()], expect_satisfied);
+}
+
+#[test]
+fn test_axiom_claim_public_instances_verify() {
+    let c = build_valid_claim(4, 5);
+    claim_instance_roundtrip(&c.clone(), vec![c.root, c.nullifier, c.recipient], true);
+}
+
+/// A proof verified against a WRONG merkle root is rejected — the on-chain
+/// verifier (holding the real root) would reject a forged claim.
+#[test]
+fn test_axiom_claim_public_instances_reject_wrong_root() {
+    let c = build_valid_claim(4, 5);
+    claim_instance_roundtrip(
+        &c.clone(),
+        vec![c.root + Fr::from(1u64), c.nullifier, c.recipient],
+        false,
+    );
 }

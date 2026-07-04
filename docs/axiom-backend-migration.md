@@ -313,12 +313,12 @@ at k=21 (~1.9M advice cells), peaking well within the 28 GiB WSL2 box (k=23's
 (`tests/axiom_real_kzg.rs`) validated the axiom KZG pipeline first.
 
 This clears production blocker #2 (real-KZG → verify) **at the circuit level**:
-the axiom claim circuit produces a verifying real-KZG proof. Remaining
+the axiom claim circuit produces a verifying real-KZG proof. **Public instances
+landed** (`prove_claim_to_cells` exposes `(root, nullifier, recipient)` as a
+public instance column; `tests/claim_axiom.rs::test_axiom_claim_public_instances_*`
+prove a real-KZG proof verifies against the correct instance and is rejected
+against a wrong root — the on-chain verifier model, §13.1). Remaining
 productionization:
-- **Public instances:** the claim's root / nullifier / recipient are currently
-  constrained via `assert_is_const` (expected as constants). For the on-chain
-  verifier to check them they become public instance columns (a `Circuit`
-  wrapper around `prove_claim`).
 - **Port the CLI prover** (`cli/src/halo2_prover.rs`, PSE k=23) to the axiom
   backend (SRS handling, preflight — the k=21 RAM floor is far lower than k=23's
   ~27 GiB).
