@@ -182,26 +182,43 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     eprintln!("[2/4] Preparing Merkle proof...");
 
     let cache_path = proof_cache_path(&address);
-    let (root, siblings, path_indices) = if cache_path.exists() {
+    let mut use_cache = false;
+    let mut cached_data = None;
+
+    if cache_path.exists() {
         eprintln!("      Loading cached proof...");
-        let file = std::fs::File::open(&cache_path)
-            .map_err(|e| format!("Failed to open proof cache: {}", e))?;
-        let reader = std::io::BufReader::new(file);
-        let (cached_root, _leaf_index, cached_siblings, cached_path) =
-            deserialize_proof(reader).map_err(|e| format!("Failed to read proof cache: {}", e))?;
-
-        eprintln!(
-            "      ✓ Proof cache loaded ({} levels)",
-            cached_siblings.len()
-        );
-        eprintln!("      Root: {}", format_bytes32(&cached_root));
-
-        if let Some(manifest) = load_manifest()? {
-            verify_root_against_manifest(&cached_root, &manifest)?;
-            eprintln!("      ✓ Root matches manifest");
+        if let Ok(file) = std::fs::File::open(&cache_path) {
+            let reader = std::io::BufReader::new(file);
+            if let Ok(data) = deserialize_proof(reader) {
+                let (cached_root, _leaf_index, cached_siblings, cached_path) = data.clone();
+                let mut valid = true;
+                
+                if let Some(manifest) = load_manifest()? {
+                    if verify_root_against_manifest(&cached_root, &manifest).is_err() {
+                        eprintln!("      ⚠ Cached proof root does not match manifest. Rebuilding...");
+                        valid = false;
+                    } else {
+                        eprintln!("      ✓ Root matches manifest");
+                    }
+                }
+                
+                if valid {
+                    eprintln!(
+                        "      ✓ Proof cache loaded ({} levels)",
+                        cached_siblings.len()
+                    );
+                    eprintln!("      Root: {}", format_bytes32(&cached_root));
+                    use_cache = true;
+                    cached_data = Some((cached_root, cached_siblings, cached_path));
+                }
+            } else {
+                eprintln!("      ⚠ Failed to read proof cache. Rebuilding...");
+            }
         }
+    }
 
-        (cached_root, cached_siblings, cached_path)
+    let (root, siblings, path_indices) = if use_cache {
+        cached_data.unwrap()
     } else {
         eprintln!("      No cached proof — building via streaming tree...");
         eprintln!("      ⚠️  Builds the full 2^26 Poseidon tree (halo2-base), parallel across CPU");

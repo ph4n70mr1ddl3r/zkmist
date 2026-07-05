@@ -309,11 +309,15 @@ pub fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
     csv_files.sort();
 
     for path in &csv_files {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("address") {
+        let file = std::fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+        let reader = std::io::BufReader::new(file);
+        use std::io::BufRead;
+        
+        for line_res in reader.lines() {
+            let line_str = line_res.map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
+            let line = line_str.trim();
+            if line.is_empty() || line.starts_with("address") || line.starts_with("qualified") {
                 continue; // skip header
             }
             let addr = parse_address(line)?;
@@ -410,11 +414,15 @@ pub fn check_address_in_files(target: &[u8; 20]) -> Result<Option<usize>, String
 /// Returns addresses in file order (assumed sorted by the eligibility pipeline).
 /// Skips header lines starting with "address" or "qualified", and empty lines.
 fn load_addresses_from_file(path: &std::path::Path) -> Result<Vec<[u8; 20]>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+    let reader = std::io::BufReader::new(file);
+    use std::io::BufRead;
+    
     let mut addresses = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
+    for line_res in reader.lines() {
+        let line_str = line_res.map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
+        let line = line_str.trim();
         if line.is_empty() || line.starts_with("address") || line.starts_with("qualified") {
             continue;
         }
