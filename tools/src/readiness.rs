@@ -433,13 +433,17 @@ fn main() {
                 passed += 1;
             }
             Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("      ❌ Forge tests failed:");
-                for line in stderr
-                    .lines()
-                    .filter(|l| l.contains("fail") || l.contains("error"))
-                    .take(5)
-                {
+                // `forge test` writes its per-test results ("[FAIL: …] "
+                // "test_name()", "Suite result: FAILED") to **stdout**; on a
+                // test failure **stderr is empty**. The prior stderr-only read
+                // therefore surfaced NOTHING on a failing run — the gate said
+                // "Forge tests failed:" with no identifying lines, forcing a
+                // manual re-run. Read both streams (stderr still carries forge
+                // compile/link errors). See [`test_failure_lines`].
+                for line in test_failure_lines(&stdout, &stderr) {
                     eprintln!("         {}", line);
                 }
                 failed += 1;
@@ -481,13 +485,19 @@ fn main() {
                 passed += 1;
             }
             Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("      ❌ Cargo tests failed:");
-                for line in stderr
-                    .lines()
-                    .filter(|l| l.contains("FAILED") || l.contains("failures"))
-                    .take(5)
-                {
+                // The libtest harness writes per-test failures ("test foo … "
+                // "FAILED", "test result: FAILED.") to **stdout**; cargo's own
+                // "error: test failed" + any compile errors go to **stderr**.
+                // The prior stderr-only read filtered for "FAILED"/"failures",
+                // which match NOTHING on stderr — on a failing run the gate
+                // printed "Cargo tests failed:" with zero identifying lines,
+                // hiding WHICH test broke. Read both streams so a real test
+                // failure AND a build failure are both diagnosable. See
+                // [`test_failure_lines`].
+                for line in test_failure_lines(&stdout, &stderr) {
                     eprintln!("         {}", line);
                 }
                 failed += 1;
@@ -771,6 +781,58 @@ fn uses_random_srs(prover_src: &str) -> bool {
         uses_setup || uses_new || uses_gen_srs
     });
     has_random_call && !prover_src.contains("ZKMIST_DEV_SRS")
+}
+
+/// Extract the most failure-relevant lines from a `cargo test` / `forge test`
+/// subprocess so the readiness checker can surface **what** failed without a
+/// manual re-run.
+///
+/// Both harnesses write their per-test results to **stdout** (cargo libtest:
+/// `test foo … FAILED`, `test result: FAILED.`; forge: `[FAIL: …] test_bar()`,
+/// `Suite result: FAILED.`), while the toolchain's own errors (compile failures,
+/// cargo's `error: test failed, to rerun …`) go to **stderr**.
+///
+/// The readiness checker previously read **stderr only** and filtered for
+/// `FAILED`/`failures`, which match NOTHING on stderr (the per-test detail is
+/// on stdout). On a failing run the gate therefore printed `❌ tests failed:`
+/// with **zero** identifying lines, forcing the operator to re-run the whole
+/// suite by hand just to see which test broke. (For `forge test` it was worse:
+/// stderr is completely empty on a test failure.) This helper reads **both**
+/// streams so a genuine test failure (stdout) and a build failure (stderr) are
+/// both diagnosable.
+///
+/// Lines are deduplicated (forge prints each `[FAIL …]` line twice — once in
+/// the run summary, once under `Failing tests:`) and trimmed. Returns up to a
+/// handful of the most useful lines, stdout first.
+///
+/// Matching is CASE-SENSITIVE: the failure markers are the uppercase
+/// `FAILED`/`FAIL:`; a green run's summary is lowercase (`0 failed` is a
+/// COUNT), so uppercasing the line would false-match a passing run.
+pub(crate) fn test_failure_lines(stdout: &str, stderr: &str) -> Vec<String> {
+    // stdout: the harness's per-test failure + summary lines (these NAME the
+    // failing test). stderr: compile errors + cargo's terminal "error: test
+    // failed" (essential when the suite never ran — a build error leaves
+    // stdout with no FAILED line at all).
+    let stdout_hits = stdout
+        .lines()
+        .filter(|l| l.contains("FAIL:") || l.contains("FAILED"))
+        .take(5);
+    let stderr_hits = stderr
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("error") || t.starts_with("Error")
+        })
+        .take(3);
+
+    let mut out: Vec<String> = Vec::new();
+    for line in stdout_hits.chain(stderr_hits) {
+        let t = line.trim();
+        if !t.is_empty() && !out.iter().any(|e| e == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1074,6 +1136,146 @@ mod tests {
             nonzero_constants >= 20,
             "Halo2Verifier.axiom.sol has only {nonzero_constants} non-zero mstore constants — \
              looks like a stub/placeholder VK; regenerate via claim_evm_roundtrip.rs"
+        );
+    }
+
+    // ── test_failure_lines: surface WHAT failed (stdout), not just that it did ─
+    //
+    // `cargo test` and `forge test` both write their per-test FAILURE lines to
+    // stdout; the readiness checker used to read stderr only, so a failing run
+    // printed "❌ tests failed:" with NO identifying lines (the bug). These
+    // tests use the REAL captured output of a failing `cargo test` / `forge
+    // test` run and assert the helper now surfaces the failing test name from
+    // stdout — and that the old stderr-only behavior would have missed it.
+
+    #[test]
+    fn cargo_test_failure_surfaces_stdout_failing_test() {
+        // Real `cargo test` output of a run with one failing test `fails_boom`.
+        let stdout = "running 2 tests\n\
+test passes ... ok\n\
+test fails_boom ... FAILED\n\
+\n\
+failures:\n\
+\n\
+---- fails_boom stdout ----\n\
+thread 'fails_boom' panicked at src/lib.rs:4:19:\n\
+assertion `left == right` failed\n\
+  left: 1\n\
+ right: 2\n\
+\n\
+failures:\n\
+    fails_boom\n\
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let stderr = "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s\n\
+     Running unittests src/lib.rs\n\
+error: test failed, to rerun pass `--lib`\n";
+
+        // OLD behavior: read stderr, filter for FAILED/failures. stderr has
+        // NONE of those tokens ("error: test failed" is lowercase "failed") —
+        // this is the bug: zero identifying lines on a failing run.
+        let old_stderr_only: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("FAILED") || l.contains("failures"))
+            .collect();
+        assert!(
+            old_stderr_only.is_empty(),
+            "the bug: stderr-only filter must find nothing, got {old_stderr_only:?}"
+        );
+
+        // NEW behavior: read stdout too → surface the failing test by name.
+        let lines = test_failure_lines(stdout, stderr);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("fails_boom") && l.contains("FAILED")),
+            "fix must surface the failing test from stdout: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("test result: FAILED")),
+            "fix must surface the failing result summary: {lines:?}"
+        );
+        // Non-empty overall (the whole point).
+        assert!(!lines.is_empty(), "must surface at least one failure line");
+    }
+
+    #[test]
+    fn forge_test_failure_surfaces_stdout_failing_test() {
+        // Real `forge test` output of a run with one failing test
+        // `test_fail_boom()`. NOTE: forge writes ALL of this to stdout — its
+        // stderr is empty on a test failure (only compile/link errors land on
+        // stderr), so the old stderr-only read surfaced nothing at all.
+        let stdout = "[FAIL: assertion failed: 1 != 2] test_fail_boom() (gas: 3332)\n\
+Suite result: FAILED. 1 passed; 1 failed; 0 skipped; finished in 1.65ms\n\
+Ran 1 test suite in 10.83ms: 1 tests passed, 1 failed, 0 skipped (2 total tests)\n\
+Failing tests:\n\
+Encountered 1 failing test in test/Counter.t.sol:CounterTest\n\
+[FAIL: assertion failed: 1 != 2] test_fail_boom() (gas: 3332)\n\
+Encountered a total of 1 failing tests, 1 tests succeeded\n";
+        let stderr = ""; // forge writes test results to stdout, not stderr
+
+        // OLD behavior: empty stderr → zero lines (the bug).
+        let old_stderr_only: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("fail") || l.contains("error"))
+            .collect();
+        assert!(
+            old_stderr_only.is_empty(),
+            "the bug: empty stderr → nothing"
+        );
+
+        // NEW behavior: surface the failing test name from stdout.
+        let lines = test_failure_lines(stdout, stderr);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("test_fail_boom") && l.contains("FAIL")),
+            "fix must surface the failing forge test from stdout: {lines:?}"
+        );
+        // Dedup: forge prints the `[FAIL …] test_fail_boom()` line twice (run
+        // summary + Failing tests section); the helper must collapse them.
+        let fail_count = lines
+            .iter()
+            .filter(|l| l.contains("test_fail_boom"))
+            .count();
+        assert_eq!(
+            fail_count, 1,
+            "duplicate FAIL lines must be deduped: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_failure_lines_covers_compile_error_on_stderr() {
+        // When the suite never ran (a build error), stdout has no FAILED line;
+        // the useful detail is the compile error on stderr. The helper must
+        // still surface something — otherwise a build-break shows as "tests
+        // failed:" with no clue why.
+        let stdout = "   Compiling foo v0.1.0\n";
+        let stderr = "error[E0308]: mismatched types\n  --> src/lib.rs:4:18\n   |\n 4 |     let x: u32 = \"\";\n   |                   ^^ expected `u32`, found `&str`\n\nerror: could not compile `foo` due to previous error\n";
+        let lines = test_failure_lines(stdout, stderr);
+        assert!(
+            lines.iter().any(|l| l.contains("error[E0308]")),
+            "compile error on stderr must be surfaced: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("could not compile")),
+            "cargo's terminal error line must be surfaced: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_failure_lines_empty_on_success() {
+        // A green run has no FAILED/error lines — the helper returns empty,
+        // so the caller's loop is a no-op on success.
+        let stdout = "running 3 tests\n\
+test a ... ok\n\
+test b ... ok\n\
+test c ... ok\n\
+test result: ok. 3 passed; 0 failed; 0 ignored\n";
+        let stderr = "    Finished `test` profile [unoptimized + debuginfo] target(s)\n\
+     Running unittests src/lib.rs\n";
+        assert!(
+            test_failure_lines(stdout, stderr).is_empty(),
+            "a green run must yield no failure lines"
         );
     }
 }
