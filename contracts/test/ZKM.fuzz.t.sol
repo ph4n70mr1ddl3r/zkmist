@@ -112,6 +112,7 @@ contract ZKMV2FuzzTest is Test {
         // Isolate the recipient check: the new zero-nullifier guard fires first
         // otherwise (and would surface "Invalid nullifier" instead).
         vm.assume(nullifier != bytes32(0));
+        vm.assume(uint256(nullifier) < 21888242871839275222246405745257275088548364400416034343698204186575808495617);
         bytes memory fakeProof = new bytes(proofLen);
 
         vm.expectRevert("Recipient cannot be zero");

@@ -61,7 +61,7 @@ contract ZKMV2E2ETest is Test {
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(5888);
-        bytes32 nullifier = keccak256("test_nullifier");
+        bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
         address recipient = address(0xB0B);
 
         a.claim(fakeProof, nullifier, recipient);
@@ -76,7 +76,7 @@ contract ZKMV2E2ETest is Test {
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(5888);
-        bytes32 nullifier = keccak256("test_nullifier");
+        bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
         address recipient = address(0xB0B);
 
         a.claim(fakeProof, nullifier, recipient);
@@ -91,7 +91,7 @@ contract ZKMV2E2ETest is Test {
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
         bytes memory fakeProof = new bytes(5888);
-        bytes32 nullifier = keccak256("test_nullifier");
+        bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
 
         vm.expectRevert("Recipient cannot be zero");
         a.claim(fakeProof, nullifier, address(0));
@@ -148,7 +148,7 @@ contract ZKMV2E2ETest is Test {
         vm.warp(1_798_761_601);
 
         bytes memory fakeProof = new bytes(5888);
-        bytes32 nullifier = keccak256("test_nullifier");
+        bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
 
         vm.expectRevert("Claim period ended");
         a.claim(fakeProof, nullifier, address(0xB0B));

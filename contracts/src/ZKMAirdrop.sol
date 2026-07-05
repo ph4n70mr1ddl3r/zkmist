@@ -57,6 +57,9 @@ contract ZKMAirdrop {
         // so a (cryptographically infeasible) all-zero digest can never be the
         // seed of a double-claim (two keys colliding to nullifier = 0).
         require(nullifier != bytes32(0), "Invalid nullifier");
+        // Prevent nullifier malleability: must be less than BN254 scalar field order f_q
+        // f_q = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+        require(uint256(nullifier) < 21888242871839275222246405745257275088548364400416034343698204186575808495617, "Nullifier out of field");
         require(recipient != address(0), "Recipient cannot be zero");
 
         // Calldata = instances (32-byte big-endian each) ++ proof — matches
