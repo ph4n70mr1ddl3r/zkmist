@@ -73,8 +73,12 @@ pub fn compute_nullifier(key: &[u8; 32], hasher: &mut Poseidon<Fr>) -> [u8; 32] 
 
 /// Compute a nullifier with an arbitrary domain separator.
 ///
-/// `domain` must be ≤ 32 bytes. It is left-aligned and zero-padded to 32 bytes
-/// before being interpreted as a BN254 field element via `from_be_bytes_mod_order`.
+/// `domain` must be ≤ 32 bytes. It is RIGHT-aligned (the plain big-endian
+/// integer of the bytes) and zero-padded to 32 bytes before being interpreted
+/// as a BN254 field element via `from_be_bytes_mod_order` — the same domain
+/// encoding the axiom circuit's `nullifier_axiom::domain_field_element` uses.
+/// (Note: this legacy light-poseidon sponge still differs from the circuit's
+/// halo2-base sponge; the production nullifier is `halo2base::compute_nullifier`.)
 pub fn compute_nullifier_with_domain(
     key: &[u8; 32],
     domain: &[u8],
@@ -83,7 +87,9 @@ pub fn compute_nullifier_with_domain(
     let key_elem = Fr::from_be_bytes_mod_order(key);
     let mut domain_padded = [0u8; 32];
     let len = domain.len().min(32);
-    domain_padded[..len].copy_from_slice(&domain[..len]);
+    // RIGHT-align (big-endian integer of the bytes) to match the circuit's
+    // domain_field_element — see halo2base::compute_nullifier_with_domain.
+    domain_padded[(32 - len)..].copy_from_slice(&domain[..len]);
     let domain_elem = Fr::from_be_bytes_mod_order(&domain_padded);
     field_element_to_bytes(
         hasher

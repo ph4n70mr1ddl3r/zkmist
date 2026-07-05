@@ -338,6 +338,55 @@ fn test_axiom_claim_verifies_offchain_tree() {
     });
 }
 
+// ── Off-chain nullifier == circuit nullifier (M1 regression) ───────────
+//
+// The off-chain `zkmist_merkle_tree::halo2base::compute_nullifier` and the
+// circuit's `nullifier_axiom` derive the domain field element independently
+// (byte buffer vs `domain_field_element`). A drift silently breaks the
+// `cmd_prove` display and any relayer/UI that predicts nullifiers off-chain.
+// This cross-check locks them byte-for-byte.
+
+/// M1 regression: the off-chain (merkle-tree halo2base) nullifier MUST equal
+/// the in-circuit nullifier for the same key, for several keys including one
+/// ≥ p_BN254 (exercises the mod-p reduction both sides perform).
+#[test]
+fn test_offchain_nullifier_matches_circuit() {
+    use zkmist_merkle_tree::halo2base::{compute_nullifier, Hasher};
+
+    let keys: [[u8; 32]; 3] = [
+        // small key (< p_BN254)
+        [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
+            0x89, 0xab, 0xcd, 0xef,
+        ],
+        // a 0x42.. key
+        [0x42u8; 32],
+        // a key ≥ p_BN254 (all 0xFF) — forces mod-p reduction on both sides
+        [0xFFu8; 32],
+    ];
+
+    let hasher = Hasher::new();
+    let p: num_bigint::BigUint = modulus::<Fr>();
+    for key_bytes in keys {
+        let n_offchain = compute_nullifier(&key_bytes, &hasher);
+
+        // Circuit convention: poseidon(key mod p_BN254, domain_field_element()).
+        let key_big = num_bigint::BigUint::from_bytes_be(&key_bytes);
+        let n_fr = native_hash_interior(biguint_to_fe(&(key_big % &p)), domain_field_element());
+        let be = fe_to_biguint(&n_fr).to_bytes_be();
+        let mut n_circuit = [0u8; 32];
+        n_circuit[32 - be.len()..].copy_from_slice(&be);
+
+        assert_eq!(
+            n_offchain,
+            n_circuit,
+            "off-chain nullifier != circuit nullifier for key {} (domain encoding drift)",
+            hex::encode(key_bytes)
+        );
+    }
+}
+
 // ── Public instances (the on-chain verifier model) ───────────────────────
 //
 // The claim's (merkle_root, nullifier, recipient) are exposed as a public

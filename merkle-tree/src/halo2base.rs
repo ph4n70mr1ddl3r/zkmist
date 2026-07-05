@@ -224,9 +224,15 @@ pub fn hash_leaf(addr: &[u8; 20], hasher: &Hasher) -> [u8; 32] {
 pub fn compute_nullifier_with_domain(key: &[u8; 32], domain: &[u8], hasher: &Hasher) -> [u8; 32] {
     let mut domain_padded = [0u8; 32];
     let len = domain.len().min(32);
-    domain_padded[..len].copy_from_slice(&domain[..len]);
-    // hash_interior reads both 32-byte args as big-endian field elements —
-    // matches crate::compute_nullifier_with_domain's from_be_bytes_mod_order.
+    // RIGHT-align the domain bytes (13 leading zero bytes for the 19-byte V2
+    // domain) so `from_be_bytes_mod_order` yields the plain big-endian integer
+    // of the byte sequence — IDENTICAL to the circuit's
+    // `nullifier_axiom::domain_field_element` (which builds the same integer
+    // via `d = d*256 + b`). The previous LEFT-alignment shifted the integer by
+    // 2^104 and produced a nullifier that differed from the circuit/prover
+    // (M1). Cross-checked by
+    // `circuits/tests/claim_axiom.rs::test_offchain_nullifier_matches_circuit`.
+    domain_padded[(32 - len)..].copy_from_slice(&domain[..len]);
     hasher.hash_interior(key, &domain_padded)
 }
 

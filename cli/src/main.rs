@@ -738,21 +738,36 @@ mod tests {
 
     // ── Nullifier consistency between CLI and merkle-tree lib ──────────
 
+    /// M1 regression: the nullifier the CLI computes off-chain (merkle-tree
+    /// halo2base) MUST equal the nullifier the circuit/prover commits to
+    /// (`poseidon(key mod p_BN254, domain_field_element())`). The previous
+    /// length-only assertion here masked a domain-encoding drift (left-pad vs
+    /// big-endian int) that made the `cmd_prove` display disagree with the
+    /// nullifier embedded in the proof file.
     #[test]
-    fn test_nullifier_matches_merkle_tree_lib() {
+    fn test_cli_nullifier_matches_circuit_convention() {
+        use crate::halo2_prover_axiom::bytes_be_to_fr;
+        use halo2_base::utils::fe_to_biguint;
+        use zkmist_circuits::nullifier_axiom::native_compute_nullifier;
+
         let key: [u8; 32] = [
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
             0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67,
             0x89, 0xab, 0xcd, 0xef,
         ];
         let hasher = Hasher::new();
-        let cli_nullifier = compute_nullifier(&key, &hasher);
+        let off_chain = compute_nullifier(&key, &hasher);
 
-        // Verify the nullifier is deterministic and matches expected test vector
+        // Circuit convention: poseidon(key mod p_BN254, domain_field_element()).
+        let key_mod_p = bytes_be_to_fr(&key);
+        let n_fr = native_compute_nullifier(key_mod_p);
+        let be = fe_to_biguint(&n_fr).to_bytes_be();
+        let mut circuit = [0u8; 32];
+        circuit[32 - be.len()..].copy_from_slice(&be);
+
         assert_eq!(
-            hex::encode(cli_nullifier).len(),
-            64,
-            "Nullifier should be 32 bytes hex"
+            off_chain, circuit,
+            "off-chain nullifier must equal the circuit/prover nullifier"
         );
     }
 
