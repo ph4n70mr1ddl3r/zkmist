@@ -205,7 +205,9 @@ fn main() {
     let prover_path = root.join("cli/src/halo2_prover_axiom.rs");
     if let Ok(prover_src) = std::fs::read_to_string(&prover_path) {
         if uses_random_srs(&prover_src) {
-            eprintln!("      ❌ Prover generates KZG params via Params::new / ParamsKZG::setup");
+            eprintln!(
+                "      ❌ Prover generates KZG params via gen_srs / Params::new / ParamsKZG::setup"
+            );
             eprintln!("         (random SRS). Whoever ran it knows the trapdoor and can forge");
             eprintln!("         proofs. This is dev/test ONLY — mainnet MUST load the Ethereum");
             eprintln!("         KZG ceremony SRS from a trusted transcript (Params::read). This");
@@ -727,22 +729,32 @@ fn extract_prover_k_from_str(content: &str) -> Option<u32> {
 /// Detect whether a prover source generates KZG params from scratch with an
 /// RNG (an untrusted/toy SRS) instead of loading a ceremony transcript.
 ///
-/// `ParamsKZG::setup(k, rng)` and `Params::<...>::new(k)` both derive a
-/// structured reference string whose trapdoor is known to whoever ran them —
-/// anyone holding it can forge proofs. Mainnet MUST load the Ethereum/PSE KZG
-/// ceremony SRS from a trusted transcript (e.g. `Params::read(...)`). This
-/// returns `true` when such a generation call is present on a non-comment line
-/// AND the source is not behind an explicit dev gate.
+/// Three call shapes all derive a structured reference string whose trapdoor
+/// is known to whoever ran them — anyone holding it can forge proofs:
+///   - `ParamsKZG::setup(k, rng)`  — the raw halo2 API.
+///   - `Params::<...>::new(k)`     — the raw halo2 API (also RNG-backed).
+///   - `gen_srs(k)`                — `halo2_base::utils::fs::gen_srs`, a thin
+///     wrapper that calls `ParamsKZG::setup(k, ChaCha20Rng::from_seed(..))`.
+///     This is the axiom backend's random-SRS entry point (the PSE prover used
+///     the two raw forms above); without it in the pattern list the axiom
+///     prover's `gen_srs` was an INVISIBLE soundness call — an ungated `gen_srs`
+///     would pass this check while being every bit as forgeable as `setup`.
 ///
-/// Convention: the ONLY permitted `Params::new` / `setup` must sit behind an
-/// explicit `ZKMIST_DEV_SRS` env-var gate (see `load_or_download_params` in
-/// halo2_prover.rs). If the file references `ZKMIST_DEV_SRS`, the random-SRS
-/// call is assumed to be the dev-gated fallback and is NOT flagged. Removing
-/// the gate (or adding an ungated `Params::new`) flips this back to `true`,
-/// failing the readiness gate.
+/// Mainnet MUST load the Ethereum/PSE KZG ceremony SRS from a trusted
+/// transcript (e.g. `Params::read(...)`). This returns `true` when such a
+/// generation call is present on a non-comment line AND the source is not
+/// behind an explicit dev gate.
+///
+/// Convention: the ONLY permitted `Params::new` / `setup` / `gen_srs` must
+/// sit behind an explicit `ZKMIST_DEV_SRS` env-var gate (see `load_srs_axiom`
+/// in halo2_prover_axiom.rs). If the file references `ZKMIST_DEV_SRS`, the
+/// random-SRS call is assumed to be the dev-gated fallback and is NOT flagged.
+/// Removing the gate (or adding an ungated generator) flips this back to
+/// `true`, failing the readiness gate.
 ///
 /// Note: the good path (`Params::<...>::read(&mut reader)`) contains `Params`
-/// but neither `::new(` nor `setup(`, so it is correctly NOT flagged.
+/// but neither `::new(`, `setup(`, nor `gen_srs(`, so it is correctly NOT
+/// flagged.
 fn uses_random_srs(prover_src: &str) -> bool {
     let has_random_call = prover_src.lines().any(|line| {
         let t = line.trim();
@@ -751,7 +763,12 @@ fn uses_random_srs(prover_src: &str) -> bool {
         }
         let uses_setup = t.contains("ParamsKZG") && t.contains("setup(");
         let uses_new = t.contains("Params") && t.contains("::new(");
-        uses_setup || uses_new
+        // `gen_srs(` — halo2-base's wrapper around `ParamsKZG::setup`. Match the
+        // CALL (with the opening paren) so a bare `gen_srs` identifier in a
+        // doc/comment-on-same-line or a `use ... gen_srs` import is not flagged
+        // (an import alone generates nothing); only an actual call does.
+        let uses_gen_srs = t.contains("gen_srs(");
+        uses_setup || uses_new || uses_gen_srs
     });
     has_random_call && !prover_src.contains("ZKMIST_DEV_SRS")
 }
@@ -871,6 +888,58 @@ mod tests {
         assert!(!uses_random_srs(src));
     }
 
+    // ── gen_srs detection (axiom backend) ───────────────────────────────
+    //
+    // `halo2_base::utils::fs::gen_srs(k)` is a thin wrapper around
+    // `ParamsKZG::<Bn256>::setup(k, ChaCha20Rng::from_seed(Default::default()))`
+    // — a deterministic-seed but still TOXIC-WASTE SRS (anyone who knows the
+    // code knows the trapdoor). The axiom prover goes through `gen_srs` rather
+    // than `Params::new`/`setup` directly, so without `gen_srs(` in the
+    // pattern list an ungated `gen_srs` call was an INVISIBLE soundness
+    // defect: equally forgeable as `setup`, but invisible to this check.
+    // These tests lock down both the detection and the dev-gate exemption.
+
+    #[test]
+    fn test_uses_random_srs_flags_ungated_gen_srs() {
+        // The exact form the axiom prover uses (cli/src/halo2_prover_axiom.rs),
+        // here UNGATED — the dangerous case. MUST be flagged.
+        let src = "    return Ok(gen_srs(circuit_k));\n";
+        assert!(
+            uses_random_srs(src),
+            "ungated gen_srs must be flagged — it is a forgeable toxic-waste SRS"
+        );
+    }
+
+    #[test]
+    fn test_uses_random_srs_flags_gen_srs_with_path_prefix() {
+        // Fully-qualified call form (no `use` import).
+        let src = "    let params = halo2_base::utils::fs::gen_srs(k);\n";
+        assert!(uses_random_srs(src));
+    }
+
+    #[test]
+    fn test_uses_random_srs_allows_dev_gated_gen_srs() {
+        // The axiom prover's actual shape: gen_srs behind a ZKMIST_DEV_SRS /
+        // production gate. MUST NOT be flagged (this is the accepted dev
+        // fallback). This is the exact pattern in load_srs_axiom.
+        let src = "    if !production || std::env::var(\"ZKMIST_DEV_SRS\").as_deref() == Ok(\"1\") {\n        return Ok(gen_srs(circuit_k));\n    }\n";
+        assert!(
+            !uses_random_srs(src),
+            "dev-gated gen_srs must NOT be flagged — it is the accepted dev fallback"
+        );
+    }
+
+    #[test]
+    fn test_uses_random_srs_does_not_flag_gen_srs_import_or_comment() {
+        // A `use` import or doc comment mentioning gen_srs generates nothing —
+        // only an actual CALL (with `(`) is dangerous. The pattern matches
+        // `gen_srs(`, so these must NOT trip.
+        let import = "use halo2_base::utils::fs::gen_srs;\nfn main() {}\n";
+        assert!(!uses_random_srs(import), "a bare import must not flag");
+        let doc = "//! Calls `gen_srs` in dev mode.\nfn main() {}\n";
+        assert!(!uses_random_srs(doc), "a doc comment must not flag");
+    }
+
     #[test]
     fn test_uses_random_srs_returns_false_on_clean_source() {
         assert!(!uses_random_srs("fn main() {}\n"));
@@ -892,12 +961,12 @@ mod tests {
             .unwrap_or_else(|e| panic!("read {}: {}", prover_path.display(), e));
         assert!(
             src.contains("ZKMIST_DEV_SRS"),
-            "dev gate removed — re-add the ZKMIST_DEV_SRS gate around any Params::new"
+            "dev gate removed — re-add the ZKMIST_DEV_SRS gate around any gen_srs / Params::new"
         );
         assert!(
             !uses_random_srs(&src),
-            "prover has an ungated Params::new/setup (no ZKMIST_DEV_SRS gate) — \
-             that is a soundness bug, re-gate it"
+            "prover has an ungated random-SRS call (gen_srs / Params::new / setup with no \
+             ZKMIST_DEV_SRS gate) — that is a soundness bug, re-gate it"
         );
     }
 
