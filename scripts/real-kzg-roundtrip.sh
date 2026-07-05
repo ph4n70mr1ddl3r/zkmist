@@ -9,11 +9,12 @@
 # Once this script goes green, it is the first ever honest on-chain verification.
 #
 # Prerequisites (it refuses to proceed silently if a hard blocker remains):
-#   1. Halo2VerifyingKey.sol regenerated at k=23 (NOT the placeholder). The
-#      committed VK is still the placeholder → every proof reverts with
-#      "Invalid proof" until it is regenerated:
-#        cargo run --release -p gen-production-verifier -- \
-#          --k 23 --params-file <pinned PSE SRS> --emit
+#   1. Halo2Verifier.axiom.sol regenerated with real VK data (NOT a
+#      stub/placeholder). The VK is embedded inline in the verifier contract
+#      (axiom backend, k=21); a stub would make every proof revert with
+#      "Invalid proof". Regenerate via the axiom circuit's verifier emitter:
+#        ZKMIST_EMIT_VERIFIER=1 ZKMIST_USE_PINNED_SRS=1 \
+#          cargo test -p zkmist-circuits --test claim_evm_roundtrip -- --nocapture
 #   2. A KZG SRS:
 #        - mainnet-grade: pin KZG_SRS_URL + KZG_SRS_SHA256 in
 #          cli/src/constants.rs (see docs/kzg-srs.md), OR
@@ -48,14 +49,21 @@ command -v cargo >/dev/null || die "cargo not found (install Rust)."
 command -v forge >/dev/null || die "forge not found (install Foundry)."
 
 # ── Hard blocker: the on-chain VK must be regenerated, not the placeholder ─
-# The readiness checker's [1b] reports the VK state; its advisory mode still
-# prints the MISMATCH / all-zero-fixed lines when the VK is the placeholder.
-say "Checking on-chain Halo2VerifyingKey.sol is regenerated (not placeholder)..."
+# The axiom backend embeds the VK INLINE in Halo2Verifier.axiom.sol (there is no
+# separate Halo2VerifyingKey contract). The readiness checker's [1b] reports the
+# VK state: it prints "looks like a stub/placeholder VK" when the verifier has
+# too few non-zero mstore constants. (The strings this used to grep for —
+# "VK k-value MISMATCH" / "ALL fixed commitments are zero" — were PSE-era and
+# are NEVER emitted by the current readiness tool, so the old grep was dead code
+# that could never detect a placeholder VK.)
+say "Checking on-chain Halo2Verifier.axiom.sol is regenerated (not placeholder)..."
 READINESS_OUT="$(cargo run -q -p zkmist-tools --bin readiness -- --skip-slow 2>&1 || true)"
-if echo "$READINESS_OUT" | grep -q "VK k-value MISMATCH\|ALL fixed commitments are zero"; then
-    die "Halo2VerifyingKey.sol is still the placeholder (k mismatch / zero fixed comms).
-     Regenerate it first:
-       cargo run --release -p gen-production-verifier -- --k 23 --params-file <PSE SRS> --emit"
+if echo "$READINESS_OUT" | grep -q "stub/placeholder VK"; then
+    die "Halo2Verifier.axiom.sol looks like a stub/placeholder VK (too few non-zero
+     mstore constants). Regenerate it first via the axiom circuit's verifier
+     emitter:
+       ZKMIST_EMIT_VERIFIER=1 ZKMIST_USE_PINNED_SRS=1 \
+         cargo test -p zkmist-circuits --test claim_evm_roundtrip -- --nocapture"
 fi
 say "VK looks regenerated."
 
@@ -87,7 +95,7 @@ cargo run --release -p zkmist-cli -- gen-roundtrip-fixture --out "$FIXTURE"
 # so this is exact (the prior `wc -c)/2 - 1` was off-by-one: wc adds a newline).
 PROOF_HEX="$(grep -oP '"proof":\s*"0x\K[0-9a-f]+' "$FIXTURE" | head -1)"
 PROOF_BYTES=$(( ${#PROOF_HEX} / 2 ))
-say "Fixture ready (proof = ${PROOF_BYTES} bytes; Halo2Verifier expects 5888)."
+say "Fixture ready (proof = ${PROOF_BYTES} bytes; axiom SHPLONK at k=21 is ~1376)."
 
 # ── 3. Run the on-chain round-trip in the EVM ─────────────────────────────
 say "Running RealRoundtrip Forge test (RUN_REAL_ROUNDTRIP=1)..."

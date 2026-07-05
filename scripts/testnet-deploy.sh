@@ -124,29 +124,50 @@ BROADCAST_DIR="$CONTRACTS_DIR/broadcast/Deploy.s.sol/$EXPECTED_CHAIN_ID"
 LATEST_RUN=$(ls -t "$BROADCAST_DIR"/run-*.json 2>/dev/null | head -1)
 
 VERIFIER_ADDR=""
-VK_ADDR=""
 TOKEN_ADDR=""
 AIRDROP_ADDR=""
 
 if [ -n "$LATEST_RUN" ]; then
     echo ""
     echo "Extracting deployed addresses from broadcast..."
-    # Parse contracts from the broadcast JSON
-    VERIFIER_ADDR=$(grep -A1 '"contractName": "Halo2Verifier"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
-    VK_ADDR=$(grep -A1 '"contractName": "Halo2VerifyingKey"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
-    TOKEN_ADDR=$(grep -A1 '"contractName": "ZKMToken"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
-    AIRDROP_ADDR=$(grep -A1 '"contractName": "ZKMAirdrop"' "$LATEST_RUN" 2>/dev/null | grep '"address"' | head -1 | sed 's/.*: "\(.*\)".*/\1/' || true)
+    # Extract the deployed `contractAddress` for a contract from a forge
+    # broadcast run-*.json. Two bugs in the prior revision are fixed here:
+    #
+    #   1. It grepped for a `"Halo2VerifyingKey"` contract that does not
+    #      exist — the axiom backend embeds the VK INLINE in
+    #      Halo2Verifier.axiom.sol (snark-verifier-generated), so there is no
+    #      separate VK contract. The empty VK_ADDR then gated the BaseScan
+    #      block below on `-n "$VK_ADDR"`, silently skipping verification of
+    #      EVERY contract, and fed a bogus 4th arg into the ZKMAirdrop
+    #      abi-encode (its constructor takes 3 args, not 4).
+    #   2. The address field grep `grep '"address"'` never matched forge's
+    #      real field name `contractAddress` (capital A, no leading quote —
+    #      see forge-std Vm.sol `BroadcastTxReceipt.contractAddress`), so
+    #      EVERY extracted address was empty too. We now grep a wide-enough
+    #      window for the `contractAddress` value regardless of field order.
+    extract_addr() {
+        # $1 = broadcast file, $2 = contractName
+        grep -A8 "\"contractName\": \"$2\"" "$1" 2>/dev/null \
+            | grep -o '"contractAddress": *"[0-9a-fA-Fx]*"' | head -1 \
+            | sed 's/.*: *"\(.*\)"/\1/'
+    }
+    VERIFIER_ADDR=$(extract_addr "$LATEST_RUN" "Halo2Verifier")
+    TOKEN_ADDR=$(extract_addr "$LATEST_RUN" "ZKMToken")
+    AIRDROP_ADDR=$(extract_addr "$LATEST_RUN" "ZKMAirdrop")
 
     if [ -n "$VERIFIER_ADDR" ]; then
-        echo "  Halo2Verifier:     $VERIFIER_ADDR"
-        echo "  Halo2VerifyingKey: $VK_ADDR"
-        echo "  ZKMToken:          $TOKEN_ADDR"
-        echo "  ZKMAirdrop:        $AIRDROP_ADDR"
+        echo "  Halo2Verifier: $VERIFIER_ADDR  (VK embedded inline — no separate VK contract)"
+        echo "  ZKMToken:      $TOKEN_ADDR"
+        echo "  ZKMAirdrop:    $AIRDROP_ADDR"
     fi
 fi
 
 # ── Verify contracts on BaseScan ──────────────────────────────────────
-if [ -n "$VERIFIER_ADDR" ] && [ -n "$VK_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; then
+# Gate on the THREE contracts that actually get deployed. The previous gate
+# also required a non-empty VK_ADDR; since the axiom VK is inline (no
+# Halo2VerifyingKey contract), VK_ADDR was always empty and this whole block
+# was dead code — a testnet deploy silently skipped BaseScan verification.
+if [ -n "$VERIFIER_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n "$AIRDROP_ADDR" ]; then
     echo ""
     echo "Verifying contracts on BaseScan..."
 
@@ -154,16 +175,16 @@ if [ -n "$VERIFIER_ADDR" ] && [ -n "$VK_ADDR" ] && [ -n "$TOKEN_ADDR" ] && [ -n 
         echo -e "  ${YELLOW}Verifier verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} Halo2Verifier verified"
 
-    forge verify-contract "$VK_ADDR" Halo2VerifyingKey --chain base-sepolia --watch 2>&1 || \
-        echo -e "  ${YELLOW}VK verification failed (may need manual retry)${NC}"
-    echo -e "  ${GREEN}✓${NC} Halo2VerifyingKey verified"
-
     forge verify-contract "$TOKEN_ADDR" ZKMToken --chain base-sepolia --watch 2>&1 || \
         echo -e "  ${YELLOW}Token verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} ZKMToken verified"
 
+    # ZKMAirdrop's constructor is (address token, address verifier, bytes32
+    # merkleRoot) — 3 args, matching contracts/src/ZKMAirdrop.sol. The prior
+    # 4-arg abi-encode (which interpolated a VK_ADDR) would have produced a
+    # wrong constructor-args ABI and failed BaseScan verification.
     forge verify-contract "$AIRDROP_ADDR" ZKMAirdrop --constructor-args \
-        "$(cast abi-encode "constructor(address,address,address,bytes32)" "$TOKEN_ADDR" "$VERIFIER_ADDR" "$VK_ADDR" "$MERKLE_ROOT")" \
+        "$(cast abi-encode "constructor(address,address,bytes32)" "$TOKEN_ADDR" "$VERIFIER_ADDR" "$MERKLE_ROOT")" \
         --chain base-sepolia --watch 2>&1 || \
         echo -e "  ${YELLOW}Airdrop verification failed (may need manual retry)${NC}"
     echo -e "  ${GREEN}✓${NC} ZKMAirdrop verified"
@@ -177,10 +198,9 @@ echo -e "${GREEN}═════════════════════
 if [ -n "$AIRDROP_ADDR" ]; then
     echo ""
     echo "  Deployed contracts:"
-    echo "    Halo2Verifier:     $VERIFIER_ADDR"
-    echo "    Halo2VerifyingKey: $VK_ADDR"
-    echo "    ZKMToken:          $TOKEN_ADDR"
-    echo "    ZKMAirdrop:        $AIRDROP_ADDR"
+    echo "    Halo2Verifier: $VERIFIER_ADDR  (VK embedded inline)"
+    echo "    ZKMToken:      $TOKEN_ADDR"
+    echo "    ZKMAirdrop:    $AIRDROP_ADDR"
 fi
 echo ""
 echo "Next steps:"
