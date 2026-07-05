@@ -163,31 +163,49 @@ fi
 # ── Step 5: Run readiness checker ──────────────────────────────────
 echo "[5/6] Running pre-deployment readiness check..."
 
-# Quick k-value consistency check.
+# Quick prover k-value check (axiom backend).
 #
-# Both extractions had to be fixed (they reported nonsense, so this check
-# always failed with misleading numbers):
-#   • VK_K  — the `// k` line is `mstore(0x0040, 0x...0015) // k`. The old
-#     `grep -oP '0x\K...'` grabbed the FIRST hex literal, the mstore OFFSET
-#     `0x0040` (=64), not the VALUE `0x15` (=21). The readiness checker's
-#     `extract_vk_k` was already fixed for this exact offset/value bug (see its
-#     `test_extract_vk_k_does_not_return_the_offset`); take the LAST hex literal
-#     on the line, which is the value.
-#   • PROVER_K — `grep 'CIRCUIT_K' | grep -oP '\d+'` hit the FIRST digit run on
-#     the const line `const CIRCUIT_K: u32 = 23;`, which is `32` (from `u32`),
-#     not `23`. Anchor on the const declaration and take the assigned value.
-VK_K=$(grep '// k$' "$PROJECT_ROOT/contracts/src/Halo2VerifyingKey.sol" 2>/dev/null | grep -oP '0x[0-9a-fA-F]+' | tail -1 | sed 's/^0x//')
-PROVER_K=$(grep -oP 'const CIRCUIT_K:\s*u32\s*=\s*\K\d+' "$PROJECT_ROOT/cli/src/halo2_prover.rs" 2>/dev/null | head -1)
-if [ -n "$VK_K" ] && [ -n "$PROVER_K" ]; then
-    VK_K_DEC=$((16#$VK_K))
-    if [ "$VK_K_DEC" != "$PROVER_K" ]; then
-        echo -e "  ${RED}❌ FAIL${NC}: VK k=$VK_K_DEC does not match prover CIRCUIT_K=$PROVER_K"
+# The PSE→axiom migration retired BOTH files this check used to grep, so the
+# old extractions always came back empty:
+#   • `contracts/src/Halo2VerifyingKey.sol` — a SEPARATE VK contract carrying a
+#     `mstore(0x0040, 0x..0015) // k` marker. GONE: the VK is now embedded
+#     INLINE in `Halo2Verifier.axiom.sol` (snark-verifier-generated) with NO
+#     parseable `// k` marker, so the verifier k can no longer be grepped.
+#   • `cli/src/halo2_prover.rs` (`const CIRCUIT_K: u32 = 23`) → renamed to
+#     `cli/src/halo2_prover_axiom.rs` (`const AXIOM_CIRCUIT_K: u32 = 21`).
+# With both paths stale, `VK_K`/`PROVER_K` were always empty AND — worse — under
+# `set -euo pipefail` the failing `VK_K=$(grep …)` assignment ABORTED the whole
+# script at Step 5: the readiness checker, the Step 6 lint checks, and the
+# final summary never ran. (`./scripts/e2e-test.sh` died with exit 1 mid-Step-5
+# on the axiom tree, taking the CI `E2E Test Suite` job down with it.)
+#
+# Fix: extract the prover k from its real (axiom) location and assert it equals
+# the production value (21). The verifier↔prover k-consistency is no longer
+# parseable in shell (no VK marker); it is enforced by the readiness checker's
+# compiled test `test_real_committed_files_k_values` (prover k pinned to 21 +
+# verifier carries real VK data) and, definitively, by the real-KZG on-chain
+# round-trip (ZKM.realroundtrip.t.sol).
+#
+# `|| true` keeps the assignment from aborting under `set -e` when grep finds
+# no match (file renamed/missing again) — the empty value is then reported via
+# the `fail` branch below instead of killing the script (the original bug).
+PROVER_K=$(grep -oP 'const AXIOM_CIRCUIT_K:\s*u32\s*=\s*\K\d+' "$PROJECT_ROOT/cli/src/halo2_prover_axiom.rs" 2>/dev/null | head -1 || true)
+# Production circuit k for the axiom claim circuit (≈1.9M advice cells; the
+# universal k=23 PSE SRS only needs srs_k >= circuit_k). MUST match
+# `AXIOM_CIRCUIT_K` in cli/src/halo2_prover_axiom.rs and the readiness test
+# `test_real_committed_files_k_values`. If this moves, regenerate
+# Halo2Verifier.axiom.sol (circuits/tests/claim_evm_roundtrip.rs) and re-run
+# the on-chain round-trip.
+EXPECTED_AXIOM_K=21
+if [ -n "$PROVER_K" ]; then
+    if [ "$PROVER_K" != "$EXPECTED_AXIOM_K" ]; then
+        echo -e "  ${RED}❌ FAIL${NC}: prover AXIOM_CIRCUIT_K=$PROVER_K != production k=$EXPECTED_AXIOM_K"
         FAILED=$((FAILED + 1))
     else
-        pass "VK k-value ($VK_K_DEC) matches prover CIRCUIT_K"
+        pass "Prover AXIOM_CIRCUIT_K=$PROVER_K matches production k=$EXPECTED_AXIOM_K"
     fi
 else
-    warn "Could not check VK k-value consistency"
+    fail "Could not extract AXIOM_CIRCUIT_K from cli/src/halo2_prover_axiom.rs (file renamed/missing?)"
 fi
 
 READINESS_OUTPUT=$(cargo run --release -p zkmist-tools --bin readiness -- --skip-slow 2>&1) || true
