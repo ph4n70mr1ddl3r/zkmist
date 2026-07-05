@@ -9,8 +9,10 @@
 //!       path/to/params-A.bin [path/to/params-B.bin ...]
 //!
 //! For each file it prints: file size, SHA-256, the embedded `k`, `n = 2^k`,
-//! and the G1 power count. It asserts `k == CIRCUIT_K` (23). When given two or
-//! more files, it asserts they are BYTE-IDENTICAL (same digest AND same k) —
+//! and the G1 power count. It asserts the file's `k` equals the pinned SRS k
+//! (23 — the universal PSE perpetual-powers-of-tau ceremony SRS; this is NOT
+//! the circuit k, which is 21 — see [`EXPECTED_K`]). When given two or more
+//! files, it asserts they are BYTE-IDENTICAL (same digest AND same k) —
 //! that is the strongest cross-check available without re-running phase2
 //! extraction yourself (which is the gold standard — see docs/kzg-srs.md §2).
 //!
@@ -19,7 +21,7 @@
 //! tool COMPUTES the hash you will pin.
 //!
 //! The file is read via the EXACT same `ParamsKZG::<Bn256>::read` the prover
-//! uses (`cli/src/halo2_prover.rs`), so anything this tool accepts, the prover
+//! uses (`cli/src/halo2_prover_axiom.rs`), so anything this tool accepts, the prover
 //! accepts, and vice versa. It does NOT generate or trust any hash from
 //! anywhere — every digest it prints is computed from the bytes you give it.
 
@@ -32,7 +34,19 @@ use sha2::{Digest, Sha256};
 #[path = "srs_guard.rs"]
 mod srs_guard;
 
-/// Production circuit k. MUST match `CIRCUIT_K` in `cli/src/halo2_prover.rs`.
+/// Expected `k` of the pinned KZG SRS file: the **universal** PSE
+/// perpetual-powers-of-tau ceremony SRS at k=23 (the file pinned by
+/// `KZG_SRS_URL` / `KZG_SRS_SHA256` in `cli/src/constants.rs`).
+///
+/// This is NOT the circuit k. The axiom claim circuit runs at k=21
+/// (`AXIOM_CIRCUIT_K` in `cli/src/halo2_prover_axiom.rs`); the ceremony SRS is
+/// *universal* — one k=23 transcript serves every circuit up to k=23, so the
+/// invariant the prover enforces is `srs_k (23) >= circuit_k (21)`, NOT
+/// equality. Do not "fix" this to 21: a k=21 file would still serve the
+/// circuit, but the pinned production SRS is the k=23 ceremony transcript
+/// (provenance byte-confirmed against the public beacon by
+/// `verify-srs-from-ptau`), and `verify-srs` exists to confirm a candidate
+/// file IS that k=23 transcript.
 const EXPECTED_K: u32 = 23;
 
 fn main() {
@@ -75,7 +89,7 @@ fn main() {
                 eprintln!();
                 eprintln!("  Verifies halo2 KZG params file(s): prints SHA-256, k, n=2^k, G1");
                 eprintln!(
-                    "  count; asserts k == {} (CIRCUIT_K). With 2+ files, asserts they",
+                    "  count; asserts k == {} (expected SRS k). With 2+ files, asserts they",
                     EXPECTED_K
                 );
                 eprintln!(
@@ -191,22 +205,31 @@ fn main() {
         eprintln!("  G1 points:    {}  (expected = {} = 2^k)", g1_count, n);
 
         if k == expect_k {
-            eprintln!("  k check:      ✅ k={} matches CIRCUIT_K", k);
+            eprintln!(
+                "  k check:      ✅ k={} matches expected SRS k (universal ceremony transcript)",
+                k
+            );
         } else {
             eprintln!(
-                "  k check:      ❌ k={} does NOT match CIRCUIT_K={}",
+                "  k check:      ❌ k={} does NOT match the expected SRS k={}",
                 k, expect_k
             );
             eprintln!(
-                "     A {} file would allocate {}× more memory than k={} during proving",
-                k,
-                1u64 << k.saturating_sub(expect_k),
+                "    The pinned production SRS is the k={} universal PSE ceremony transcript.",
                 expect_k
             );
             eprintln!(
-                "     and produce proofs the on-chain verifier (pinned to k={}) rejects.",
+                "    (The axiom circuit itself runs at k=21 and only needs srs_k >= 21, so a"
+            );
+            eprintln!(
+                "     k={} file would still verify on-chain; this check confirms the file IS",
+                k
+            );
+            eprintln!(
+                "     the k={} transcript, not a different-sized SRS. Pass --expect-k to",
                 expect_k
             );
+            eprintln!("     verify a different target, or truncate-srs to downsize.)");
             any_k_mismatch = true;
         }
 
@@ -276,7 +299,7 @@ fn main() {
     let (ref_path, ref_digest, ref_k) = &digests[0];
     if *ref_k != expect_k {
         eprintln!(
-            "❌ Primary file k={} does not match CIRCUIT_K={}",
+            "❌ Primary file k={} does not match the expected SRS k={}",
             ref_k, expect_k
         );
         std::process::exit(2);
@@ -302,4 +325,42 @@ fn main() {
     eprintln!("    cargo run -p zkmist-tools --bin readiness   # [1d/8] -> ✅");
     eprintln!();
     eprintln!("✅ SRS verified. Paste the snippet above into cli/src/constants.rs.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard: `EXPECTED_K` is the **SRS** k of the pinned universal
+    /// PSE perpetual-powers-of-tau ceremony transcript (k=23) — NOT the axiom
+    /// circuit k. The circuit runs at k=21 (`AXIOM_CIRCUIT_K` in
+    /// `cli/src/halo2_prover_axiom.rs`); the universal ceremony SRS only needs
+    /// `srs_k >= circuit_k`.
+    ///
+    /// A prior revision documented this constant as "Production circuit k …
+    /// MUST match `CIRCUIT_K` (=23)" and referenced the DELETED
+    /// `cli/src/halo2_prover.rs`, conflating the SRS k with the circuit k and
+    /// (worse) printing "k=N matches CIRCUIT_K" to deployers — implying the
+    /// circuit runs at k=23 when it actually runs at k=21. This test pins the
+    /// value so a future "fix" to 21 (the circuit k) trips it, and locks the
+    /// `srs_k >= circuit_k` invariant the prover (`load_srs_axiom`) relies on.
+    #[test]
+    fn expected_k_is_the_universal_srs_k_not_the_circuit_k() {
+        assert_eq!(
+            EXPECTED_K, 23,
+            "EXPECTED_K is the universal ceremony SRS k, not the circuit k"
+        );
+        // Hard-coded mirror of `AXIOM_CIRCUIT_K` (it lives in another crate,
+        // `zkmist-cli`, which this tools crate cannot depend on without a
+        // cycle). If the circuit k ever moves ABOVE 23 the pinned k=23 SRS is
+        // too small — both this test and `load_srs_axiom`'s
+        // `srs_k < circuit_k` check must be revisited in lockstep.
+        const AXIOM_CIRCUIT_K: u32 = 21;
+        assert!(
+            EXPECTED_K >= AXIOM_CIRCUIT_K,
+            "universal SRS k {} must be >= circuit k {} (else it cannot serve the circuit)",
+            EXPECTED_K,
+            AXIOM_CIRCUIT_K
+        );
+    }
 }

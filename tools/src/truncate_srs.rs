@@ -1,9 +1,11 @@
-//! `truncate-srs` — downsize a halo2 KZG SRS to exactly the circuit's k.
+//! `truncate-srs` — downsize a halo2 KZG SRS to exactly a target k.
 //!
 //! Closes the "I can only find a k≥23 PSE SRS, not exactly k=23" sourcing gap
 //! (see docs/kzg-srs.md §1.1). It takes a LARGER halo2 params file (any k ≥
-//! CIRCUIT_K) and emits a VALID halo2 params file at exactly CIRCUIT_K (k=23),
-//! by reusing halo2's OWN audited `Params::downsize(k)` method.
+//! target) and emits a VALID halo2 params file at exactly the target k (default
+//! k=23 — the universal PSE ceremony SRS size; the axiom circuit itself runs
+//! at k=21, so k=23 is more than enough), by reusing halo2's OWN audited
+//! `Params::downsize(k)` method.
 //!
 //! # Why this is sound (no re-derivation, no custom serialization)
 //!
@@ -62,8 +64,16 @@ use halo2_proofs::poly::kzg::commitment::ParamsKZG;
 #[path = "srs_guard.rs"]
 mod srs_guard;
 
-/// Production circuit k. MUST match `CIRCUIT_K` in `cli/src/halo2_prover.rs`
-/// and `EXPECTED_K` in `tools/src/verify_srs.rs`.
+/// Default target SRS k to truncate down to: the **universal** PSE
+/// perpetual-powers-of-tau ceremony size (k=23), matching the pinned
+/// production SRS (`KZG_SRS_URL` in `cli/src/constants.rs`) and `EXPECTED_K`
+/// in `tools/src/verify_srs.rs`.
+///
+/// This is the SRS k, NOT the circuit k. The axiom circuit runs at k=21
+/// (`AXIOM_CIRCUIT_K` in `cli/src/halo2_prover_axiom.rs`); the ceremony SRS is
+/// universal (the invariant is `srs_k >= circuit_k`), so truncating to k=23
+/// keeps the full pinned transcript. Pass `--target-k 21` to emit a smaller
+/// k=21 SRS (still serves the circuit; same trapdoor τ, just fewer powers).
 const DEFAULT_TARGET_K: u32 = 23;
 
 fn main() {

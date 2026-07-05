@@ -209,7 +209,7 @@ fn main() {
             eprintln!("         (random SRS). Whoever ran it knows the trapdoor and can forge");
             eprintln!("         proofs. This is dev/test ONLY — mainnet MUST load the Ethereum");
             eprintln!("         KZG ceremony SRS from a trusted transcript (Params::read). This");
-            eprintln!("         also explains the >4 min cold params-generation cost at k=23.");
+            eprintln!("         also explains the >4 min cold params-generation cost at k=21.");
             failed += 1;
         } else {
             eprintln!("      ✅ Prover does not generate a random SRS (loads a transcript)");
