@@ -25,7 +25,8 @@
 use halo2_base::{
     gates::{GateInstructions, RangeInstructions},
     halo2_proofs::halo2curves::bn256::Fr,
-    AssignedValue, Context, QuantumCell::Constant,
+    AssignedValue, Context,
+    QuantumCell::Constant,
 };
 
 // ── Keccak-f[1600] constants ─────────────────────────────────────────────
@@ -132,32 +133,31 @@ pub fn keccak_f1600_rounds(
     let gate = range.gate();
     let mut a = state;
 
-    for round in 0..nrounds {
+    for rc in RC.iter().copied().take(nrounds) {
         // ── θ ──
         // C[x][z] = ⊕_y a[x][y][z]
         let mut c = [[a[0]; 64]; 5]; // placeholder, overwritten
         for x in 0..5 {
             for z in 0..64 {
-                let lane_bits: Vec<AssignedValue<Fr>> =
-                    (0..5).map(|y| a[idx(x, y, z)]).collect();
+                let lane_bits: Vec<AssignedValue<Fr>> = (0..5).map(|y| a[idx(x, y, z)]).collect();
                 c[x][z] = xor_bits(ctx, gate, &lane_bits);
             }
         }
         // D[x][z] = C[(x+4)%5][z] ⊕ C[(x+1)%5][(z-1)%64]   (rotate_left(1) of the lane)
         let mut d = [[a[0]; 64]; 5];
-        for x in 0..5 {
-            for z in 0..64 {
+        for (x, d_row) in d.iter_mut().enumerate() {
+            for (z, d_cell) in d_row.iter_mut().enumerate() {
                 let left = c[(x + 4) % 5][z];
                 let right = c[(x + 1) % 5][(z + 63) % 64];
-                d[x][z] = xor_bit(ctx, gate, left, right);
+                *d_cell = xor_bit(ctx, gate, left, right);
             }
         }
         // a[x][y][z] ^= D[x][z]
-        for x in 0..5 {
+        for (x, d_row) in d.iter().enumerate() {
             for y in 0..5 {
-                for z in 0..64 {
+                for (z, d_cell) in d_row.iter().copied().enumerate() {
                     let i = idx(x, y, z);
-                    a[i] = xor_bit(ctx, gate, a[i], d[x][z]);
+                    a[i] = xor_bit(ctx, gate, a[i], d_cell);
                 }
             }
         }
@@ -192,8 +192,7 @@ pub fn keccak_f1600_rounds(
             }
         }
 
-        // ── ι ── A[0][0] ^= RC[round]  (flip bits where RC has a 1) ──
-        let rc = RC[round];
+        // ── ι ── A[0][0] ^= rc  (flip bits where the round constant has a 1) ──
         for z in 0..64 {
             if (rc >> z) & 1 == 1 {
                 new_a[idx(0, 0, z)] = gate.not(ctx, new_a[idx(0, 0, z)]);

@@ -130,7 +130,7 @@ if [[ "$SELF_TEST" -eq 1 ]]; then
     say "           The output is NOT a real ceremony SRS — do not use on mainnet."
     # k=10 is small enough to generate in seconds; the real run asserts k=23.
     DEV_K=10
-    cargo run --release -q -p zkmist-cli --example prime_dev_srs -- "$DEV_K" \
+    cargo run --release -q -p zkmist-tools --example prime_dev_srs -- "$DEV_K" \
         >/dev/null 2>&1 || die "prime_dev_srs $DEV_K failed"
     DEV_FILE="$HOME/.zkmist/cache/v2_params_k${DEV_K}.bin"
     [[ -f "$DEV_FILE" ]] || die "dev file not found at $DEV_FILE"

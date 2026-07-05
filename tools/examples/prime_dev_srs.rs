@@ -1,18 +1,19 @@
-//! One-shot dev SRS primer for local proving tests.
+//! One-shot dev SRS primer for the PSE-format SRS tooling self-test.
 //!
-//! Generates `Params::<G1Affine>::new(k)` and writes it to the CLI cache path
-//! (`~/.zkmist/cache/v2_params_k{}.bin`) so `test_real_kzg_proof_round_trip`
-//! and any `ZKMIST_DEV_SRS=1` prove run loads it instantly instead of
-//! regenerating the ~2 GB file each time.
+//! Generates a PSE `ParamsKZG::setup(k)` (a RANDOM, FORGEABLE SRS) and writes
+//! it to `~/.zkmist/cache/v2_params_k{k}.bin`. `scripts/fetch-pse-srs.sh` uses
+//! this in SELF-TEST mode to exercise the `verify-srs` / `truncate-srs`
+//! plumbing against a small synthetic file without needing the real ceremony
+//! transcript.
 //!
 //! ⚠️  DEV/TEST ONLY — this generates a RANDOM, FORGEABLE SRS. Never use proofs
 //! from it on mainnet. Production loads the pinned PSE perpetual-powers-of-tau
-//! SRS instead (see `docs/kzg-srs.md`). The only reason this exists is that
-//! `Params::new(k)` is pathologically slow at k=23 in this halo2 version
-//! (sequential 2^k point mults — tens of minutes), so priming the cache once
-//! keeps the proving test runnable.
+//! SRS instead (see `docs/kzg-srs.md`). Lives in `zkmist-tools` (not the CLI)
+//! because the CLI now builds against the axiom halo2-base backend and no
+//! longer links the PSE `halo2_proofs` directly; the SRS verify/truncate tools
+//! here do, so this primer shares their exact (PSE) serialization format.
 //!
-//! Usage: `cargo run --release -p zkmist-cli --example prime_dev_srs -- [k]`
+//! Usage: `cargo run --release -p zkmist-tools --example prime_dev_srs -- [k]`
 //! (k defaults to 23).
 
 use halo2_proofs::poly::{commitment::Params as _, kzg::commitment::ParamsKZG};

@@ -14,9 +14,9 @@
 use std::path::Path;
 
 use halo2_base::{
-    gates::RangeChip,
-    gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
+    gates::circuit::CircuitBuilderStage,
+    gates::RangeChip,
     halo2_proofs::{
         halo2curves::bn256::Bn256,
         halo2curves::bn256::Fr,
@@ -40,14 +40,12 @@ pub(crate) fn get_cache_dir() -> Result<std::path::PathBuf, String> {
 }
 
 use zkmist_circuits::{
-    claim_axiom::prove_claim_to_cells,
-    nullifier_axiom::domain_field_element,
-    poseidon_axiom::native_hash_interior,
-    secp_axiom::assign_privkey,
+    claim_axiom::prove_claim_to_cells, nullifier_axiom::domain_field_element,
+    poseidon_axiom::native_hash_interior, secp_axiom::assign_privkey,
 };
 
-/// Circuit degree for the axiom claim circuit (≈1.9M advice cells; the secp
-/// + Keccak dominate). Real-KZG proving peaks well under ~10 GiB at k=21
+/// Circuit degree for the axiom claim circuit (≈1.9M advice cells; secp and
+/// Keccak dominate). Real-KZG proving peaks well under ~10 GiB at k=21
 /// (vs k=23's ~25 GiB on the PSE stack). ⚠️ Must match the verifier generation.
 pub const AXIOM_CIRCUIT_K: u32 = 21;
 
@@ -74,7 +72,10 @@ pub fn load_srs_axiom(circuit_k: u32) -> Result<ParamsKZG<Bn256>, String> {
 
     let path = get_cache_dir()?.join("v2_axiom_srs.bin");
     if !path.exists()
-        || !matches!(crate::download::verify_file_sha256(&path, pinned_hash), Ok(true))
+        || !matches!(
+            crate::download::verify_file_sha256(&path, pinned_hash),
+            Ok(true)
+        )
     {
         eprintln!("         Downloading axiom KZG SRS from {}", pinned_url);
         crate::download::download_and_verify_to_file(pinned_url, pinned_hash, &path)?;
@@ -88,9 +89,7 @@ pub fn load_srs_axiom(circuit_k: u32) -> Result<ParamsKZG<Bn256>, String> {
             "Ceremony SRS is k={srs_k} but the axiom circuit needs k>={circuit_k}"
         ));
     }
-    eprintln!(
-        "         ✓ axiom KZG SRS loaded (ceremony k={srs_k}, SHA-256 verified)"
-    );
+    eprintln!("         ✓ axiom KZG SRS loaded (ceremony k={srs_k}, SHA-256 verified)");
     Ok(params)
 }
 
@@ -155,7 +154,12 @@ pub fn generate_v2_proof_axiom(
         let ctx = builder.pool(0).main();
         let limbs = assign_privkey(ctx, privkey_fq);
         let (root, null, recip) = prove_claim_to_cells(
-            ctx, &range, limbs, &siblings_fr, &path_indices_fr, recipient_fr,
+            ctx,
+            &range,
+            limbs,
+            &siblings_fr,
+            &path_indices_fr,
+            recipient_fr,
         );
         builder.assigned_instances[0] = vec![root, null, recip];
     };
@@ -172,9 +176,13 @@ pub fn generate_v2_proof_axiom(
     let _config_params = kb.calculate_params(Some(9));
     eprintln!("      [axiom] keygen_vk...");
     let vk = keygen_vk(&params, &kb).map_err(|e| format!("VK generation failed: {:?}", e))?;
-    let pk = keygen_pk(&params, vk.clone(), &kb).map_err(|e| format!("PK generation failed: {:?}", e))?;
+    let pk = keygen_pk(&params, vk.clone(), &kb)
+        .map_err(|e| format!("PK generation failed: {:?}", e))?;
     let break_points = kb.break_points();
-    eprintln!("      [axiom] keygen done ({:.1}s)", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "      [axiom] keygen done ({:.1}s)",
+        t0.elapsed().as_secs_f64()
+    );
     drop(kb);
 
     // ── prover stage ────────────────────────────────────────────────
@@ -215,15 +223,16 @@ pub fn generate_v2_proof_axiom(
         chain_id: crate::constants::CHAIN_ID,
         receipt_hex: None,
     };
-    std::fs::write(output_path, serde_json::to_string_pretty(&proof_file).unwrap())
-        .map_err(|e| format!("Failed to write proof: {}", e))?;
+    std::fs::write(
+        output_path,
+        serde_json::to_string_pretty(&proof_file).unwrap(),
+    )
+    .map_err(|e| format!("Failed to write proof: {}", e))?;
     eprintln!("      [axiom] proof saved: {}", output_path.display());
 
     // Sanity: generate + compile the on-chain verifier once (proves the proof
     // is on-chain-verifiable). In production this is a separate gen-verifier step.
-    let _bytecode = gen_evm_verifier_shplonk::<AxiomClaimMarker>(
-        &params, &vk, vec![3], None,
-    );
+    let _bytecode = gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![3], None);
 
     Ok(nullifier_bytes)
 }
@@ -241,11 +250,19 @@ impl Circuit<Fr> for AxiomClaimMarker {
     type Config = ();
     type FloorPlanner = SimpleFloorPlanner;
     type Params = ();
-    fn without_witnesses(&self) -> Self { Self }
+    fn without_witnesses(&self) -> Self {
+        Self
+    }
     fn configure(_: &mut ConstraintSystem<Fr>) -> Self::Config {}
-    fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> { Ok(()) }
+    fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 impl CircuitExt<Fr> for AxiomClaimMarker {
-    fn num_instance(&self) -> Vec<usize> { vec![3] }
-    fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
+    fn num_instance(&self) -> Vec<usize> {
+        vec![3]
+    }
+    fn instances(&self) -> Vec<Vec<Fr>> {
+        vec![]
+    }
 }

@@ -53,46 +53,52 @@ impl Hasher {
     }
 }
 
+impl Default for Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Standard (non-optimized) Poseidon permutation: per round `ARC → sbox(x^α) →
 /// MDS`, with the first half full, then partial, then second half full. This is
 /// the same permutation `light-poseidon` runs; only the sponge wrapping differs.
-fn permute(
-    state: &mut [Fr],
-    params: &PoseidonParameters<Fr>,
-) {
+fn permute(state: &mut [Fr], params: &PoseidonParameters<Fr>) {
     let t = params.width;
     let half = params.full_rounds / 2;
     let alpha = params.alpha;
     let apply_mds = |state: &mut [Fr]| {
-        let mut new_state = vec![Fr::from(0u64); t];
-        for i in 0..t {
-            for j in 0..t {
-                new_state[i] += params.mds[i][j] * state[j];
-            }
-        }
+        let new_state: Vec<Fr> = params
+            .mds
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .zip(state.iter())
+                    .fold(Fr::from(0u64), |acc, (&mij, &sj)| acc + mij * sj)
+            })
+            .collect();
         state.copy_from_slice(&new_state);
     };
     let mut round = 0usize;
     for _ in 0..half {
-        for i in 0..t {
-            state[i] += params.ark[round * t + i];
-            state[i] = state[i].pow([alpha]);
+        for (i, s) in state.iter_mut().enumerate() {
+            *s += params.ark[round * t + i];
+            *s = s.pow([alpha]);
         }
         apply_mds(state);
         round += 1;
     }
     for _ in 0..params.partial_rounds {
-        for i in 0..t {
-            state[i] += params.ark[round * t + i];
+        for (i, s) in state.iter_mut().enumerate() {
+            *s += params.ark[round * t + i];
         }
         state[0] = state[0].pow([alpha]);
         apply_mds(state);
         round += 1;
     }
     for _ in 0..half {
-        for i in 0..t {
-            state[i] += params.ark[round * t + i];
-            state[i] = state[i].pow([alpha]);
+        for (i, s) in state.iter_mut().enumerate() {
+            *s += params.ark[round * t + i];
+            *s = s.pow([alpha]);
         }
         apply_mds(state);
         round += 1;
@@ -164,8 +170,7 @@ pub fn build_tree_streaming_with_depth(
     let hasher = Hasher::new();
     let num_leaves = 1usize << depth;
 
-    let mut current: Vec<[u8; 32]> =
-        addresses.par_iter().map(|a| hasher.hash_leaf(a)).collect();
+    let mut current: Vec<[u8; 32]> = addresses.par_iter().map(|a| hasher.hash_leaf(a)).collect();
     current.resize(num_leaves, PADDING_SENTINEL);
 
     let mut target_siblings: Option<Vec<[u8; 32]>> =
@@ -178,10 +183,8 @@ pub fn build_tree_streaming_with_depth(
             .par_chunks(2)
             .map(|chunk| hasher.hash_interior(&chunk[0], &chunk[1]))
             .collect();
-        if let (Some(ref mut sibs), Some(ref mut path)) =
-            (&mut target_siblings, &mut target_path)
-        {
-            if idx % 2 == 0 {
+        if let (Some(ref mut sibs), Some(ref mut path)) = (&mut target_siblings, &mut target_path) {
+            if idx.is_multiple_of(2) {
                 sibs.push(current[idx + 1]);
                 path.push(0);
             } else {
@@ -218,11 +221,7 @@ pub fn hash_leaf(addr: &[u8; 20], hasher: &Hasher) -> [u8; 32] {
 }
 
 /// Compute a nullifier with an arbitrary domain separator (halo2-base convention).
-pub fn compute_nullifier_with_domain(
-    key: &[u8; 32],
-    domain: &[u8],
-    hasher: &Hasher,
-) -> [u8; 32] {
+pub fn compute_nullifier_with_domain(key: &[u8; 32], domain: &[u8], hasher: &Hasher) -> [u8; 32] {
     let mut domain_padded = [0u8; 32];
     let len = domain.len().min(32);
     domain_padded[..len].copy_from_slice(&domain[..len]);
@@ -253,10 +252,7 @@ pub fn verify_merkle_proof(
 }
 
 /// `crate::generate_proof` — convention-independent (traverses layers).
-pub fn generate_proof(
-    layers: &[Vec<[u8; 32]>],
-    index: usize,
-) -> (Vec<[u8; 32]>, Vec<u8>) {
+pub fn generate_proof(layers: &[Vec<[u8; 32]>], index: usize) -> (Vec<[u8; 32]>, Vec<u8>) {
     crate::generate_proof(layers, index)
 }
 

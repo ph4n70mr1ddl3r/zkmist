@@ -37,6 +37,7 @@ light-poseidon = "0.4"
 hex = "0.4"
 sha2 = "0.10"
 rand = "0.8"
+dirs = "5"  # used by examples/prime_dev_srs.rs (cache path)
 halo2_proofs.workspace = true
 halo2curves.workspace = true
 ff = "0.13"

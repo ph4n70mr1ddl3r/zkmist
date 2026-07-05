@@ -73,36 +73,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace -- -D warnings
 
-  # ── gen-production-verifier build-check ─────────────────────────────────
-  # gen-production-verifier regenerates Halo2VerifyingKey.sol / Halo2Verifier.sol
-  # from the full circuit VK at k=23 (the deployment blocker tracked in
-  # SECURITY.md and flagged by the readiness checker). It is a member of the
-  # root workspace and, like the rest of the workspace, builds against the PSE
-  # halo2 git fork (see root Cargo.toml `[workspace.dependencies]`). It pulls
-  # in the vendored halo2-solidity-verifier path dep, so the recursive
-  # submodule checkout is required. This job keeps the regen tool buildable so
-  # it can be invoked the moment we regenerate the VK — bit-rot here would
-  # silently break deployment recovery.
-  gen-verifier-build:
-    name: gen-production-verifier – Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive  # vendor/halo2-solidity-verifier (path dep)
-      - uses: dtolnay/rust-toolchain@stable
-      # The path dep in gen-production-verifier/Cargo.toml resolves to
-      # ../vendor/halo2-solidity-verifier, vendored as a git submodule pinned
-      # to the commit that matches local development. The submodule's own
-      # rust-toolchain.toml pin does NOT apply to a path dependency, so CI
-      # `stable` builds it fine.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "gen-production-verifier"
-      - name: Build gen-production-verifier (release)
-        working-directory: gen-production-verifier
-        run: cargo build --release
-
   # ── Pre-deployment readiness checks ───────────────────────────────────
   #
   # Two modes of the same tool (tools/src/readiness.rs):

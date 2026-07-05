@@ -6318,6 +6318,7 @@ dependencies = [
  "alloy",
  "ark-bn254",
  "ark-ff 0.5.0",
+ "dirs",
  "ff",
  "halo2_proofs",
  "halo2curves",
