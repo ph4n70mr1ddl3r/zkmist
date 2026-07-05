@@ -107,23 +107,6 @@ contract ZKMV2FuzzTest is Test {
         }
     }
 
-    /// @dev Exact proof length is enforced: only PROOF_LENGTH (5888) is accepted.
-    function testFuzz_proof_length_bounds(uint16 proofLength) public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        bytes memory fakeProof = new bytes(proofLength);
-        bytes32 nullifier = bytes32(uint256(1));
-        address recipient = address(0xB0B);
-
-        if (proofLength != 5888) {
-            vm.expectRevert("Invalid proof length");
-            airdrop.claim(fakeProof, nullifier, recipient);
-        } else {
-            // Valid length, mock verifier returns true, but airdrop is not minter
-            vm.expectRevert("Only airdrop contract");
-            airdrop.claim(fakeProof, nullifier, recipient);
-        }
-    }
-
     /// @dev Zero recipient always rejected (checked before proof length)
     function testFuzz_zero_recipient_rejected(bytes32 nullifier, uint16 proofLen) public {
         bytes memory fakeProof = new bytes(proofLen);

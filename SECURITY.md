@@ -48,7 +48,7 @@ We ask that you:
 ### Smart Contracts
 - All contracts are **immutable** (no admin, no owner, no upgrade mechanism)
 - The `Halo2Verifier` uses real KZG pairing verification via BN254 ecPairing precompile
-- The `Halo2VerifyingKey` must contain the correct VK from the full production circuit
+- The VK is embedded inline in `Halo2Verifier.axiom.sol` (no separate verifying-key contract); it must match the production circuit
 - Double-claim prevention relies on the nullifier uniqueness of `poseidon(key, domain)`
 
 ### ZK Circuits
@@ -85,17 +85,15 @@ Before mainnet deployment, ALL of the following must be completed:
   ```
 - [x] **Run the four full-circuit negative tests** (`test_wrong_merkle_root_rejected`, `test_wrong_nullifier_rejected`, `test_zero_recipient_rejected`, `test_recipient_exceeding_uint160_rejected`) — **✅ all PASS at k=23 (2026-06-29 confirmation run)**. Each correctly REJECTS for the intended reason now that the honest E2E path verifies: forged Merkle root, rotated nullifier, zero recipient, and out-of-`uint160` recipient are all rejected. This validates the circuit's soundness properties at the MockProver level. Measured: ~2:11–2:31 wall, ~19.5 GiB peak RSS each (release).
 - [ ] **External security audit** of secp256k1 non-native field arithmetic (including the carry-chain mod-p reduction: `carry_chain_columns` + `reduce_canonical_mod_p`)
-- [x] **Generate `Halo2Verifier.sol` and `Halo2VerifyingKey.sol`** from the real circuit VK. **✅ Done (regenerated at k=23):** `gen-production-verifier --emit` ran the REAL `ZKMistV2Claim::synthesize` via `keygen_vk` against the pinned PSE SRS (15 fixed + 20 permutation commitments, k=23; the readiness checker confirms `VK k=23 == prover CIRCUIT_K`). The historical generation steps were:
+- [x] **Generate the on-chain verifier** from the real circuit VK. **✅ Done (axiom backend, k=21):** `Halo2Verifier.axiom.sol` is the snark-verifier-generated verifier with the VK embedded inline (565 non-zero `mstore` constants; no separate `Halo2VerifyingKey.sol`). Emitted by `circuits/tests/claim_evm_roundtrip.rs` under `ZKMIST_EMIT_VERIFIER` + `ZKMIST_USE_PINNED_SRS=1` against the pinned PSE ceremony SRS:
   ```
-  cd gen-production-verifier && cargo build --release
-  # dry run (prints VK fingerprint, writes nothing):
-  cargo run --release -- --k 23 --params-file <pinned PSE SRS>
-  # after confirming the fingerprint matches tools/gen-verifier (same SRS), emit:
-  cargo run --release -- --k 23 --params-file <pinned PSE SRS> --emit
+  ZKMIST_RUN_CLAIM_ROUNDTRIP=1 \
+  ZKMIST_EMIT_VERIFIER=contracts/src/Halo2Verifier.axiom.sol \
+  ZKMIST_USE_PINNED_SRS=1 \
+  cargo test --release -p zkmist-circuits test_claim_circuit_evm_roundtrip -- --nocapture
   ```
-  See [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 3. The version split (crates.io vs PSE-git-fork halo2) is resolved by a digest-preserving compat shim — no circuit duplication, no prover changes.
-  **Note**: `contracts/src/Halo2VerifyingKey.sol` is now the real k=23 VK (non-zero fixed + permutation commitments). The earlier placeholder (k=21 / 0x15, all-zero fixed commitments) is retired. The tool still refuses to overwrite it without `--emit` + a pinned SRS, so it cannot accidentally brick the airdrop.
-- [x] **Verify VK k-value matches circuit** in the generated `Halo2VerifyingKey.sol` (readiness checker confirms k=23 == prover `CIRCUIT_K`)
+  See [DEPLOYMENT.md](./DEPLOYMENT.md) Phase 3. The readiness checker confirms `AXIOM_CIRCUIT_K=21` and real VK data; the real-KZG → on-chain round-trip (`RUN_REAL_ROUNDTRIP=1 forge test --match-contract RealRoundtrip`) passes.
+- [x] **Verify VK matches the circuit** — the readiness checker confirms prover `AXIOM_CIRCUIT_K=21` and real VK data; the on-chain round-trip is the end-to-end k/VK consistency gate.
 - [ ] **Testnet deployment** on Base Sepolia with full E2E claim flow:
   ```
   ./scripts/testnet-deploy.sh

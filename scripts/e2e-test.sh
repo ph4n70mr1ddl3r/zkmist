@@ -6,13 +6,13 @@
 #
 # What it does:
 #   1. Generates a proof using `zkmist bench` (small Merkle tree, fast)
-#   2. Validates proof size matches the Halo2Verifier's expected length (5888 bytes)
+#   2. Validates proof size matches the axiom SHPLONK expected length (~1376 bytes)
 #   3. Verifies the proof cryptographically (local verification)
 #   4. Reports timing for each phase
 #
 # Prerequisites:
 #   - Rust (stable) with cargo
-#   - ~16-20 GiB RAM for proof generation (measured peak ~19.5 GiB RSS at k=23)
+#   - ~10 GiB RAM for proof generation (axiom backend at k=21)
 #   - The bench step proves against a RANDOM dev SRS (ZKMIST_DEV_SRS=1, set
 #     automatically below) so it runs without the pinned PSE ceremony SRS.
 #     That SRS is forgeable, so the bench validates the proving CODE PATH and
@@ -133,14 +133,17 @@ else
     else
         PROOF_SIZE=$(echo "$BENCH_OUTPUT" | grep "Proof size" | grep -oE '[0-9]+' | head -1)
         if [ -n "$PROOF_SIZE" ]; then
-            # Production Halo2-KZG proofs are 5888 bytes (0x1700); the CLI's
-            # PROOF_LENGTH_MIN/MAX acceptance window is [4000, 8000]. The old
-            # [400, 1200] window was a stale leftover from the placeholder verifier
-            # and would have wrongly failed every real 5888-byte proof.
-            if [ "$PROOF_SIZE" -ge 4000 ] && [ "$PROOF_SIZE" -le 8000 ]; then
-                pass "Proof size ($PROOF_SIZE bytes) in bench range"
+            # Production axiom SHPLONK proofs at k=21 are ~1376 bytes
+            # (instances ++ commitments ++ evaluation proofs). The window is
+            # deliberately loose — it catches truncated/corrupt output without
+            # ever rejecting a legitimate proof. The prior [4000, 8000] window
+            # was a stale leftover from the retired PSE backend (5888-byte IPA
+            # proofs) and would have wrongly failed every real 1376-byte axiom
+            # proof.
+            if [ "$PROOF_SIZE" -ge 1000 ] && [ "$PROOF_SIZE" -le 2000 ]; then
+                pass "Proof size ($PROOF_SIZE bytes) in axiom range"
             else
-                fail "Proof size ($PROOF_SIZE bytes) outside expected range [4000, 8000]"
+                fail "Proof size ($PROOF_SIZE bytes) outside expected axiom range [1000, 2000]"
             fi
         else
             warn "Could not determine proof size"

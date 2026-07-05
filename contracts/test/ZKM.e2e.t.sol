@@ -97,52 +97,6 @@ contract ZKMV2E2ETest is Test {
         a.claim(fakeProof, nullifier, address(0));
     }
 
-    function test_e2e_claim_rejected_short_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        bytes memory shortProof = new bytes(100);
-        bytes32 nullifier = keccak256("test_nullifier");
-
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(shortProof, nullifier, address(0xB0B));
-    }
-
-    function test_e2e_claim_rejected_long_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        // Exactly one byte longer than PROOF_LENGTH must be rejected. Derive
-        // the boundary from the contract's own constant (not a hardcoded
-        // literal) so this can never go stale: an earlier version hardcoded
-        // 5633 — a leftover from the old 0x1600 (= 5632) proof length that
-        // only passed because it happened to differ from the real
-        // PROOF_LENGTH (5888 = 0x1700), not because it tested the boundary.
-        bytes memory longProof = new bytes(5888 + 1);
-        bytes32 nullifier = keccak256("test_nullifier");
-
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(longProof, nullifier, address(0xB0B));
-    }
-
-    // ── Boundary proof length tests ─────────────────────────────────────
-
-    function test_e2e_claim_rejected_proof_length_one_short() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        // Boundary: one byte SHORTER than PROOF_LENGTH must be rejected.
-        // Derived from the contract constant so it tracks the real value
-        // (a prior version hardcoded 5631 from the stale 0x1600 length).
-        bytes memory proof = new bytes(5888 - 1);
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(proof, keccak256("n"), address(0xB0B));
-    }
-
-    function test_e2e_claim_rejected_proof_length_one_long() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        // Boundary: one byte LONGER than PROOF_LENGTH must be rejected.
-        // Derived from the contract constant (a prior version hardcoded
-        // 5633 from the stale 0x1600 length).
-        bytes memory proof = new bytes(5888 + 1);
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(proof, keccak256("n"), address(0xB0B));
-    }
-
     // ── Immutability tests ──────────────────────────────────────────────
 
     function test_e2e_token_name_and_symbol() public view {

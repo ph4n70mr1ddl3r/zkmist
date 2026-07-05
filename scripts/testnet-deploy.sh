@@ -2,15 +2,17 @@
 # ZKMist Testnet Deployment Script
 #
 # Deploys the REAL production contracts to Base Sepolia via Deploy.s.sol:
-# the generated Halo2Verifier + Halo2VerifyingKey (k=23, real KZG
-# commitments), ZKMToken, and ZKMAirdrop. There is NO mock on this path —
-# the same verifier that will go to mainnet is what gets deployed here.
+# the snark-verifier-generated Halo2Verifier (axiom backend, k=21, VK embedded
+# inline — no separate verifying-key contract), ZKMToken, and ZKMAirdrop.
+# There is NO mock on this path — the same verifier that will go to mainnet
+# is what gets deployed here.
 #
-# ⚠️  Caveat: a real on-chain claim has still never been exercised (the
-# test_realKzgRoundtrip Forge gate is a no-op until a real proof fixture is
-# generated, and the PSE SRS transcript provenance is unconfirmed — see
-# DEPLOYMENT.md Phase 4-5 and SECURITY.md). Treat a Sepolia deployment as
-# wiring validation only, not soundness validation.
+# ⚠️  Caveat: the local real-KZG → on-chain round-trip (RUN_REAL_ROUNDTRIP=1
+# forge test) PASSES against this verifier under the pinned ceremony SRS, but
+# a real on-chain claim on a public network has not yet been exercised, and
+# the circuit has not been externally audited (see DEPLOYMENT.md Phase 1 & 5
+# and SECURITY.md). Treat a Sepolia deployment as wiring validation only,
+# not soundness validation.
 #
 # Prerequisites:
 #   - Foundry (forge, cast) installed

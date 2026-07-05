@@ -58,14 +58,9 @@ contract ZKMAirdrop {
         // Calldata = instances (32-byte big-endian each) ++ proof — matches
         // snark-verifier's `encode_calldata`. The instances are the circuit's
         // public column: [merkleRoot, nullifier, recipient].
-        bytes memory cd = abi.encodePacked(
-            uint256(merkleRoot),
-            uint256(nullifier),
-            uint256(uint160(recipient)),
-            proof
-        );
+        bytes memory cd = abi.encodePacked(uint256(merkleRoot), uint256(nullifier), uint256(uint160(recipient)), proof);
         // The verifier reverts on an invalid proof; `staticcall` returns ok=false.
-        (bool ok, ) = address(verifier).staticcall(cd);
+        (bool ok,) = address(verifier).staticcall(cd);
         require(ok, "Invalid proof");
 
         // Mark claimed and mint.

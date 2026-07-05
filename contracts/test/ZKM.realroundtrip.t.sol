@@ -156,4 +156,38 @@ contract RealRoundtrip is Test {
         vm.expectRevert(bytes("Already claimed"));
         airdrop.claim(proof, nullifier, recipient); // second must revert
     }
+
+    /// @dev A tampered proof MUST revert with "Invalid proof". This is the
+    ///      on-chain counterpart of the circuit's negative tests: it proves the
+    ///      REAL axiom verifier rejects a forged commitment/evaluation, not
+    ///      merely that it accepts the honest one. `test_realKzgDoubleClaimRejected`
+    ///      never reaches the verifier (the nullifier guard fires first), so
+    ///      without this test no on-chain path exercises the verifier's
+    ///      rejection logic — every other airdrop test uses `MockHalo2Verifier`,
+    ///      which accepts any structurally-valid calldata. Flipping one byte
+    ///      of a SHPLONK proof breaks the BN254 pairing / Fiat-Shamir
+    ///      transcript with overwhelming probability; the verifier reverts and
+    ///      the `staticcall` returns `ok = false`.
+    function test_realKzgTamperedProofRejected() public {
+        if (!_enabled) {
+            console.log("RealRoundtrip: not armed -- tampered-proof test skipped.");
+            return;
+        }
+        bytes memory proof = vm.parseJsonBytes(_fixtureJson, ".proof");
+        bytes32 nullifier = vm.parseJsonBytes32(_fixtureJson, ".nullifier");
+        address recipient = vm.parseJsonAddress(_fixtureJson, ".recipient");
+
+        // Sanity: the honest proof must be long enough to corrupt a byte.
+        assertGt(proof.length, 0, "fixture proof is empty");
+
+        // Corrupt the final byte (XOR with 0xff). A single-byte change
+        // invalidates the pairing/transcript; the verifier must revert.
+        bytes memory tampered = proof;
+        uint256 lastIdx = tampered.length - 1;
+        uint8 b = uint8(tampered[lastIdx]);
+        tampered[lastIdx] = bytes1(b ^ 0xff);
+
+        vm.expectRevert(bytes("Invalid proof"));
+        airdrop.claim(tampered, nullifier, recipient);
+    }
 }

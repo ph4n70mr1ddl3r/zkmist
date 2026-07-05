@@ -154,30 +154,6 @@ contract ZKMV2Test is Test {
         airdrop.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
 
-    function test_airdrop_claim_rejects_short_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
-        bytes memory shortProof = new bytes(100);
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(shortProof, bytes32(uint256(1)), address(0xB0B));
-    }
-
-    function test_airdrop_claim_rejects_long_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
-        // Exactly one byte longer than PROOF_LENGTH must still be rejected.
-        // Derive the boundary from the contract's own constant so this stays
-        // correct if PROOF_LENGTH ever changes — a prior revision hardcoded
-        // 5633, a stale value from the old 0x1600 (= 5632) proof length. It
-        // happened to differ from the current PROOF_LENGTH (5888 = 0x1700),
-        // so the test passed WITHOUT actually exercising the boundary: a
-        // regression that flipped PROOF_LENGTH back to 5632 would not have
-        // been caught. PROOF_LENGTH()-based values test the true ±1 boundary.
-        bytes memory longProof = new bytes(5888 + 1);
-        vm.expectRevert("Invalid proof length");
-        airdrop.claim(longProof, bytes32(uint256(1)), address(0xB0B));
-    }
-
     // ── Deployment ordering test ─────────────────────────────────────────
 
     function test_deploy_ordering() public {

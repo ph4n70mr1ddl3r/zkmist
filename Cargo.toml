@@ -5,16 +5,6 @@ members = [
     "tools",
     "circuits",
 ]
-# vendor/halo2-solidity-verifier is a git submodule (third-party PSE code we
-# depend on via `path =`). Cargo auto-promotes any path dep living under the
-# workspace root into an *implicit* workspace member, which made
-# `cargo clippy --workspace` lint (and `-D warnings`-fail on) upstream code we
-# do not control — e.g. the `clippy::io_other_error` style lint introduced in
-# rust-1.96, which the pinned PSE revision has not adopted. Excluding it keeps
-# it a perfectly normal path dependency (build/resolve unchanged) while limiting
-# the `-D warnings` gate to first-party crates. Do NOT edit the submodule to
-# silence lints — the change is lost on the next `git submodule update`.
-exclude = ["vendor/halo2-solidity-verifier"]
 resolver = "2"
 
 [workspace.dependencies]

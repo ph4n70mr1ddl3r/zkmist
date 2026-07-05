@@ -7,9 +7,12 @@
 //! Public outputs `(merkle_root, nullifier, recipient)` are exposed as the
 //! circuit's public instance, matching the on-chain verifier model.
 //!
-//! ℹ️ SRS: uses `halo2_base::utils::fs::gen_srs` (a toxic-waste SRS, fine for
-//! dev/testnet). Production needs the PSE ceremony SRS adapted to the axiom
-//! backend — a deployment task.
+//! ℹ️ SRS: `load_srs_axiom` downloads + SHA-256-verifies the pinned PSE
+//! perpetual-powers-of-tau ceremony SRS (`constants::KZG_SRS_URL` /
+//! `KZG_SRS_SHA256`) — the universal k=23 transcript, provenance-confirmed
+//! against the public beaconed ceremony by `tools/src/verify_srs_from_ptau.rs`.
+//! Only `ZKMIST_DEV_SRS=1` (or an unset trust root) falls back to `gen_srs`,
+//! a toxic-waste SRS for dev/testnet only.
 
 use std::path::Path;
 

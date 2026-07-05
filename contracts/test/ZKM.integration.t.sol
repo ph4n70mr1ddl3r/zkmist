@@ -60,28 +60,6 @@ contract ZKMV2Integration is Test {
         assertTrue(address(verifier).code.length > 0);
     }
 
-    function test_integration_airdrop_rejects_short_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        // Short proof is rejected by the airdrop contract's length check.
-        MockHalo2Verifier mockV = new MockHalo2Verifier();
-        ZKMToken t = new ZKMToken(address(this));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
-        bytes memory shortProof = new bytes(100);
-        vm.expectRevert("Invalid proof length");
-        a.claim(shortProof, bytes32(uint256(1)), address(0xB0B));
-    }
-
-    function test_integration_airdrop_rejects_long_proof() public {
-        vm.skip(true, "proof-length enforcement removed (axiom verifier handles length)");
-        // Long proof is rejected by the airdrop contract's length check.
-        MockHalo2Verifier mockV = new MockHalo2Verifier();
-        ZKMToken t = new ZKMToken(address(this));
-        ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
-        bytes memory longProof = new bytes(10000);
-        vm.expectRevert("Invalid proof length");
-        a.claim(longProof, bytes32(uint256(1)), address(0xB0B));
-    }
-
     function test_integration_airdrop_rejects_zero_recipient() public {
         // Zero recipient is rejected by the airdrop contract (not verifier)
         bytes memory fakeProof = new bytes(5888);
@@ -90,14 +68,6 @@ contract ZKMV2Integration is Test {
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);
         vm.expectRevert("Recipient cannot be zero");
         a.claim(fakeProof, bytes32(uint256(1)), address(0));
-    }
-
-    function test_integration_production_verifier_rejects_invalid_proof() public {
-        vm.skip(true, "PSE-specific (verifyProof + VK removed); use RealRoundtrip for axiom verify");
-    }
-
-    function test_integration_production_vk_deployed() public {
-        vm.skip(true, "Halo2VerifyingKey removed (axiom verifier embeds the VK)");
     }
 
     // ── Token economics ──────────────────────────────────────────────
