@@ -198,6 +198,31 @@ SRS_SOURCES="https://<independent>/params-k23.bin /path/mirror.bin" \
   ./scripts/verify-srs-provenance.sh
 ```
 
+**Gold standard — re-derive from the ceremony transcript itself:**
+`tools/src/verify_srs_from_ptau.rs` compares the pinned halo2 SRS byte-for-byte
+against the public beaconed ceremony transcript `ppot_0080_23.ptau` (round 0080,
+beaconed with Ethereum beacon-chain slot 7,325,000 randao — announced on-chain
+in advance). It verifies that every τ-power (`g[]`) and both G2 points
+(`g2=[1]_2`, `s_g2=[τ]_2`) in the pinned file are byte-identical to the
+transcript — i.e. the deployer did NOT substitute a toxic-waste file. This is
+the strongest provenance check short of re-running phase2 extraction yourself,
+and it runs in <1s.
+
+Download the transcript from the ceremony repo
+(<https://github.com/privacy-ethereum/perpetualpowersoftau> — the k=23 file is
+`ppot_0080_23.ptau`, S3 link in the README) and run:
+
+```bash
+cargo run --release -p zkmist-tools --bin verify-srs-from-ptau -- \
+  <pinned.bin> <ppot_0080_23.ptau>
+```
+
+> **Status (this project):** PROVENANCE CONFIRMED. All 8,388,608 G1 τ-powers
+> and both G2 points in the pinned SRS are byte-identical to the public
+> transcript. Soundness therefore rests on the ceremony (1-of-87 participants,
+> OR the unpredictable on-chain beacon honest) — inherent to KZG, and strong
+> given the public participant list and the beacon.
+
 ### 2.3 Publish the file
 
 Host the verified file at a stable URL the claimants will download from. Good

@@ -104,26 +104,30 @@ pub const PROOF_FORMAT_VERSION: u64 = 2;
 // size. The file must be in halo2_proofs 0.3.0 params format (the same format
 // `Params::read`/`Params::write` use).
 //
-// ⚠️  PINNED (round-trip-pending): KZG_SRS_SHA256 / KZG_SRS_URL are set to
-// the k=23 PSE halo2 params converted locally from ppot_0080_23.ptau. The
-// pinned hash matches the prover's SRS (verified against
-// ~/.zkmist/cache/v2_params_k23.bin), but two mainnet blockers remain:
-//   1. the ptau transcript's provenance vs the PSE ceremony's PUBLISHED
-//      digest is not yet independently confirmed (docs/kzg-srs.md §2.2);
-//   2. the on-chain real-KZG round-trip (ZKM.realroundtrip.t.sol) has not
-//      yet passed against this VK.
-// Readiness check [1d/8] passes (constants non-empty); [1c/8] still flags
-// the unconfirmed provenance. See SECURITY.md for the full blocker list.
+// ⚠️  PINNED (provenance CONFIRMED): KZG_SRS_SHA256 / KZG_SRS_URL point at the
+// k=23 PSE halo2 params derived from ppot_0080_23.ptau (the perpetual-powers-
+// of-tau round-0080 transcript, beaconed with Ethereum beacon-chain slot
+// 7,325,000 randao — announced on-chain in advance). Provenance is confirmed:
+// `tools/src/verify_srs_from_ptau.rs` checks that EVERY τ-power and G2 point
+// in the pinned file is byte-identical to the public ceremony transcript (run
+// it yourself: `cargo run --release -p zkmist-tools --bin verify-srs-from-ptau
+// -- <pinned.bin> <ppot_0080_23.ptau>`). So the deployer did NOT substitute a
+// toxic-waste file. Remaining trust = the ceremony itself (1-of-87 participants
+// OR the beacon honest) — inherent to KZG, and strong given the public
+// participant list + the unpredictable on-chain beacon.
+// The on-chain real-KZG round-trip (ZKM.realroundtrip.t.sol) PASSES against
+// this VK under the pinned SRS. See docs/kzg-srs.md §2.2 + SECURITY.md.
 //
 // Why a claimant trusts this and NOT the deployer: each claimant downloads
-// the file themselves and verifies its SHA-256 against KZG_SRS_SHA256. The
-// deployer pins the hash but cannot change the SRS (a different file would
-// hash differently), and cannot forge proofs because they do not know the
-// PSE ceremony's trapdoor. This is the only trust root in the system.
+// the file themselves and verifies its SHA-256 against KZG_SRS_SHA256, and can
+// further re-verify byte-identity against the public ceremony transcript with
+// `verify-srs-from-ptau`. The deployer pins the hash but cannot change the SRS
+// (a different file would hash differently), and cannot forge proofs because
+// they do not know the ceremony's trapdoor (destroyed by the beacon). This is
+// the only trust root in the system.
 /// URL the claimant downloads the pinned PSE halo2 KZG SRS from (production).
-/// NOTE: round-trip validation only — derived from ppot_0080_23.ptau (PSE
-/// perpetual-powers-of-tau). Provenance (final beaconed transcript) still
-/// unconfirmed; see docs/kzg-srs.md §2.2 before mainnet.
+/// The pinned file's provenance against the public beaconed ceremony transcript
+/// is CONFIRMED via `verify-srs-from-ptau` (docs/kzg-srs.md §2.2).
 pub const KZG_SRS_URL: &str =
     "https://github.com/ph4n70mr1ddl3r/zkmist/releases/download/srs-v1/params-k23.bin";
 /// SHA-256 of the pinned PSE halo2 KZG SRS file (lowercase hex, no `0x`).

@@ -21,6 +21,10 @@ name = "verify-srs"
 path = "src/verify_srs.rs"
 
 [[bin]]
+name = "verify-srs-from-ptau"
+path = "src/verify_srs_from_ptau.rs"
+
+[[bin]]
 name = "truncate-srs"
 path = "src/truncate_srs.rs"
 
