@@ -182,6 +182,22 @@ k=23**:
    readiness checker's `ensure_params_k` enforces this at runtime; you can also
    confirm via `Params::read` + `params.k()` in a one-off script).
 
+**Automated cross-check:** `scripts/verify-srs-provenance.sh` reads the pinned
+`KZG_SRS_SHA256`/`KZG_SRS_URL` from the code, fetches the SRS from the pinned
+URL **plus any independent sources you supply** (`SRS_SOURCES="url1 url2 …"`),
+asserts every source's SHA-256 equals the pin and that all sources are
+byte-identical, and runs `verify-srs` for the k=23 structural check. Provenance
+strength = the number of *genuinely independent* agreeing sources — one source
+(the deployer's own pin) proves nothing about ceremony origin; ≥2 independent
+reputable publishers (or a self-run phase2 extraction) is the practical bar.
+
+```bash
+# Add independent sources (PSE ceremony mirror, an independent zkEVM project's
+# pinned file, …) and cross-check them against the pin:
+SRS_SOURCES="https://<independent>/params-k23.bin /path/mirror.bin" \
+  ./scripts/verify-srs-provenance.sh
+```
+
 ### 2.3 Publish the file
 
 Host the verified file at a stable URL the claimants will download from. Good
