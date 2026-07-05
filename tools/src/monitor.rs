@@ -14,8 +14,7 @@
 //!   --interval <secs>  Polling interval in seconds (default: 60)
 //!   --once             Run once and exit (default: continuous)
 
-use std::str::FromStr;
-
+use alloy::network::Ethereum;
 use alloy::primitives::Address;
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::sol;
@@ -76,11 +75,21 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "--rpc" => {
-                rpc_url = args[i + 1].clone();
+                rpc_url = args.get(i + 1).cloned().unwrap_or_else(|| {
+                    eprintln!("--rpc requires a URL");
+                    std::process::exit(1);
+                });
                 i += 2;
             }
             "--interval" => {
-                interval_secs = args[i + 1].parse().unwrap_or(60);
+                let v = args.get(i + 1).unwrap_or_else(|| {
+                    eprintln!("--interval requires a value (seconds)");
+                    std::process::exit(1);
+                });
+                interval_secs = v.parse().unwrap_or_else(|_| {
+                    eprintln!("invalid --interval value '{v}' (expected seconds)");
+                    std::process::exit(1);
+                });
                 i += 2;
             }
             "--once" => {
@@ -196,18 +205,26 @@ struct ChainState {
     on_chain_supply_zkm: u128,
 }
 
-async fn poll_state(
-    provider: &alloy::providers::RootProvider<alloy::transports::http::Http<reqwest::Client>>,
-    airdrop_addr: Address,
-) -> Result<ChainState, String> {
-    let airdrop = IZKMMonitor::new(airdrop_addr, provider);
+async fn poll_state<P>(provider: &P, airdrop_addr: Address) -> Result<ChainState, String>
+where
+    P: Provider<Ethereum> + Clone,
+{
+    // Clone the provider into each contract instance. In alloy 1.x
+    // `RootProvider<N: Network>` is generic over the *network* only (not the
+    // transport); the previous signature `RootProvider<Http<reqwest::Client>>`
+    // passed the TRANSPORT as the network type parameter, so the tool failed
+    // to compile (`Http<reqwest::Client>: Network` not satisfied) — leaving the
+    // documented on-chain `monitor` binary broken. Taking `&P: Provider` lets
+    // `connect_http`'s concrete return type flow in without naming it, and the
+    // owned clones satisfy the generated `#[sol(rpc)]` instance's `P: Provider`
+    // bound (there is no `impl Provider for &P`).
+    let airdrop = IZKMMonitor::new(airdrop_addr, provider.clone());
 
     let total_claims_u256 = airdrop
         .totalClaims()
         .call()
         .await
-        .map_err(|e| format!("totalClaims: {}", e))?
-        ._0;
+        .map_err(|e| format!("totalClaims: {}", e))?;
     let total_claims: u64 = total_claims_u256
         .try_into()
         .map_err(|e: alloy::primitives::ruint::FromUintError<u64>| format!("overflow: {}", e))?;
@@ -216,8 +233,7 @@ async fn poll_state(
         .claimsRemaining()
         .call()
         .await
-        .map_err(|e| format!("claimsRemaining: {}", e))?
-        ._0;
+        .map_err(|e| format!("claimsRemaining: {}", e))?;
     let claims_remaining: u64 = claims_remaining_u256
         .try_into()
         .map_err(|e: alloy::primitives::ruint::FromUintError<u64>| format!("overflow: {}", e))?;
@@ -226,23 +242,20 @@ async fn poll_state(
         .isClaimWindowOpen()
         .call()
         .await
-        .map_err(|e| format!("isClaimWindowOpen: {}", e))?
-        ._0;
+        .map_err(|e| format!("isClaimWindowOpen: {}", e))?;
 
     let token_addr = airdrop
         .token()
         .call()
         .await
-        .map_err(|e| format!("token: {}", e))?
-        ._0;
-    let token = IZKMTokenMonitor::new(token_addr, provider);
+        .map_err(|e| format!("token: {}", e))?;
+    let token = IZKMTokenMonitor::new(token_addr, provider.clone());
 
     let supply_wei = token
         .totalSupply()
         .call()
         .await
-        .map_err(|e| format!("totalSupply: {}", e))?
-        ._0;
+        .map_err(|e| format!("totalSupply: {}", e))?;
     let supply_u128: u128 = supply_wei
         .try_into()
         .map_err(|e: alloy::primitives::ruint::FromUintError<u128>| format!("overflow: {}", e))?;

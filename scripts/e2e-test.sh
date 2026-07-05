@@ -250,6 +250,17 @@ else
     fail "cargo clippy warnings"
 fi
 
+# The `monitor` binary sits behind the opt-in `monitoring` feature
+# (`default = []`), so `cargo clippy --workspace` never lints it. It
+# previously bit-rotted across the alloy 1.x upgrade (RootProvider gained a
+# Network type param; single-return `.call()` results are bare values). Keep
+# this check so the documented on-chain `monitor` tool stays warning-clean.
+if cargo clippy -p zkmist-tools --features monitoring -- -D warnings 2>&1 | tail -3; then
+    pass "cargo clippy clean (monitoring feature / monitor binary)"
+else
+    fail "cargo clippy warnings (monitoring feature / monitor binary)"
+fi
+
 cd contracts
 if forge fmt --check 2>&1; then
     pass "forge fmt clean"

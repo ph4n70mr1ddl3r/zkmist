@@ -52,7 +52,20 @@ fn main() {
                 i += 2;
             }
             "--expect-k" => {
-                expect_k = args[i + 1].parse().unwrap_or(EXPECTED_K);
+                if i + 1 >= args.len() {
+                    eprintln!("--expect-k requires a value (e.g. --expect-k 23)");
+                    std::process::exit(1);
+                }
+                expect_k = match args[i + 1].parse() {
+                    Ok(k) => k,
+                    Err(_) => {
+                        eprintln!(
+                            "invalid --expect-k value '{}' (expected a u32)",
+                            args[i + 1]
+                        );
+                        std::process::exit(1);
+                    }
+                };
                 i += 2;
             }
             "--help" | "-h" => {

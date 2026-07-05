@@ -22,6 +22,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
+      # Regression guard: the `monitor` binary lives behind the opt-in
+      # `monitoring` feature (not in `default = []`), so `cargo check
+      # --workspace` never compiles it. It previously bit-rotted across the
+      # alloy 1.x upgrade (`RootProvider` gained a `Network` type parameter;
+      # single-return `.call()` results are bare values, not `_0` structs) —
+      # the documented on-chain `monitor` tool silently stopped building. Keep
+      # this check so a future alloy bump can't break it unnoticed again.
+      - run: cargo check -p zkmist-tools --features monitoring
 
   rust-test:
     name: Rust – Test
@@ -72,6 +80,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace -- -D warnings
+      # Same regression guard as `rust-check`: lint the opt-in `monitoring`
+      # feature too, so the `monitor` binary's alloy usage stays warning-clean
+      # (it is excluded from `cargo clippy --workspace`).
+      - run: cargo clippy -p zkmist-tools --features monitoring -- -D warnings
 
   # ── Pre-deployment readiness checks ───────────────────────────────────
   #
