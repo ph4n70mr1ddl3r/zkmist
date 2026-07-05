@@ -40,6 +40,13 @@ rand = "0.8"
 dirs = "5"  # used by examples/prime_dev_srs.rs (cache path)
 halo2_proofs.workspace = true
 halo2curves.workspace = true
+# `halo2curves-axiom` is the axiom fork's curve library — the SAME `bn256::Fr`
+# type the axiom circuits (via `halo2-base`) use. Pinned to the version
+# `halo2-base` v0.5.3 depends on so `compute-root`'s live nullifier
+# cross-check can call `zkmist_circuits::nullifier_axiom::
+# native_compute_nullifier` directly (the workspace's crates.io `halo2curves`
+# 0.6.1 is a distinct type and won't type-check against the circuit API).
+halo2curves-axiom = "0.7.2"
 ff = "0.13"
 snark-verifier = { version = "0.2", optional = true }
 

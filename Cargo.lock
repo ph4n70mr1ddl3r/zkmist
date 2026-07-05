@@ -6322,6 +6322,7 @@ dependencies = [
  "ff",
  "halo2_proofs",
  "halo2curves",
+ "halo2curves-axiom",
  "hex",
  "light-poseidon",
  "rand 0.8.6",

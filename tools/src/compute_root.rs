@@ -180,21 +180,59 @@ fn main() {
         eprintln!("  ✗ Leaf hash MISMATCH!");
     }
 
-    // Verify test vector nullifier (halo2-base convention).
+    // Verify test vector nullifier against the CIRCUIT's reference, LIVE.
+    //
+    // The off-chain nullifier and the circuit derive the domain field element
+    // independently (a 32-byte buffer vs `nullifier_axiom::domain_field_element`).
+    // A drift silently breaks `zkmist prove`'s displayed nullifier and any
+    // relayer/UI that predicts nullifiers off-chain. The domain encoding was
+    // fixed in commit e1a2b80 (LEFT-align → RIGHT-align to match the circuit);
+    // a prior revision of THIS self-check hard-coded the PRE-fix nullifier hex
+    // (`17492a09…`) and went stale when the encoding changed — silently
+    // printing "MISMATCH" for the CORRECT value, and (worse) tempting an
+    // operator to "correct" the implementation to match it, re-breaking
+    // off-chain↔circuit agreement.
+    //
+    // Instead of re-pinning another brittle hex constant, derive the expected
+    // nullifier LIVE from the circuit's authoritative `native_compute_nullifier`,
+    // so this check can NEVER drift from the circuit again. The byte-for-byte
+    // cross-check across multiple keys (incl. one ≥ p_BN254) lives in
+    // `circuits/tests/claim_axiom.rs::test_offchain_nullifier_matches_circuit`.
     let test_key: [u8; 32] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
         0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
         0xcd, 0xef,
     ];
     let nullifier = compute_nullifier(&test_key, &hasher);
-    let nullifier_hex = hex::encode(nullifier);
-    // Expected vector under the halo2-base convention (V2 domain
-    // "ZKMist_V2_NULLIFIER"), matching the circuit. The legacy
-    // light-poseidon V2 value (2ebc3e6c…) and the V1 value (078f972a…) are
-    // different conventions/domains and must NOT be used here.
-    if nullifier_hex == "17492a09c7900c4fa5a796da0ae8edb24b0219e00978f1aec2a8e43510550266" {
-        eprintln!("  ✓ Nullifier matches halo2-base PRD V2 test vector");
+    let expected_nullifier: [u8; 32] = {
+        // Build the key as `halo2curves-axiom::bn256::Fr` = (test_key mod p_BN254),
+        // then run the circuit's native nullifier (halo2-base Poseidon sponge
+        // + `domain_field_element()`). Field arithmetic reduces mod p
+        // automatically, matching what the circuit + prover commit to.
+        // `halo2curves-axiom` is the axiom fork the circuit (via `halo2-base`)
+        // uses — the SAME `Fr` type `native_compute_nullifier` expects. (The
+        // workspace's crates.io `halo2curves` 0.6.1 is a distinct type.)
+        use ff::PrimeField;
+        use halo2curves_axiom::bn256::Fr as CircuitFr;
+        let mut key_mod_p = CircuitFr::zero();
+        for &b in &test_key {
+            key_mod_p = key_mod_p * CircuitFr::from(256u64) + CircuitFr::from(b as u64);
+        }
+        let nfr = zkmist_circuits::nullifier_axiom::native_compute_nullifier(key_mod_p);
+        let mut be = nfr.to_repr();
+        be.as_mut().reverse(); // halo2curves repr is little-endian → big-endian
+        let mut out = [0u8; 32];
+        out.copy_from_slice(be.as_ref());
+        out
+    };
+    if nullifier == expected_nullifier {
+        eprintln!("  ✓ Nullifier matches the circuit's native_compute_nullifier (V2 domain)");
     } else {
-        eprintln!("  ✗ Nullifier MISMATCH: 0x{}", nullifier_hex);
+        eprintln!("  ✗ Nullifier MISMATCH vs circuit:");
+        eprintln!("    off-chain (merkle-tree): {}", hex::encode(nullifier));
+        eprintln!(
+            "    circuit  (native)      : {}",
+            hex::encode(expected_nullifier)
+        );
     }
 }
