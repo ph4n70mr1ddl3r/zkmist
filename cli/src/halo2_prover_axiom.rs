@@ -31,7 +31,8 @@ use halo2_base::{
     utils::{fs::gen_srs, modulus},
 };
 use num_bigint::BigUint;
-use snark_verifier_sdk::evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk};
+use snark_verifier_sdk::evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk, gen_evm_verifier_sol_code};
+use snark_verifier_sdk::SHPLONK;
 
 /// Cache dir for the KZG SRS (~/.zkmist/cache).
 pub(crate) fn get_cache_dir() -> Result<std::path::PathBuf, String> {
@@ -164,6 +165,7 @@ pub fn generate_v2_proof_axiom(
     let mut recip_padded = [0u8; 32];
     recip_padded[12..32].copy_from_slice(recipient);
     let recipient_fr = bytes_be_to_fr(&recip_padded);
+    let chain_id_fr = Fr::from(crate::constants::CHAIN_ID as u64);
 
     // Nullifier (native, halo2-base convention): poseidon(privkey mod p_BN254, domain).
     let p_bn254: BigUint = modulus::<Fr>();
@@ -174,15 +176,16 @@ pub fn generate_v2_proof_axiom(
         let range = RangeChip::new(8, builder.lookup_manager().clone());
         let ctx = builder.pool(0).main();
         let limbs = assign_privkey(ctx, privkey_fq);
-        let (root, null, recip) = prove_claim_to_cells(
+        let (root, null, recip, chain_id_cell) = prove_claim_to_cells(
             ctx,
             &range,
             limbs,
             &siblings_fr,
             &path_indices_fr,
             recipient_fr,
+            chain_id_fr,
         );
-        builder.assigned_instances[0] = vec![root, null, recip];
+        builder.assigned_instances[0] = vec![root, null, recip, chain_id_cell];
     };
 
     // ── keygen stage ─────────────────────────────────────────────────
@@ -216,7 +219,7 @@ pub fn generate_v2_proof_axiom(
         &params,
         &pk,
         pb,
-        vec![vec![root_fr, nullifier_fr, recipient_fr]],
+        vec![vec![root_fr, nullifier_fr, recipient_fr, chain_id_fr]],
     );
     eprintln!(
         "      [axiom] proof created: {} bytes ({:.1}s)",
@@ -258,7 +261,9 @@ pub fn generate_v2_proof_axiom(
     // Forge test against the `gen-roundtrip-fixture` output. Enable for an
     // explicit one-off check: `ZKMIST_GEN_VERIFIER=1 zkmist prove ...`.
     if std::env::var("ZKMIST_GEN_VERIFIER").as_deref() == Ok("1") {
-        let _bytecode = gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![3], None);
+        let sol_code = gen_evm_verifier_sol_code::<AxiomClaimMarker, SHPLONK>(&params, &vk, vec![4]);
+        let path = std::path::Path::new("../contracts/src/Halo2Verifier.axiom.sol");
+        std::fs::write(path, sol_code).expect("Failed to write verifier");
         eprintln!("      [axiom] verifier regenerated from VK (ZKMIST_GEN_VERIFIER sanity check)");
     }
 
@@ -288,7 +293,7 @@ impl Circuit<Fr> for AxiomClaimMarker {
 }
 impl CircuitExt<Fr> for AxiomClaimMarker {
     fn num_instance(&self) -> Vec<usize> {
-        vec![3]
+        vec![4]
     }
     fn instances(&self) -> Vec<Vec<Fr>> {
         vec![]

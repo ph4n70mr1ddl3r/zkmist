@@ -143,8 +143,7 @@ fn test_axiom_claim_happy_path() {
             &c.path_indices,
             c.root,
             c.nullifier,
-            c.recipient,
-        );
+            c.recipient, Fr::from(31337),);
     });
 }
 
@@ -165,8 +164,7 @@ fn test_axiom_claim_rejects_wrong_root() {
                 &c.path_indices,
                 c.root + Fr::from(1u64),
                 c.nullifier,
-                c.recipient,
-            );
+                c.recipient, Fr::from(31337),);
         });
 }
 
@@ -187,8 +185,7 @@ fn test_axiom_claim_rejects_wrong_nullifier() {
                 &c.path_indices,
                 c.root,
                 c.nullifier + Fr::from(1u64),
-                c.recipient,
-            );
+                c.recipient, Fr::from(31337),);
         });
 }
 
@@ -210,6 +207,7 @@ fn test_axiom_claim_rejects_zero_recipient() {
                 c.root,
                 c.nullifier,
                 Fr::zero(),
+                Fr::from(31337),
             );
         });
 }
@@ -235,8 +233,7 @@ fn test_axiom_claim_rejects_key_above_n() {
                 &c.path_indices,
                 c.root,
                 c.nullifier,
-                c.recipient,
-            );
+                c.recipient, Fr::from(31337),);
         });
 }
 
@@ -261,8 +258,7 @@ fn test_axiom_claim_real_kzg_roundtrip() {
                 &c.path_indices,
                 c.root,
                 c.nullifier,
-                c.recipient,
-            );
+                c.recipient, Fr::from(31337),);
         });
     eprintln!(
         "axiom claim real-KZG round-trip OK: proof_size = {} bytes",
@@ -333,8 +329,7 @@ fn test_axiom_claim_verifies_offchain_tree() {
             &path_indices,
             root,
             nullifier,
-            recipient,
-        );
+            recipient, Fr::from(31337),);
     });
 }
 
@@ -406,14 +401,13 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
         let range = RangeChip::new(8, kb.lookup_manager().clone());
         let ctx = kb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) = prove_claim_to_cells(
+        let (root, null, recip, _chain_id) = prove_claim_to_cells(
             ctx,
             &range,
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient,
-        );
+            c.recipient, Fr::from(31337),);
         kb.assigned_instances[0] = vec![root, null, recip];
     }
     let config_params = kb.calculate_params(Some(9));
@@ -429,14 +423,13 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
         let range = RangeChip::new(8, pb.lookup_manager().clone());
         let ctx = pb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) = prove_claim_to_cells(
+        let (root, null, recip, _chain_id) = prove_claim_to_cells(
             ctx,
             &range,
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient,
-        );
+            c.recipient, Fr::from(31337),);
         pb.assigned_instances[0] = vec![root, null, recip];
     }
     let proof = gen_proof_with_instances(&params, &pk, pb, &[instances.as_slice()]);
@@ -515,14 +508,13 @@ fn test_generate_claim_solidity_verifier() {
         let range = RangeChip::new(8, kb.lookup_manager().clone());
         let ctx = kb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) = prove_claim_to_cells(
+        let (root, null, recip, _chain_id) = prove_claim_to_cells(
             ctx,
             &range,
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient,
-        );
+            c.recipient, Fr::from(31337),);
         kb.assigned_instances[0] = vec![root, null, recip];
     }
     let params = gen_srs(21);
@@ -613,7 +605,6 @@ fn test_axiom_claim_production_depth26() {
             &c.path_indices,
             c.root,
             c.nullifier,
-            c.recipient,
-        );
+            c.recipient, Fr::from(31337),);
     });
 }

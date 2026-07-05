@@ -75,7 +75,8 @@ pub fn prove_claim_to_cells(
     siblings: &[Fr],
     path_indices: &[Fr],
     recipient: Fr,
-) -> (AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>) {
+    chain_id: Fr,
+) -> (AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>) {
     let gate = range.gate();
 
     // ── 0. K < n_secp256k1 range proof (§5a TRAP) ──
@@ -135,7 +136,10 @@ pub fn prove_claim_to_cells(
     let recipient_is_zero = gate.is_zero(ctx, recipient_cell);
     gate.assert_is_const(ctx, &recipient_is_zero, &Fr::zero());
 
-    (root, nullifier, recipient_cell)
+    // ── 6. chain_id ──
+    let chain_id_cell = ctx.load_witness(chain_id);
+
+    (root, nullifier, recipient_cell, chain_id_cell)
 }
 
 /// Prove one ZKMist V2 claim and assert the public outputs to the expected
@@ -151,10 +155,11 @@ pub fn prove_claim(
     expected_root: Fr,
     expected_nullifier: Fr,
     recipient: Fr,
+    chain_id: Fr,
 ) {
     let gate = range.gate();
-    let (root, nullifier, _recipient) =
-        prove_claim_to_cells(ctx, range, privkey_limbs, siblings, path_indices, recipient);
+    let (root, nullifier, _recipient, _chain_id) =
+        prove_claim_to_cells(ctx, range, privkey_limbs, siblings, path_indices, recipient, chain_id);
     gate.assert_is_const(ctx, &root, &expected_root);
     gate.assert_is_const(ctx, &nullifier, &expected_nullifier);
 }

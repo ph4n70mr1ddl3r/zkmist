@@ -162,8 +162,8 @@ fn test_claim_circuit_evm_roundtrip() {
         let range = RangeChip::new(8, b.lookup_manager().clone());
         let ctx = b.pool(0).main();
         let limbs = assign_privkey(ctx, privkey_fq);
-        let (r, n, rc) =
-            prove_claim_to_cells(ctx, &range, limbs, &siblings_fr, &path_fr, recipient_fr);
+        let (r, n, rc, _chain_id) =
+            prove_claim_to_cells(ctx, &range, limbs, &siblings_fr, &path_fr, recipient_fr, Fr::from(31337));
         b.assigned_instances[0] = vec![r, n, rc];
     };
 
