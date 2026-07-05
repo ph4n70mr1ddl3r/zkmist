@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 import {Halo2Verifier} from "../src/Halo2Verifier.axiom.sol";
-import {MockHalo2Verifier} from "./TestUtils.sol";
+import {MockHalo2Verifier, PROOF_LENGTH} from "./TestUtils.sol";
 
 /// @title ZKM V2 Contract Tests
 /// @notice Tests for the Halo2-KZG airdrop contract and token.
@@ -125,7 +125,7 @@ contract ZKMV2Test is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        bytes memory validLengthProof = new bytes(5888);
+        bytes memory validLengthProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(1));
         address recipient = address(0xB0B);
 
@@ -149,14 +149,14 @@ contract ZKMV2Test is Test {
 
     function test_airdrop_claim_rejects_zero_recipient() public {
         airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         vm.expectRevert("Recipient cannot be zero");
         airdrop.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
 
     function test_airdrop_claim_rejects_zero_nullifier() public {
         airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         // Non-zero recipient so we reach the nullifier check, not the recipient one.
         vm.expectRevert("Invalid nullifier");
         airdrop.claim(fakeProof, bytes32(uint256(0)), address(0xB0B));

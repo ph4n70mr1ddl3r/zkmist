@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
-import {MockHalo2Verifier} from "./TestUtils.sol";
+import {MockHalo2Verifier, PROOF_LENGTH} from "./TestUtils.sol";
 
 /// @title ZKM V2 E2E Testnet Tests
 /// @notice Tests for V2 testnet deployment validation.
@@ -60,7 +60,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
         address recipient = address(0xB0B);
 
@@ -75,7 +75,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
         address recipient = address(0xB0B);
 
@@ -90,7 +90,7 @@ contract ZKMV2E2ETest is Test {
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
 
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
 
         vm.expectRevert("Recipient cannot be zero");
@@ -147,7 +147,7 @@ contract ZKMV2E2ETest is Test {
         // Warp past the deadline (2027-01-01)
         vm.warp(1_798_761_601);
 
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(keccak256("test_nullifier")) % 21888242871839275222246405745257275088548364400416034343698204186575808495617);
 
         vm.expectRevert("Claim period ended");
@@ -164,7 +164,7 @@ contract ZKMV2E2ETest is Test {
         // Claim 5 times to verify the flow works
         for (uint256 i = 0; i < 5; i++) {
             // Make one claim
-            bytes memory fakeProof = new bytes(5888);
+            bytes memory fakeProof = new bytes(PROOF_LENGTH);
             bytes32 nullifier = bytes32(uint256(i + 1));
             address recipient = address(uint160(i + 1));
             a.claim(fakeProof, nullifier, recipient);
@@ -175,7 +175,11 @@ contract ZKMV2E2ETest is Test {
         assertEq(a.claimsRemaining(), 999_995);
     }
 
-    function test_e2e_claim_rejected_at_max_claims() public {
+    /// Single claim mints CLAIM_AMOUNT and increments totalClaims (formerly
+    /// misnamed `test_e2e_claim_rejected_at_max_claims`, which never reached the
+    /// cap — the real cap boundary is covered by
+    /// `test_e2e_claim_cap_boundary_at_max_claims` below).
+    function test_e2e_claim_mints_and_increments_supply() public {
         address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZKMToken t = new ZKMToken(predictedAirdrop);
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
@@ -184,13 +188,56 @@ contract ZKMV2E2ETest is Test {
         uint256 supplyBefore = t.totalSupply();
 
         // Make one claim
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(1));
         a.claim(fakeProof, nullifier, address(0xB0B));
 
         // Verify supply increased correctly
         assertEq(t.totalSupply(), supplyBefore + 10_000e18);
         assertEq(a.totalClaims(), 1);
+    }
+
+    /// The MAX_CLAIMS boundary is a strict `<` (not `<=`): the MAX_CLAIMS-th
+    /// claim is accepted and the (MAX_CLAIMS + 1)-th reverts with
+    /// "Claim cap reached".
+    ///
+    /// Driving `totalClaims` to 1M with real claims is infeasible in a test
+    /// (~1M storage writes), so `vm.store` sets the counter directly.
+    /// `totalClaims` is storage slot 0 — the contract's immutables
+    /// (`token`/`verifier`/`merkleRoot`) and `constant`s take no slot — and the
+    /// getter round-trip below confirms the slot before the assertions rely on it.
+    ///
+    /// Note: the token's MAX_SUPPLY check is NOT exercised here. Faking the
+    /// counter leaves `totalSupply` at 0, so the mint is trivially under
+    /// MAX_SUPPLY. The cap and the supply align by construction —
+    /// `MAX_CLAIMS * CLAIM_AMOUNT == MAX_SUPPLY` — asserted in
+    /// `test_integration_max_supply_math`. This test pins the `totalClaims`
+    /// cap's off-by-one (`<` vs `<=`).
+    function test_e2e_claim_cap_boundary_at_max_claims() public {
+        address predictedAirdrop = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        ZKMToken t = new ZKMToken(predictedAirdrop);
+        ZKMAirdrop a = new ZKMAirdrop(address(t), address(verifier), MERKLE_ROOT);
+
+        // `totalClaims` is the first storage variable (slot 0).
+        vm.store(address(a), bytes32(uint256(0)), bytes32(a.MAX_CLAIMS() - 1));
+        assertEq(a.totalClaims(), a.MAX_CLAIMS() - 1, "totalClaims slot 0 round-trip");
+        assertTrue(a.isClaimWindowOpen(), "window must be open one below the cap");
+
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
+        bytes32 nullifierLast = bytes32(uint256(1));
+        bytes32 nullifierOver = bytes32(uint256(2));
+        address recipient = address(0xB0B);
+
+        // The MAX_CLAIMS-th claim is accepted (boundary is strict `<`).
+        a.claim(fakeProof, nullifierLast, recipient);
+        assertEq(a.totalClaims(), a.MAX_CLAIMS(), "cap should be reached after the last claim");
+        assertEq(t.balanceOf(recipient), 10_000e18, "mint must succeed at the cap");
+        assertFalse(a.isClaimWindowOpen(), "window must close at the cap");
+        assertEq(a.claimsRemaining(), 0, "no claims remaining at the cap");
+
+        // The (MAX_CLAIMS + 1)-th claim is rejected.
+        vm.expectRevert("Claim cap reached");
+        a.claim(fakeProof, nullifierOver, recipient);
     }
 
     receive() external payable {}

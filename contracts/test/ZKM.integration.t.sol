@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 import {Halo2Verifier} from "../src/Halo2Verifier.axiom.sol";
-import {MockHalo2Verifier} from "./TestUtils.sol";
+import {MockHalo2Verifier, PROOF_LENGTH} from "./TestUtils.sol";
 
 /// @title ZKMV2 Integration Test — Full deployment and claim flow
 /// @notice Tests the complete integration between all three contracts
@@ -62,7 +62,7 @@ contract ZKMV2Integration is Test {
 
     function test_integration_airdrop_rejects_zero_recipient() public {
         // Zero recipient is rejected by the airdrop contract (not verifier)
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         MockHalo2Verifier mockV = new MockHalo2Verifier();
         ZKMToken t = new ZKMToken(address(this));
         ZKMAirdrop a = new ZKMAirdrop(address(t), address(mockV), MERKLE_ROOT);

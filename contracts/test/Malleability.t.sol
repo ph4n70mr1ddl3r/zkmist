@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import {ZKMAirdrop} from "../src/ZKMAirdrop.sol";
 import {ZKMToken} from "../src/ZKMToken.sol";
-import {MockHalo2Verifier} from "./TestUtils.sol";
+import {MockHalo2Verifier, PROOF_LENGTH} from "./TestUtils.sol";
 
 contract MalleabilityTest is Test {
     ZKMToken token;
@@ -23,7 +23,7 @@ contract MalleabilityTest is Test {
     }
 
     function test_malleability_rejected() public {
-        bytes memory fakeProof = new bytes(5888);
+        bytes memory fakeProof = new bytes(PROOF_LENGTH);
         bytes32 nullifier = bytes32(uint256(1));
         address recipient = address(0xB0B);
 
