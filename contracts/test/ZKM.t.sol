@@ -154,6 +154,14 @@ contract ZKMV2Test is Test {
         airdrop.claim(fakeProof, bytes32(uint256(1)), address(0));
     }
 
+    function test_airdrop_claim_rejects_zero_nullifier() public {
+        airdrop = new ZKMAirdrop(address(token), address(verifier), MERKLE_ROOT);
+        bytes memory fakeProof = new bytes(5888);
+        // Non-zero recipient so we reach the nullifier check, not the recipient one.
+        vm.expectRevert("Invalid nullifier");
+        airdrop.claim(fakeProof, bytes32(uint256(0)), address(0xB0B));
+    }
+
     // ── Deployment ordering test ─────────────────────────────────────────
 
     function test_deploy_ordering() public {

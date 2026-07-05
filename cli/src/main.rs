@@ -920,4 +920,40 @@ mod axiom_prover_tests {
         b[31] = 7;
         assert_eq!(bytes_be_to_fq(&b), Fq::from(7u64));
     }
+
+    /// L1 regression: `generate_v2_proof_axiom` must reject a private key that
+    /// `derive_address` (k256) would also reject — a zero scalar and a scalar ≥ n
+    /// (secp256k1 order). The check runs at the very top of the prover (before
+    /// SRS load / keygen), so this is a cheap early-return test. Without it, a
+    /// key ≥ n would be silently reduced mod n by `bytes_be_to_fq`, making the
+    /// prover commit to a scalar that disagrees with the address shown to the
+    /// user. The circuit's `K < n` range proof still catches a malicious ≥ n
+    /// witness; this guard is about prover/derivation consistency.
+    #[test]
+    fn test_generate_v2_proof_rejects_invalid_scalar() {
+        use crate::halo2_prover_axiom::generate_v2_proof_axiom;
+        use std::path::PathBuf;
+
+        let out = PathBuf::from("/tmp/zkmist_should_not_be_written_proof.json");
+        let _ = std::fs::remove_file(&out);
+
+        // Zero scalar.
+        let zero = [0u8; 32];
+        let err = generate_v2_proof_axiom(&zero, &[], &[], &[0u8; 32], &[0u8; 20], &out)
+            .expect_err("zero scalar must be rejected");
+        assert!(err.contains("Invalid private key"), "got: {err}");
+
+        // Scalar ≥ n (0xFF..FF = 2^256 - 1 > n). `bytes_be_to_fq` would silently
+        // reduce this; the new guard rejects it instead, matching derive_address.
+        let over_n = [0xFFu8; 32];
+        let err = generate_v2_proof_axiom(&over_n, &[], &[], &[0u8; 32], &[0u8; 20], &out)
+            .expect_err("scalar ≥ n must be rejected");
+        assert!(err.contains("Invalid private key"), "got: {err}");
+
+        // Nothing must have been written on the validation-failure path.
+        assert!(
+            !out.exists(),
+            "prover must not write output on scalar-validation failure"
+        );
+    }
 }

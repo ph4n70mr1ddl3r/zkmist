@@ -394,16 +394,43 @@ pub fn cmd_submit(
         ));
     }
 
-    // Reject submission to the placeholder contract address.
-    if proof.contract_address == "0x000000000000000000000000000000000000dEaD"
-        || proof.contract_address.parse::<alloy::primitives::Address>()
-            == Ok(alloy::primitives::Address::ZERO)
+    // ── Contract-address trust model ─────────────────────────────────
+    // Pre-deployment (`AIRDROP_CONTRACT` is still the placeholder): reject any
+    // proof file that carries the placeholder / zero address — there is no
+    // contract to submit to yet.
+    //
+    // Post-deployment (once `AIRDROP_CONTRACT` is the real address): ALSO
+    // require the proof file's address to equal the pinned constant, so the
+    // JSON's `contract_address` is pure metadata, not a routing instruction.
+    // This closes the footgun where a stale/tampered proof file silently
+    // submits to the wrong contract after mainnet. `AIRDROP_CONTRACT` is the
+    // single source of truth; the proof file must agree.
+    let normalize_addr = |s: &str| -> String {
+        s.trim()
+            .strip_prefix("0x")
+            .unwrap_or(s.trim())
+            .to_lowercase()
+    };
+    let proof_addr = normalize_addr(&proof.contract_address);
+    let pinned_addr = normalize_addr(AIRDROP_CONTRACT);
+    let pinned_is_placeholder = pinned_addr == "000000000000000000000000000000000000dead";
+
+    if proof_addr == "000000000000000000000000000000000000dead"
+        || proof_addr == "0000000000000000000000000000000000000000"
     {
         return Err("Proof file contains a placeholder contract address. \
              The airdrop contract has not been deployed yet, \
              or this CLI version is outdated. \
              Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment."
             .to_string());
+    }
+    if !pinned_is_placeholder && proof_addr != pinned_addr {
+        return Err(format!(
+            "Proof file's contract address (0x{proof_addr}) does not match the CLI's pinned \
+             AIRDROP_CONTRACT (0x{pinned_addr}). The proof was generated for a different \
+             deployment. Regenerate the proof with the current CLI, or — if you intentionally \
+             deployed a new contract — update AIRDROP_CONTRACT in cli/src/constants.rs."
+        ));
     }
 
     // Get submitter's private key for gas
@@ -475,7 +502,10 @@ pub fn cmd_submit(
 
         let gas_limit = match provider.estimate_gas(base_tx.clone()).await {
             Ok(base) => {
-                let buffered = (base as u128 * 12 / 10) as u64;
+                // +20% buffer over the RPC estimate (a claim reverts on gas
+                // underestimation, so pad generously). Computed in u128 to stay
+                // overflow-proof regardless of the estimate's integer width.
+                let buffered = (base as u128 + (base as u128) / 5) as u64;
                 eprintln!(
                     "  Gas estimate: {} (using {} with 20% buffer)",
                     base, buffered

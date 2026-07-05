@@ -43,8 +43,10 @@ pub(crate) fn get_cache_dir() -> Result<std::path::PathBuf, String> {
 }
 
 use zkmist_circuits::{
-    claim_axiom::prove_claim_to_cells, nullifier_axiom::domain_field_element,
-    poseidon_axiom::native_hash_interior, secp_axiom::assign_privkey,
+    claim_axiom::prove_claim_to_cells,
+    nullifier_axiom::domain_field_element,
+    poseidon_axiom::native_hash_interior,
+    secp_axiom::{assign_privkey, secp_n_biguint},
 };
 
 /// Circuit degree for the axiom claim circuit (≈1.9M advice cells; secp and
@@ -137,6 +139,23 @@ pub fn generate_v2_proof_axiom(
     let k = AXIOM_CIRCUIT_K;
     eprintln!("      [axiom] Building claim circuit (k={})...", k);
 
+    // ── Validate + lift the private key ──────────────────────────────
+    // `cmd_prove` already rejects keys outside [1, n-1] via `derive_address`
+    // (k256). Enforce the SAME policy here so the prover and the address
+    // derivation can never disagree on which scalar is being used: a key ≥ n
+    // would be silently reduced mod n by `bytes_be_to_fq` below, producing an
+    // address that differs from what `derive_address` computed upstream. The
+    // circuit's `K < n` range proof independently rejects a malicious ≥ n
+    // witness; this guard is about prover/derivation consistency, not soundness.
+    let privkey_big = BigUint::from_bytes_be(private_key);
+    if privkey_big == BigUint::from(0u64) || privkey_big >= secp_n_biguint() {
+        return Err(
+            "Invalid private key: scalar must be in [1, n-1] (secp256k1). \
+             `derive_address` should have caught this — caller bug."
+                .to_string(),
+        );
+    }
+
     // ── Witnesses → axiom field elements ─────────────────────────────
     let privkey_fq = bytes_be_to_fq(private_key);
     let siblings_fr: Vec<Fr> = siblings.iter().map(|s| bytes_be_to_fr(s)).collect();
@@ -147,7 +166,6 @@ pub fn generate_v2_proof_axiom(
     let recipient_fr = bytes_be_to_fr(&recip_padded);
 
     // Nullifier (native, halo2-base convention): poseidon(privkey mod p_BN254, domain).
-    let privkey_big = BigUint::from_bytes_be(private_key);
     let p_bn254: BigUint = modulus::<Fr>();
     let key_mod_p = biguint_to_fr(&(&privkey_big % &p_bn254));
     let nullifier_fr = native_hash_interior(key_mod_p, domain_field_element());
@@ -226,16 +244,23 @@ pub fn generate_v2_proof_axiom(
         chain_id: crate::constants::CHAIN_ID,
         receipt_hex: None,
     };
-    std::fs::write(
-        output_path,
-        serde_json::to_string_pretty(&proof_file).unwrap(),
-    )
-    .map_err(|e| format!("Failed to write proof: {}", e))?;
+    let proof_json = serde_json::to_string_pretty(&proof_file)
+        .map_err(|e| format!("Failed to serialize proof: {}", e))?;
+    std::fs::write(output_path, &proof_json)
+        .map_err(|e| format!("Failed to write proof: {}", e))?;
     eprintln!("      [axiom] proof saved: {}", output_path.display());
 
-    // Sanity: generate + compile the on-chain verifier once (proves the proof
-    // is on-chain-verifiable). In production this is a separate gen-verifier step.
-    let _bytecode = gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![3], None);
+    // Opt-in sanity check: regenerate the on-chain verifier from this VK to
+    // confirm the proof is on-chain-verifiable. OFF by default — it is full
+    // Solidity/Yul codegen and adds avoidable latency + memory to every proof.
+    // Prover↔verifier agreement is already covered by the real-KZG round-trip
+    // (`test_axiom_claim_real_kzg_roundtrip`) and the on-chain `RealRoundtrip`
+    // Forge test against the `gen-roundtrip-fixture` output. Enable for an
+    // explicit one-off check: `ZKMIST_GEN_VERIFIER=1 zkmist prove ...`.
+    if std::env::var("ZKMIST_GEN_VERIFIER").as_deref() == Ok("1") {
+        let _bytecode = gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![3], None);
+        eprintln!("      [axiom] verifier regenerated from VK (ZKMIST_GEN_VERIFIER sanity check)");
+    }
 
     Ok(nullifier_bytes)
 }

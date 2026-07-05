@@ -109,6 +109,9 @@ contract ZKMV2FuzzTest is Test {
 
     /// @dev Zero recipient always rejected (checked before proof length)
     function testFuzz_zero_recipient_rejected(bytes32 nullifier, uint16 proofLen) public {
+        // Isolate the recipient check: the new zero-nullifier guard fires first
+        // otherwise (and would surface "Invalid nullifier" instead).
+        vm.assume(nullifier != bytes32(0));
         bytes memory fakeProof = new bytes(proofLen);
 
         vm.expectRevert("Recipient cannot be zero");

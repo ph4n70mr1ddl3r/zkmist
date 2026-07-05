@@ -53,6 +53,10 @@ contract ZKMAirdrop {
         require(block.timestamp < CLAIM_DEADLINE, "Claim period ended");
         require(totalClaims < MAX_CLAIMS, "Claim cap reached");
         require(!usedNullifiers[nullifier], "Already claimed");
+        // A zero nullifier is not a valid Poseidon output; reject it explicitly
+        // so a (cryptographically infeasible) all-zero digest can never be the
+        // seed of a double-claim (two keys colliding to nullifier = 0).
+        require(nullifier != bytes32(0), "Invalid nullifier");
         require(recipient != address(0), "Recipient cannot be zero");
 
         // Calldata = instances (32-byte big-endian each) ++ proof — matches
