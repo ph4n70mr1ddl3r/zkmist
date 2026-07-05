@@ -8,56 +8,57 @@
 > forgeable). See [SECURITY.md](./SECURITY.md) for the threat model and
 > [README.md](./README.md) for architecture.
 
-The four blocking issues from the production review, in resolution order:
+The four blocking issues from the production review, current status:
 
-| # | Blocker | Owner | Why it blocks |
-|---|---------|-------|---------------|
-| 1 | On-chain verifier was a non-functional placeholder (`Halo2VerifyingKey.sol` k=21, all-zero fixed commitments); the generation tool's `synthesize` was a stub | eng | Every honest proof would revert → airdrop mints nothing, forever. **RESOLVED (VK emitted):** `gen-production-verifier --emit` regenerated `Halo2VerifyingKey.sol` at k=23 (0x17) with real fixed + permutation commitments against the pinned PSE SRS. **Remaining:** exercise the real-KZG → on-chain round-trip (`test_realKzgRoundtrip`) + confirm SRS provenance + audit (Phase 3-4) |
-| 2 | KZG SRS not pinned (`KZG_SRS_URL`/`KZG_SRS_SHA256` empty → prover falls back to a forgeable random SRS) | deployer | Whoever ran the prover can forge proofs → unlimited mint |
-| 3 | secp256k1 non-native arithmetic is hand-rolled and unaudited (MockProver-confirmed at k=23, but NOT audited and NOT real-KZG-confirmed) | eng + auditor | A missing constraint = forged proofs (MockProver covers the tested constraints; only an audit covers the untested gaps) |
-| 4 | No real proof has ever verified against the Solidity verifier; no testnet deployment | eng | The one property that matters is empirically unproven |
+| # | Blocker | Current status |
+|---|---------|----------------|
+| 1 | On-chain verifier was a non-functional placeholder (all-zero VK) | **RESOLVED.** `contracts/src/Halo2Verifier.axiom.sol` is the real snark-verifier-generated axiom verifier (a `fallback` contract ending in a BN254 ecPairing precompile call `0x8`, 565 non-zero VK constants). Emitted by `circuits/tests/claim_evm_roundtrip.rs` under `ZKMIST_EMIT_VERIFIER` + `ZKMIST_USE_PINNED_SRS`, at circuit **k=21** against the pinned SRS. Readiness checks `[1/8]` + `[1b/8]` are green. |
+| 2 | KZG SRS not pinned → forgeable random SRS | **RESOLVED.** `KZG_SRS_SHA256` / `KZG_SRS_URL` (`cli/src/constants.rs`) pin the PSE perpetual-powers-of-tau **k=23** file (universal; `srs_k ≥ circuit_k`). Provenance is byte-confirmed against the public beaconed ceremony transcript by `tools/src/verify_srs_from_ptau.rs`. Readiness `[1c/8]` (no random SRS) + `[1d/8]` (pinned) are green. |
+| 3 | secp256k1 non-native arithmetic was hand-rolled & unaudited | **Mostly resolved.** The hand-rolled PSE `secp256k1.rs` is replaced by `secp_axiom.rs`, built on **halo2-ecc's audited chips** (`FpChip` / `EccChip::fixed_base_scalar_mult` / `ProperCrtUint`). Remaining custom surface to audit: the pubkey **byte-bridge** (`field_point_to_le_bytes`), the Keccak-256 chip, the Poseidon/Merkle gadgets, and the three-pillar (secp↔Keccak-address↔nullifier) wiring. **Still needs an external audit.** |
+| 4 | No real proof has verified on-chain; no testnet | **Partially open.** The Rust prover generates valid real-KZG proofs (`test_axiom_claim_real_kzg_roundtrip` passes at k=21) and the revm EVM round-trip (`test_claim_circuit_evm_roundtrip`) passes. The committed-verifier on-chain gate (`contracts/test/ZKM.realroundtrip.t.sol`) is **opt-in** (`RUN_REAL_ROUNDTRIP=1`) with an intentionally-uncommitted fixture — a manual pre-mainnet step. No testnet deployment yet. |
+
+> **Bottom line:** still **NOT deployable.** Open work: external audit (Phase 1), the opt-in on-chain fixture round-trip (Phase 4), testnet (Phase 5).
 
 ---
 
 ## Phase 0 — Confirm the circuit is sound (gate for everything else)
 
-> **✅ Status: PASSED 2026-06-29.** All seven `#[ignore]d` MockProver tests
-> pass at production k (23 for the full circuit, 22 for the isolated Keccak
-> chip). Recorded baseline for regression: `test_secp256k1_mock_prover` 36s /
-> 14.8 GiB, `test_circuit_merkle_nullifier_e2e` 2:49 / 19.5 GiB, four
-> `*_rejected` tests ~2:11–2:31 / ~19.5 GiB each, `test_keccak_mock_prover_full`
-> 1:25 / 3.7 GiB. The secp256k1 test derives the test-vector address
-> `0xfcad0b19bb29d4674531d6f115237e16afce377c`. **Re-run Phase 0 after any
-> change to `circuits/`, `gen-production-verifier`, or the halo2 version** — it
-> is the regression gate for every later phase.
+> **✅ Status: PASSING.** The axiom claim-circuit test suite
+> (`cargo test -p zkmist-circuits`) is green: the honest happy-path verifies,
+> the four negative cases reject, the production depth-26 circuit is
+> MockProver-satisfied at **k=21**, and the real-KZG + revm-EVM round-trips
+> pass. **Re-run after any change to `circuits/`** — it is the regression gate
+> for every later phase.
 
 All circuit-soundness work is moot if the honest proof doesn't verify and the
-negatives don't reject. The heavy tests are `#[ignore]d` (~2 min, ~15–20 GiB
-RSS each at k=23, release build). Run them on a machine with ≥24 GiB free RAM:
+negatives don't reject. On the axiom backend these run as ordinary (non-`#[ignore]d`)
+tests under `cargo test -p zkmist-circuits`; the depth-26 claim + real-KZG
+round-trip dominate the runtime (the `claim_axiom` suite is the heavy one).
+Run on a machine with ample RAM:
 
 ```bash
-# Honest proofs must verify
-cargo test --release -p zkmist-circuits test_secp256k1_mock_prover        -- --ignored --nocapture
-cargo test --release -p zkmist-circuits test_circuit_merkle_nullifier_e2e -- --ignored --nocapture
+# Full suite (honest + negatives + production depth + real-KZG + EVM round-trip)
+cargo test --release -p zkmist-circuits -- --nocapture
 
-# Forged/invalid proofs must REJECT
-cargo test --release -p zkmist-circuits test_wrong_merkle_root_rejected            -- --ignored --nocapture
-cargo test --release -p zkmist-circuits test_wrong_nullifier_rejected              -- --ignored --nocapture
-cargo test --release -p zkmist-circuits test_zero_recipient_rejected               -- --ignored --nocapture
-cargo test --release -p zkmist-circuits test_recipient_exceeding_uint160_rejected  -- --ignored --nocapture
+# Or the claim-circuit soundness tests individually:
+cargo test --release -p zkmist-circuits test_axiom_claim_happy_path          -- --nocapture
+cargo test --release -p zkmist-circuits test_axiom_claim_production_depth26 -- --nocapture
+# Negatives must REJECT:
+cargo test --release -p zkmist-circuits test_axiom_claim_rejects_wrong_root     -- --nocapture
+cargo test --release -p zkmist-circuits test_axiom_claim_rejects_wrong_nullifier -- --nocapture
+cargo test --release -p zkmist-circuits test_axiom_claim_rejects_zero_recipient -- --nocapture
+cargo test --release -p zkmist-circuits test_axiom_claim_rejects_key_above_n   -- --nocapture
 ```
 
-**Pass criterion:** all seven pass (the honest tests + four negatives + the
-isolated Keccak chip). The honest tests must additionally derive the
-test-vector address `0xfcad0b19bb29d4674531d6f115237e16afce377c`.
+**Pass criterion:** the honest happy-path verifies; the four negative cases
+reject; `test_axiom_claim_production_depth26` is satisfied at k=21.
 
-**Do not proceed** if any honest test fails (soundness bug) or any negative test
-passes (missing constraint).
+**Do not proceed** if any honest test fails (soundness bug) or any negative
+test passes (missing constraint).
 
-> Note on the `EXPECTED_CS_DIGEST` guard: it only pins `configure()` (the
-> gate/column STRUCTURE). It cannot detect a wrong `synthesize` witness or a
-> missing copy constraint. `MockProver` is what catches those — which is why
-> Phase 0 is non-negotiable.
+> Caveat (unchanged from the PSE era): MockProver (axiom's `base_test()`) only
+> checks the constraints that *exist* — it cannot detect a *missing* constraint.
+> That gap is exactly what the external audit (Phase 1) closes.
 
 ---
 
@@ -67,23 +68,23 @@ passes (missing constraint).
 
 Commission an independent audit of:
 
-1. **`circuits/src/secp256k1.rs`** — the hand-rolled non-native field arithmetic:
-   `field_mul` / `field_add_carried` / `field_sub`, the `carry_chain_columns`
-   integer carry chain, `reduce_canonical_mod_p` (witnessed quotient
-   `result + q·p = V` + canonicalization `result < p`), `check_on_curve`,
-   `constrain_affine`, limb range checks, `scalar_mul`.
-2. **`circuits/src/keccak.rs`** — the Keccak-256 chip (θ/ρ/π/χ/ι), the `RC`
-   table, and the constrained `tiny_keccak` cross-check.
-3. **`circuits/src/poseidon.rs`** and the Merkle `cond_swap` gadget
-   (`s_bool`/`s_mul`/`s_add` product gates).
-4. The three-pillar binding: secp scalar `k` ↔ Keccak address ↔ nullifier
-   (`bind_limb_to_inputs` and the nullifier↔scalar copy constraints).
+1. **`circuits/src/secp_axiom.rs`** — the secp256k1 pubkey gadget. The scalar
+   mult now runs on **halo2-ecc's audited chips** (`FpChip` /
+   `Secp256k1Chip` / `EccChip::fixed_base_scalar_mult` / `ProperCrtUint`);
+   the custom surface to audit is the **pubkey byte-bridge**
+   (`field_point_to_le_bytes` — extracting an secp256k1-Fp coordinate as 32
+   constrained little-endian bytes) and `enforce_scalar_less_than_n`.
+2. **`circuits/src/keccak_axiom.rs`** — the Keccak-256 chip (θ/ρ/π/χ/ι), the
+   `RC` table, and the constrained `tiny_keccak` cross-check.
+3. **`circuits/src/poseidon_axiom.rs`** and the Merkle gadget
+   (`merkle_axiom.rs`) — the Poseidon sponge + the leaf/interior hashing and
+   the path-index conditional swap.
+4. The three-pillar binding: secp scalar `k` ↔ Keccak-derived address ↔
+   nullifier (`claim_axiom.rs` wiring + the public-instance copy constraints).
 
-**Strongly recommended (defense-in-depth):** replace the hand-rolled secp256k1
-gadget with an audited library — `scroll-tech/halo2-secp256k1` or
-`privacy-scaling-explorations/halo2wrong`. Either eliminates the largest
-unaudited surface. If swapped, re-run Phase 0 (the circuit `k` and
-`EXPECTED_CS_DIGEST` will change — regenerate both).
+**Note:** the earlier "replace the hand-rolled secp256k1 gadget with an
+audited library" recommendation is **done** — `halo2-ecc` is that library.
+Remaining audit scope is the custom glue above, not non-native field arithmetic.
 
 **Artifact:** signed audit report with no Critical/High findings open.
 
@@ -121,86 +122,54 @@ pinned file (no `ZKMIST_DEV_SRS` fallback) when generating a proof.
 
 ---
 
-## Phase 3 — Generate the REAL on-chain verifier (eliminates the placeholder)
+## Phase 3 — The on-chain verifier (axiom backend)
 
-> **✅ The generation TOOL is now functional** (2026-06-29). `gen-production-verifier`
-> runs the REAL `zkmist_circuits::ZKMistV2Claim::synthesize` via `keygen_vk` and
-> produces a real VK — confirmed against a dev SRS: **15 fixed commitments, 20
-> permutation commitments** (the placeholder had 0 fixed + identity permutation),
-> k=23, keygen 112s / 22.7 GiB RSS. The version-split blocker is RESOLVED by a
-> digest-preserving compat shim (no circuit duplication). The remaining step is
-> purely operational: pin the SRS, run with `--emit`, confirm the VK matches.
+> **✅ DONE.** `contracts/src/Halo2Verifier.axiom.sol` is the **real**
+> snark-verifier-generated axiom verifier — a `fallback` contract whose final
+> gate is a BN254 pairing-precompile call (`staticcall(gas(), 0x8, …)`), with
+> 565 non-zero VK `mstore` constants. It was emitted against the **pinned**
+> ceremony SRS (its header carries the `PINNED-SRS VERIFIER` banner, not the
+> `DEV-SRS WIRING-ONLY` one). Circuit **k=21**; the SRS is k=23 (universal,
+> `srs_k ≥ circuit_k`). Readiness `[1/8]` (pairing gate present) + `[1b/8]`
+> (real VK data) are green. **No action is needed unless the circuit changes.**
 
-`contracts/src/Halo2Verifier.sol` + `Halo2VerifyingKey.sol` are now the **real,
-regenerated** verifier (emitted via `gen-production-verifier --emit` against
-the pinned PSE SRS): the VK is `k = 0x17 (23)` with non-zero fixed +
-permutation commitments, matching the prover's `CIRCUIT_K = 23`. The earlier
-placeholder (`k = 0x15 (21)`, all-zero fixed commitments) is retired. The
-remaining step in this phase is to validate the real-KZG → on-chain
-round-trip (see `test_realKzgRoundtrip` / the bottom of this phase).
+The verifier is generated by `circuits/tests/claim_evm_roundtrip.rs`
+(`test_claim_circuit_evm_roundtrip`). Generation is env-var-gated so an
+ordinary test run never silently overwrites the committed verifier:
 
-### How the version split was resolved
+| env var | effect |
+|---|---|
+| `ZKMIST_EMIT_VERIFIER=<path>` | write the generated `.sol` to `<path>` (otherwise the verifier is built only in-memory for the revm round-trip) |
+| `ZKMIST_USE_PINNED_SRS=1` | prove/emit against the **pinned** PSE ceremony SRS (`PINNED-SRS VERIFIER` banner). Unset ⇒ toxic-waste `gen_srs` (`DEV-SRS WIRING-ONLY` banner — wiring-valid, **not** mainnet-sound) |
 
-`zkmist-circuits` and the CLI build against crates.io `halo2_proofs 0.3.x`.
-The Solidity codegen library (`vendor/halo2-solidity-verifier`) builds against
-the PSE **git fork** of halo2 (tag v0.3.0). The two forks are API-incompatible
-at the call site (`query_fixed(col)` vs `(col, Rotation)`; unnamed vs named
-`lookup`) and their crate types do not unify, so a circuit compiled under one
-fork cannot be passed to `keygen_vk` under the other.
+### Regenerating the verifier (only if the circuit changes)
 
-The resolution (no circuit duplication, no prover changes):
-- `gen-production-verifier` is its **own workspace** on the git fork, and forces
-  `zkmist-circuits` onto the git fork too (via `cargo update -p halo2_proofs@
-  0.3.2 --precise 0.3.0` in its lockfile), so `keygen_vk` accepts the same
-  `ZKMistV2Claim`.
-- A tiny cfg-gated compat shim in `zkmist-circuits` (`circuits/src/compat.rs`,
-  feature `git-fork-api`, enabled only by `gen-production-verifier`) routes the
-  6 `query_fixed` + 2 `lookup` call sites to the fork-correct signature. It is
-  **provably digest-preserving**: the lookup name is not in the pinned CS, and
-  `Rotation::cur()` is what crates.io hard-codes. Guarded on both sides by
-  `EXPECTED_CS_DIGEST = f8f4b46128dd613f` (the tool's parity assert passed under
-  the git fork) and the k=23 MockProver suite (unchanged under crates.io).
-- The main zkmist workspace is completely unaffected (the feature is never
-  enabled there; the prover and all 155 tests are unmodified).
-
-### Generate against the pinned SRS (Phase 2)
+Re-run Phase 0 first; if the circuit `k` or VK changed, this is where it
+lands on-chain.
 
 ```bash
-cd gen-production-verifier
-cargo build --release
-
-# Default: runs keygen_vk, prints the VK fingerprint, does NOT write .sol files.
-cargo run --release -- --k 23 --params-file /path/to/pse-halo2-kzg-srs-k23.bin
-
-# After confirming the fingerprint matches (see cross-check below), emit:
-cargo run --release -- --k 23 --params-file /path/to/pse-halo2-kzg-srs-k23.bin --emit
+# Emit against the PINNED ceremony SRS — the only mode that produces a
+# mainnet-sound verifier.
+ZKMIST_EMIT_VERIFIER=contracts/src/Halo2Verifier.axiom.sol \
+ZKMIST_USE_PINNED_SRS=1 \
+cargo test --release -p zkmist-circuits test_claim_circuit_evm_roundtrip -- --nocapture
 ```
-
-**Cross-check (mandatory, before `--emit`):** the generator prints the VK
-`transcript_repr` and a pinned SHA-256. They MUST match the prover-side tool
-against the SAME pinned SRS:
-```bash
-cargo run --release -p zkmist-tools --bin gen-verifier --features v2 -- \
-    --params-file /path/to/pse-halo2-kzg-srs-k23.bin
-```
-Mismatch ⇒ the circuit or SRS drifted; do NOT pass `--emit`.
 
 **Pass criterion:**
-- The two tools print the SAME `transcript_repr` / pinned SHA-256.
-- After `--emit`, `contracts/src/Halo2VerifyingKey.sol` has `k = 0x17 (23)` and
-  NON-zero fixed commitments (range8, secp `SECP_P`, keccak `RC`, poseidon
-  round constants).
-- `cargo run -p zkmist-tools --bin readiness` check `[1b/8]` is green (no more
-  "ALL fixed commitments are zero" / "k-value MISMATCH" warnings).
+- The file header carries the `PINNED-SRS VERIFIER` banner (NOT `DEV-SRS`).
+- `cargo run -p zkmist-tools --bin readiness` checks `[1/8]` + `[1b/8]` stay green.
+- `cd contracts && forge build && forge test` still passes.
 
 ```bash
 cd contracts && forge build && forge test -vvv
 ```
 
-> **Safeguard:** the tool refuses `--emit` with a random dev SRS (it requires
-> `--params-file`), and refuses to emit at all without `--emit` (default is a
-> fingerprint-only dry run). This prevents an unvalidated VK from silently
-> replacing the placeholder and bricking the airdrop.
+> **Safeguard:** without `ZKMIST_EMIT_VERIFIER` the test never writes a file,
+> and without `ZKMIST_USE_PINNED_SRS=1` the emitted file is banner-marked
+> `DEV-SRS WIRING-ONLY`, so a dev-SRS VK can never be mistaken for a
+> mainnet verifier. (The retired PSE workflow — `gen-production-verifier` /
+> `Halo2VerifyingKey.sol` / the crates.io↔git-fork compat shim — no longer
+> exists; the whole stack is now axiom `halo2-base` + `snark-verifier-sdk`.)
 
 ---
 
@@ -292,11 +261,11 @@ never happen, see the birthday-bound analysis in SECURITY.md). See SECURITY.md
 ## One-page checklist
 
 ```
-[x] Phase 0  — all 7 #[ignore]d MockProver tests PASS at k=23 (2026-06-29)
-[ ] Phase 1  — external audit report, no open Critical/High   ← NEXT GATE
-[ ] Phase 2  — PSE SRS pinned; readiness [1d/8] green
-[ ] Phase 3  — generation TOOL functional (✅ 2026-06-29); remaining: --emit with pinned SRS + confirm VK match
-[ ] Phase 4  — real proof mints on local anvil; tampered proof reverts
+[x] Phase 0  — axiom circuit suite green (happy-path + 4 negatives + depth-26 @ k=21)
+[ ] Phase 1  — external audit (secp byte-bridge, Keccak, Poseidon/Merkle, wiring)  ← NEXT GATE
+[x] Phase 2  — PSE SRS pinned + provenance confirmed; readiness [1c/8]+[1d/8] green
+[x] Phase 3  — Halo2Verifier.axiom.sol is the real pinned-SRS axiom verifier (k=21)
+[ ] Phase 4  — opt-in on-chain round-trip (RUN_REAL_ROUNDTRIP=1) + local anvil mint
 [ ] Phase 5  — real claim mints on Base Sepolia; nullifier replay reverts
 [ ] Phase 6  — mainnet deploy + Basescan verification; CLI constants updated
 [ ] Phase 7  — monitor running; alerts configured

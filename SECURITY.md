@@ -1,5 +1,18 @@
 # Security Policy
 
+> **⚠️ Status (2026-07): parts of this document describe the RETIRED PSE-era
+> hand-rolled `secp256k1.rs` circuit.** That gadget has been replaced by
+> `circuits/src/secp_axiom.rs`, built on **halo2-ecc's audited chips**
+> (`FpChip` / `EccChip::fixed_base_scalar_mult` / `ProperCrtUint`); the
+> production circuit now runs at **k=21** (was k=23). The detailed carry-chain
+> / non-native-field analysis below is preserved as a historical record and
+> does **not** describe the current axiom circuit. For the current security
+> posture and remaining audit scope (pubkey byte-bridge, Keccak chip,
+> Poseidon/Merkle gadgets, three-pillar wiring) see
+> [DEPLOYMENT.md](./DEPLOYMENT.md) Phases 0–1 and
+> [docs/axiom-backend-migration.md](./docs/axiom-backend-migration.md).
+> Bottom line unchanged: **NOT audited, NOT deployable.**
+
 ## Reporting a Vulnerability
 
 **Do not report security vulnerabilities through public GitHub issues.**
@@ -39,9 +52,11 @@ We ask that you:
 - Double-claim prevention relies on the nullifier uniqueness of `poseidon(key, domain)`
 
 ### ZK Circuits
-- The secp256k1 gadget uses **hand-rolled non-native field arithmetic** (see `circuits/src/secp256k1.rs`)
-- Soundness depends on `check_on_curve`, `constrain_affine`, and limb range checks
-- **An external security audit is required** before mainnet deployment
+- The secp256k1 scalar multiplication runs on **halo2-ecc's audited chips**
+  (`secp_axiom.rs`); the custom surface is the pubkey **byte-bridge**,
+  the Keccak-256 chip, the Poseidon/Merkle gadgets, and the three-pillar wiring.
+- Production circuit degree is **k=21** (axiom backend); the pinned SRS is k=23.
+- **An external security audit of the custom gadgets/wiring is required** before mainnet deployment
 - The code recommends using proven alternatives (`scroll-tech/halo2-secp256k1`, `halo2wrong`)
 
 ### CLI

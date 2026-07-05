@@ -543,19 +543,24 @@ fn main() {
         eprintln!("  Remaining steps before mainnet deployment:");
         eprintln!("    ┌──────────────────────────────────────────────────────────────");
         eprintln!("    │ CRITICAL (blocks deployment):");
-        eprintln!("    │ [ ] Re-run full E2E MockProver test (k=23, ~15 min):  ✅ 2026 PASS");
-        eprintln!("    │     cargo test -p zkmist-circuits -- --ignored --nocapture");
-        eprintln!("    │ [ ] Regenerate Halo2Verifier.sol + Halo2VerifyingKey.sol with");
-        eprintln!("    │     gen-production-verifier (now loads range tables, k=23)");
+        eprintln!(
+            "    │ [ ] Re-run the axiom circuit suite (happy-path + negatives + depth-26 @ k=21):"
+        );
+        eprintln!("    │     cargo test -p zkmist-circuits -- --nocapture");
+        eprintln!("    │ [ ] Regenerate Halo2Verifier.axiom.sol if the circuit changed");
+        eprintln!("    │     (circuits/tests/claim_evm_roundtrip.rs: ZKMIST_EMIT_VERIFIER + ZKMIST_USE_PINNED_SRS)");
         eprintln!("    │ [ ] Verify VK k-value matches CIRCUIT_K (checked above)");
         eprintln!("    │ [ ] Verify VK has non-zero fixed commitments (checked above)");
-        eprintln!("    │ [ ] External security audit of secp256k1 non-native field arithmetic");
-        eprintln!("    │     → See: circuits/src/secp256k1.rs security note");
+        eprintln!("    │ [ ] External security audit of the custom axiom gadgets");
+        eprintln!("    │     → See: circuits/src/{{secp_axiom,keccak_axiom,poseidon_axiom}}.rs");
+        eprintln!("    │       (secp scalar mul is on halo2-ecc's audited chips)");
         eprintln!("    │ [ ] Testnet deployment on Base Sepolia with full claim flow");
         eprintln!("    │     → ./scripts/testnet-deploy.sh");
         eprintln!("    │");
         eprintln!("    │ HIGH PRIORITY:");
-        eprintln!("    │ [ ] Generate real proof and validate size in [4000, 8000] byte range");
+        eprintln!(
+            "    │ [ ] Generate real proof and validate size (~1376 bytes, axiom SHPLONG @ k=21)"
+        );
         eprintln!("    │     → cargo run --release -p zkmist-cli -- bench");
         eprintln!("    │ [ ] Benchmark proving time on reference hardware (<60 sec target)");
         eprintln!("    │ [ ] Update AIRDROP_CONTRACT in cli/src/constants.rs after deployment");
@@ -564,7 +569,7 @@ fn main() {
         eprintln!("    │ RECOMMENDED:");
         eprintln!("    │ [ ] Run full E2E test suite: ./scripts/e2e-test.sh");
         eprintln!("    │ [ ] Set up monitoring/alerting (BaseScan, Tenderly, Dune)");
-        eprintln!("    │ [ ] Consider replacing hand-rolled secp256k1 with audited library");
+        eprintln!("    │ [ ] secp256k1 already on halo2-ecc; audit the remaining custom glue");
         eprintln!("    └──────────────────────────────────────────────────────────────");
     }
 }

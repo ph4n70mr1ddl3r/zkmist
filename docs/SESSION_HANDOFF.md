@@ -1,5 +1,14 @@
 # Session Handoff — ZKMist Production Readiness & Axiom Migration
 
+> **⚠️ Superseded snapshot (2026-07-04).** Captured mid-migration; several
+> specifics below are now stale — e.g. `cli/src/halo2_prover.rs` /
+> `CIRCUIT_K = 23` describe the RETIRED PSE prover (now
+> `cli/src/halo2_prover_axiom.rs` / `AXIOM_CIRCUIT_K = 21`), and the hand-rolled
+> PSE secp256k1 circuit is replaced by `secp_axiom.rs` on halo2-ecc. Treat the
+> PSE-vs-axiom status flags here as historical. For the current state see
+> [DEPLOYMENT.md](../DEPLOYMENT.md) and
+> [axiom-backend-migration.md](./axiom-backend-migration.md).
+
 > **Read this first in a fresh session.** It captures everything needed to
 > continue the work without re-discovering it. Last updated 2026-07-04.
 

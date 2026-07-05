@@ -678,11 +678,11 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
 // Forge test can parse straight into `ZKMAirdrop.claim(proof, nullifier,
 // recipient)`.
 //
-// This is the prover side of the "real-KZG → on-chain verifier" loop that
-// has never been exercised (see SECURITY.md). Once the on-chain VK is
-// regenerated (gen-production-verifier at k=23) and this fixture exists,
-// RUN_REAL_ROUNDTRIP=1 forge test performs the first ever honest on-chain
-// verification.
+// This is the prover side of the "real-KZG → on-chain verifier" loop.
+// The on-chain verifier (`contracts/src/Halo2Verifier.axiom.sol`, emitted by
+// `circuits/tests/claim_evm_roundtrip.rs` at circuit k=21) is already real; once
+// this fixture exists, `RUN_REAL_ROUNDTRIP=1 forge test` performs the honest
+// on-chain verification.
 //
 // Requires either a pinned PSE KZG SRS (KZG_SRS_URL/KZG_SRS_SHA256 in
 // constants.rs) or ZKMIST_DEV_SRS=1 for a local forgeable SRS (dev/test
@@ -745,7 +745,7 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     // Generate the REAL KZG proof. Under a pinned SRS this is mainnet-grade;
     // under ZKMIST_DEV_SRS it is forgeable but still exercises the full
     // create_proof → transcript path (sufficient to validate the verifier).
-    eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~5 min, peaks ≳26 GiB at k=23; the preflight refuses below ~31 GiB free RAM — needs a ≥36 GiB machine)...");
+    eprintln!("[3/4] Generating real Halo2-KZG proof (heavy; real-KZG proving peaks well under ~10 GiB at k=21 on the axiom backend)...");
     let tmp = std::env::temp_dir().join("zkmist_roundtrip_proof.json");
     let nullifier = crate::halo2_prover_axiom::generate_v2_proof_axiom(
         &key,
