@@ -313,9 +313,10 @@ pub fn load_eligibility_list() -> Result<Vec<[u8; 20]>, String> {
             .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
         let reader = std::io::BufReader::new(file);
         use std::io::BufRead;
-        
+
         for line_res in reader.lines() {
-            let line_str = line_res.map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
+            let line_str = line_res
+                .map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
             let line = line_str.trim();
             if line.is_empty() || line.starts_with("address") || line.starts_with("qualified") {
                 continue; // skip header
@@ -418,10 +419,11 @@ fn load_addresses_from_file(path: &std::path::Path) -> Result<Vec<[u8; 20]>, Str
         .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
     let reader = std::io::BufReader::new(file);
     use std::io::BufRead;
-    
+
     let mut addresses = Vec::new();
     for line_res in reader.lines() {
-        let line_str = line_res.map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
+        let line_str =
+            line_res.map_err(|e| format!("Failed to read line from {}: {}", path.display(), e))?;
         let line = line_str.trim();
         if line.is_empty() || line.starts_with("address") || line.starts_with("qualified") {
             continue;

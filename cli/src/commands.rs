@@ -192,16 +192,18 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
             if let Ok(data) = deserialize_proof(reader) {
                 let (cached_root, _leaf_index, cached_siblings, cached_path) = data.clone();
                 let mut valid = true;
-                
+
                 if let Some(manifest) = load_manifest()? {
                     if verify_root_against_manifest(&cached_root, &manifest).is_err() {
-                        eprintln!("      ⚠ Cached proof root does not match manifest. Rebuilding...");
+                        eprintln!(
+                            "      ⚠ Cached proof root does not match manifest. Rebuilding..."
+                        );
                         valid = false;
                     } else {
                         eprintln!("      ✓ Root matches manifest");
                     }
                 }
-                
+
                 if valid {
                     eprintln!(
                         "      ✓ Proof cache loaded ({} levels)",
