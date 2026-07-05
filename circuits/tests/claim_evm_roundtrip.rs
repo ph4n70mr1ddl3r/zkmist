@@ -19,12 +19,16 @@
 use ff::PrimeField;
 use group::Curve;
 use halo2_base::{
-    gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
+    gates::circuit::CircuitBuilderStage,
     gates::RangeChip,
     halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner},
-        halo2curves::{bn256::{Bn256, Fr}, secp256k1::{Fp, Fq, Secp256k1Affine}, CurveAffine},
+        halo2curves::{
+            bn256::{Bn256, Fr},
+            secp256k1::{Fp, Fq, Secp256k1Affine},
+            CurveAffine,
+        },
         plonk::{keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
         poly::commitment::Params,
         poly::kzg::commitment::ParamsKZG,
@@ -33,16 +37,14 @@ use halo2_base::{
 };
 use num_bigint::BigUint;
 use snark_verifier_sdk::{
-    evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk, evm_verify},
+    evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier_shplonk},
     CircuitExt,
 };
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 use zkmist_circuits::{
-    claim_axiom::prove_claim_to_cells,
-    nullifier_axiom::domain_field_element,
-    poseidon_axiom::native_hash_interior,
-    secp_axiom::assign_privkey,
+    claim_axiom::prove_claim_to_cells, nullifier_axiom::domain_field_element,
+    poseidon_axiom::native_hash_interior, secp_axiom::assign_privkey,
 };
 use zkmist_merkle_tree::halo2base::build_single_leaf_proof;
 
@@ -57,13 +59,21 @@ impl Circuit<Fr> for AxiomClaimMarker {
     type Config = ();
     type FloorPlanner = SimpleFloorPlanner;
     type Params = ();
-    fn without_witnesses(&self) -> Self { Self }
+    fn without_witnesses(&self) -> Self {
+        Self
+    }
     fn configure(_: &mut ConstraintSystem<Fr>) -> Self::Config {}
-    fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> { Ok(()) }
+    fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 impl CircuitExt<Fr> for AxiomClaimMarker {
-    fn num_instance(&self) -> Vec<usize> { vec![3] }
-    fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
+    fn num_instance(&self) -> Vec<usize> {
+        vec![3]
+    }
+    fn instances(&self) -> Vec<Vec<Fr>> {
+        vec![]
+    }
 }
 
 fn bytes_be_to_fr(b: &[u8]) -> Fr {
@@ -98,7 +108,10 @@ fn fp_be_bytes(fp: &Fp) -> [u8; 32] {
 
 #[test]
 fn test_claim_circuit_evm_roundtrip() {
-    if !matches!(std::env::var("ZKMIST_RUN_CLAIM_ROUNDTRIP").as_deref(), Ok("1")) {
+    if !matches!(
+        std::env::var("ZKMIST_RUN_CLAIM_ROUNDTRIP").as_deref(),
+        Ok("1")
+    ) {
         eprintln!(
             "claim EVM round-trip: skipped (set ZKMIST_RUN_CLAIM_ROUNDTRIP=1 to enable). \
              Heavy (k=21); validates the fixed claim circuit verifies on-chain."
@@ -171,9 +184,13 @@ fn test_claim_circuit_evm_roundtrip() {
             .unwrap_or_else(|_| "/home/riddler/.zkmist/cache/v2_params_k23.bin".to_string());
         eprintln!("[roundtrip] loading PINNED SRS ({p}) for the k={K} circuit...");
         let f = std::fs::File::open(&p).expect("open pinned SRS");
-        let params = ParamsKZG::<Bn256>::read(&mut std::io::BufReader::new(f))
-            .expect("read pinned SRS");
-        assert!(params.k() >= K, "pinned SRS k={} < circuit k={K}", params.k());
+        let params =
+            ParamsKZG::<Bn256>::read(&mut std::io::BufReader::new(f)).expect("read pinned SRS");
+        assert!(
+            params.k() >= K,
+            "pinned SRS k={} < circuit k={K}",
+            params.k()
+        );
         eprintln!("[roundtrip] pinned SRS loaded (k={})", params.k());
         params
     } else {
@@ -229,9 +246,12 @@ fn test_claim_circuit_evm_roundtrip() {
         // pinned `pragma solidity 0.8.19;` to `^0.8.19` so it compiles under a
         // caret-compatible foundry solc_version (the committed verifier must
         // coexist with the `^0.8.28` app contracts).
-        let sol = sol
-            .replacen("pragma solidity 0.8.19;", "pragma solidity ^0.8.19;", 1);
-        let out = sol.replacen("contract Halo2Verifier", &format!("{banner}contract Halo2Verifier"), 1);
+        let sol = sol.replacen("pragma solidity 0.8.19;", "pragma solidity ^0.8.19;", 1);
+        let out = sol.replacen(
+            "contract Halo2Verifier",
+            &format!("{banner}contract Halo2Verifier"),
+            1,
+        );
         std::fs::write(p, out).expect("write emitted verifier");
         eprintln!("[roundtrip] wrote verifier → {p}");
     }

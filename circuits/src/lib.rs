@@ -11,9 +11,9 @@
 //! All gadgets run on audited axiom libraries (halo2-ecc, halo2-base). See
 //! `docs/axiom-backend-migration.md` for the migration history + findings.
 
-pub mod poseidon_axiom;
-pub mod secp_axiom;
+pub mod claim_axiom;
 pub mod keccak_axiom;
 pub mod merkle_axiom;
 pub mod nullifier_axiom;
-pub mod claim_axiom;
+pub mod poseidon_axiom;
+pub mod secp_axiom;

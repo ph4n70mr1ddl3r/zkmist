@@ -34,8 +34,8 @@ fn axiom_fr_to_biguint(f: Fr) -> BigUint {
 #[test]
 fn test_merkle_tree_halo2base_matches_circuit_leaf() {
     let addr: [u8; 20] = [
-        0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23,
-        0x7e, 0x16, 0xaf, 0xce, 0x37, 0x7c,
+        0xfc, 0xad, 0x0b, 0x19, 0xbb, 0x29, 0xd4, 0x67, 0x45, 0x31, 0xd6, 0xf1, 0x15, 0x23, 0x7e,
+        0x16, 0xaf, 0xce, 0x37, 0x7c,
     ];
     let hasher = zkmist_merkle_tree::halo2base::Hasher::new();
     let mt_leaf = hasher.hash_leaf(&addr); // 32-byte BE
@@ -80,8 +80,9 @@ fn bytes_be_to_fr(b: &[u8; 32]) -> Fr {
 fn test_merkle_tree_halo2base_round_trip() {
     // Build a small tree off-chain, extract a proof, and verify it under the
     // same convention — the off-chain side of what the circuit verifies.
-    use zkmist_merkle_tree::halo2base::{build_tree_with_depth, generate_proof, tree_root,
-                                       verify_merkle_proof};
+    use zkmist_merkle_tree::halo2base::{
+        build_tree_with_depth, generate_proof, tree_root, verify_merkle_proof,
+    };
 
     let depth = 4;
     let mut addresses = vec![[0u8; 20]; 1 << depth];
@@ -113,8 +114,9 @@ fn test_merkle_tree_halo2base_round_trip() {
 
 #[test]
 fn test_halo2base_streaming_matches_in_memory() {
-    use zkmist_merkle_tree::halo2base::{build_tree_streaming_with_depth, build_tree_with_depth,
-                                       generate_proof, tree_root};
+    use zkmist_merkle_tree::halo2base::{
+        build_tree_streaming_with_depth, build_tree_with_depth, generate_proof, tree_root,
+    };
     let depth = 5;
     let mut addresses = vec![[0u8; 20]; 1 << depth];
     for (i, a) in addresses.iter_mut().enumerate() {

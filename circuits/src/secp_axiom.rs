@@ -26,7 +26,8 @@ use halo2_base::{
         secp256k1::{Fq, Secp256k1Affine},
     },
     utils::{decompose_biguint, fe_to_biguint, modulus},
-    AssignedValue, Context, QuantumCell::Constant,
+    AssignedValue, Context,
+    QuantumCell::Constant,
 };
 use halo2_ecc::{
     bigint::ProperCrtUint,
@@ -64,7 +65,10 @@ pub fn assign_privkey(ctx: &mut Context<Fr>, privkey: Fq) -> Vec<AssignedValue<F
 /// `NUM_LIMBS` positional `LIMB_BITS`-bit limbs. Used by the `test_key_above_n`
 /// negative to inject a scalar `K ≥ n` (which an `Fq` cannot represent, since
 /// `Fq` is already reduced mod `n`).
-pub fn assign_scalar_biguint(ctx: &mut Context<Fr>, value: num_bigint::BigUint) -> Vec<AssignedValue<Fr>> {
+pub fn assign_scalar_biguint(
+    ctx: &mut Context<Fr>,
+    value: num_bigint::BigUint,
+) -> Vec<AssignedValue<Fr>> {
     let limbs = decompose_biguint::<Fr>(&value, NUM_LIMBS, LIMB_BITS);
     ctx.assign_witnesses(limbs)
 }
@@ -87,7 +91,11 @@ pub fn enforce_scalar_less_than_n(
     range: &impl RangeInstructions<Fr>,
     limbs: &[AssignedValue<Fr>],
 ) {
-    assert_eq!(limbs.len(), NUM_LIMBS, "scalar must be NUM_LIMBS positional limbs");
+    assert_eq!(
+        limbs.len(),
+        NUM_LIMBS,
+        "scalar must be NUM_LIMBS positional limbs"
+    );
     let gate = range.gate();
 
     // Each limb must be a valid positional component (< 2^LIMB_BITS) for the

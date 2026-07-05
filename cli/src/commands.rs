@@ -5,10 +5,10 @@
 
 use std::io::{self, Write};
 
-use zkmist_merkle_tree::{deserialize_proof, serialize_proof, TREE_DEPTH};
 use zkmist_merkle_tree::halo2base::{
     build_tree_streaming, compute_nullifier, hash_leaf, verify_merkle_proof, Hasher,
 };
+use zkmist_merkle_tree::{deserialize_proof, serialize_proof, TREE_DEPTH};
 
 use crate::abi::*;
 use crate::constants::*;
@@ -205,7 +205,9 @@ pub fn cmd_prove(key_file: Option<&str>) -> Result<(), String> {
     } else {
         eprintln!("      No cached proof — building via streaming tree...");
         eprintln!("      ⚠️  Builds the full 2^26 Poseidon tree (halo2-base), parallel across CPU");
-        eprintln!("         cores (~5-10 min on a modern multicore box, ~4-6 GB RAM). Cached after.");
+        eprintln!(
+            "         cores (~5-10 min on a modern multicore box, ~4-6 GB RAM). Cached after."
+        );
 
         let addresses = load_eligibility_list()?;
         eprintln!("      Loaded {} eligible addresses", addresses.len());
@@ -601,7 +603,12 @@ pub fn cmd_bench(tree_depth: usize) -> Result<(), String> {
 
     let total_start = std::time::Instant::now();
     crate::halo2_prover_axiom::generate_v2_proof_axiom(
-        &key, &sibling_arr, &path_arr, &root_ark, &recipient, &proof_path,
+        &key,
+        &sibling_arr,
+        &path_arr,
+        &root_ark,
+        &recipient,
+        &proof_path,
     )?;
     let total_time = total_start.elapsed();
 
@@ -741,7 +748,12 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     eprintln!("[3/4] Generating real Halo2-KZG proof (heavy ~5 min, peaks ≳26 GiB at k=23; the preflight refuses below ~31 GiB free RAM — needs a ≥36 GiB machine)...");
     let tmp = std::env::temp_dir().join("zkmist_roundtrip_proof.json");
     let nullifier = crate::halo2_prover_axiom::generate_v2_proof_axiom(
-        &key, &sibling_arr, &path_arr, &root, &recipient, &tmp,
+        &key,
+        &sibling_arr,
+        &path_arr,
+        &root,
+        &recipient,
+        &tmp,
     )?;
     let proof_json = std::fs::read_to_string(&tmp)
         .map_err(|e| format!("Failed to read generated proof: {}", e))?;

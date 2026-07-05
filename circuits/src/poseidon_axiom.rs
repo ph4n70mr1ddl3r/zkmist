@@ -43,13 +43,13 @@
 //! The legacy light-poseidon/Circom API in `merkle-tree/src/lib.rs` is retained
 //! only for the removed PSE stack and is NOT what the axiom circuit verifies.
 
+use ff::{Field, PrimeField};
 use halo2_base::{
     gates::RangeInstructions,
     halo2_proofs::halo2curves::bn256::Fr,
     poseidon::hasher::{spec::OptimizedPoseidonSpec, PoseidonHasher},
     AssignedValue, Context,
 };
-use ff::{Field, PrimeField};
 use poseidon_primitives::poseidon::primitives::Spec;
 use std::marker::PhantomData;
 
@@ -71,8 +71,13 @@ struct Pow5Gen<
     const SECURE_MDS: usize,
 >(PhantomData<Fr>);
 
-impl<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize, const SECURE_MDS: usize>
-    Spec<Fr, T, RATE> for Pow5Gen<T, RATE, R_F, R_P, SECURE_MDS>
+impl<
+        const T: usize,
+        const RATE: usize,
+        const R_F: usize,
+        const R_P: usize,
+        const SECURE_MDS: usize,
+    > Spec<Fr, T, RATE> for Pow5Gen<T, RATE, R_F, R_P, SECURE_MDS>
 {
     fn full_rounds() -> usize {
         R_F
@@ -131,12 +136,7 @@ fn native_permute(state: &mut [Fr], mds: &[Vec<Fr>], rc: &[Vec<Fr>], r_f: usize,
 /// Native Poseidon hash under halo2-base's sponge convention, matching the
 /// in-circuit [`hash_leaf`] / [`hash_interior`]. `inputs.len()` must equal
 /// `RATE` (the only arity ZKMist uses: 1 for leaf, 2 for interior/nullifier).
-pub fn native_poseidon<
-    const T: usize,
-    const RATE: usize,
-    const R_F: usize,
-    const R_P: usize,
->(
+pub fn native_poseidon<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize>(
     inputs: &[Fr],
 ) -> Fr {
     assert_eq!(inputs.len(), RATE);

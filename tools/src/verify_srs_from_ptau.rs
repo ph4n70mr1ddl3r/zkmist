@@ -59,7 +59,10 @@ fn main() {
     let g_off = 4usize;
     let g_len = n * 64; // bytes of g[]
     let g2_off = 4 + 2 * g_len; // g[] + g_lagrange[]
-    println!("pinned halo2 SRS: k={k}, n=2^{k}={n} ({})", path_size(pin_path));
+    println!(
+        "pinned halo2 SRS: k={k}, n=2^{k}={n} ({})",
+        path_size(pin_path)
+    );
 
     // ── parse the .ptau section table ──
     let mut ptau = std::fs::File::open(ptau_path).expect("open .ptau");
@@ -88,17 +91,44 @@ fn main() {
     ptau.read_exact(&mut q).unwrap();
     ptau.read_exact(&mut u4).unwrap();
     let power = u32::from_le_bytes(u4);
-    println!("ceremony .ptau: power={power}, sections={nsec} ({})", path_size(ptau_path));
-    assert!(power >= k, "ceremony power {power} < pinned k {k}; cannot truncate");
+    println!(
+        "ceremony .ptau: power={power}, sections={nsec} ({})",
+        path_size(ptau_path)
+    );
+    assert!(
+        power >= k,
+        "ceremony power {power} < pinned k {k}; cannot truncate"
+    );
 
     let sec2 = secs[&2];
     let sec3 = secs[&3];
 
     // ── compare g[], g2, s_g2 byte-for-byte (streaming) ──
     println!("\nVerifying pinned SRS == ceremony transcript:");
-    let ok_g = cmp("g[]  (τ-G1 powers)", &mut pin, g_off as u64, &mut ptau, sec2, g_len);
-    let ok_g2 = cmp("g2   ([1]_2)", &mut pin, g2_off as u64, &mut ptau, sec3, 128);
-    let ok_sg2 = cmp("s_g2 ([τ]_2)", &mut pin, (g2_off + 128) as u64, &mut ptau, sec3 + 128, 128);
+    let ok_g = cmp(
+        "g[]  (τ-G1 powers)",
+        &mut pin,
+        g_off as u64,
+        &mut ptau,
+        sec2,
+        g_len,
+    );
+    let ok_g2 = cmp(
+        "g2   ([1]_2)",
+        &mut pin,
+        g2_off as u64,
+        &mut ptau,
+        sec3,
+        128,
+    );
+    let ok_sg2 = cmp(
+        "s_g2 ([τ]_2)",
+        &mut pin,
+        (g2_off + 128) as u64,
+        &mut ptau,
+        sec3 + 128,
+        128,
+    );
 
     println!();
     if ok_g && ok_g2 && ok_sg2 {
@@ -135,8 +165,12 @@ fn cmp(
         if buf_a[..want] != buf_b[..want] {
             for i in 0..want {
                 if buf_a[i] != buf_b[i] {
-                    eprintln!("  {label}: ❌ DIFFERS at byte {} (pin={:02x} ptau={:02x})",
-                        done + i, buf_a[i], buf_b[i]);
+                    eprintln!(
+                        "  {label}: ❌ DIFFERS at byte {} (pin={:02x} ptau={:02x})",
+                        done + i,
+                        buf_a[i],
+                        buf_b[i]
+                    );
                     return false;
                 }
             }

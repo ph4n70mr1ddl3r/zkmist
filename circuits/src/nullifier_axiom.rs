@@ -8,9 +8,7 @@
 //! differs — see `poseidon_axiom.rs`).
 
 use halo2_base::{
-    gates::RangeInstructions,
-    halo2_proofs::halo2curves::bn256::Fr,
-    AssignedValue, Context,
+    gates::RangeInstructions, halo2_proofs::halo2curves::bn256::Fr, AssignedValue, Context,
 };
 
 use crate::poseidon_axiom::{hash_interior, native_hash_interior};

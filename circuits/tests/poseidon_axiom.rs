@@ -26,9 +26,7 @@
 use ark_ff::{BigInteger, PrimeField};
 use ff::{Field, PrimeField as FfPrimeField};
 use halo2_base::{
-    halo2_proofs::halo2curves::bn256::Fr,
-    poseidon::PoseidonChip,
-    utils::testing::base_test,
+    halo2_proofs::halo2curves::bn256::Fr, poseidon::PoseidonChip, utils::testing::base_test,
 };
 use light_poseidon::{Poseidon as LightPoseidon, PoseidonHasher};
 use num_bigint::BigUint;
@@ -55,8 +53,13 @@ struct Pow5Gen<
     const SECURE_MDS: usize,
 >;
 
-impl<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize, const SECURE_MDS: usize>
-    Spec<Fr, T, RATE> for Pow5Gen<T, RATE, R_F, R_P, SECURE_MDS>
+impl<
+        const T: usize,
+        const RATE: usize,
+        const R_F: usize,
+        const R_P: usize,
+        const SECURE_MDS: usize,
+    > Spec<Fr, T, RATE> for Pow5Gen<T, RATE, R_F, R_P, SECURE_MDS>
 {
     fn full_rounds() -> usize {
         R_F
@@ -122,12 +125,7 @@ fn native_permute(state: &mut [Fr], mds: &[Vec<Fr>], rc: &[Vec<Fr>], r_f: usize,
 /// * `squeeze_extra`   — run a second (empty-absorb) permutation after the first,
 ///                       as halo2-base does when `len % RATE == 0`.
 /// * `out_idx`         — digest state index (`0` for Circom, `1` for halo2-base).
-fn native_hash<
-    const T: usize,
-    const RATE: usize,
-    const R_F: usize,
-    const R_P: usize,
->(
+fn native_hash<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize>(
     inputs: &[Fr],
     capacity: Fr,
     squeeze_extra: bool,
@@ -183,8 +181,7 @@ fn test_axiom_poseidon_params_match_light_poseidon() {
     {
         let a: u64 = 123_456_789u64;
         let b: u64 = 987_654_321u64;
-        let native =
-            native_hash::<3, 2, 8, 57>(&[Fr::from(a), Fr::from(b)], Fr::ZERO, false, 0);
+        let native = native_hash::<3, 2, 8, 57>(&[Fr::from(a), Fr::from(b)], Fr::ZERO, false, 0);
 
         let mut lp = LightPoseidon::<ark_bn254::Fr>::new_circom(2).expect("interior params");
         let lp_out = lp

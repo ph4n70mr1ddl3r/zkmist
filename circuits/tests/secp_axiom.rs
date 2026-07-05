@@ -40,7 +40,9 @@ use zkmist_circuits::secp_axiom::{
 fn native_pubkey(privkey: Fq) -> (Fp, Fp) {
     let g = Secp256k1Affine::generator();
     let pt = (g * privkey).to_affine();
-    let coords = pt.coordinates().expect("privkey · G is not identity for a valid privkey");
+    let coords = pt
+        .coordinates()
+        .expect("privkey · G is not identity for a valid privkey");
     (*coords.x(), *coords.y())
 }
 
@@ -77,7 +79,10 @@ fn test_eth_address_known_vector_privkey_one() {
         .expect("16 hex bytes")
         .try_into()
         .expect("20 bytes");
-    assert_eq!(addr, expected, "privkey=1 did not yield the canonical address");
+    assert_eq!(
+        addr, expected,
+        "privkey=1 did not yield the canonical address"
+    );
 }
 
 #[test]
@@ -90,28 +95,25 @@ fn test_halo2ecc_secp256k1_pubkey_byte_bridge() {
 
     // Run the isolated circuit; return the 64 extracted LE byte VALUES (witness
     // side). MockProver (via base_test) asserts every constraint is satisfied.
-    let byte_values: Vec<Fr> = base_test()
-        .k(18)
-        .lookup_bits(17)
-        .run(|ctx, range| {
-            let fp_chip = FpChip::<Fr>::new(range, LIMB_BITS, NUM_LIMBS);
-            let ecc = EccChip::new(&fp_chip);
+    let byte_values: Vec<Fr> = base_test().k(18).lookup_bits(17).run(|ctx, range| {
+        let fp_chip = FpChip::<Fr>::new(range, LIMB_BITS, NUM_LIMBS);
+        let ecc = EccChip::new(&fp_chip);
 
-            let scalar_limbs = assign_privkey(ctx, privkey);
-            let pt = pubkey_from_privkey(ctx, &ecc, scalar_limbs);
+        let scalar_limbs = assign_privkey(ctx, privkey);
+        let pt = pubkey_from_privkey(ctx, &ecc, scalar_limbs);
 
-            // (1) scalar·G correctness: constrain the computed pubkey to the
-            //     native privkey · G.
-            let expected_x = fp_chip.load_private(ctx, x_fp);
-            let expected_y = fp_chip.load_private(ctx, y_fp);
-            fp_chip.assert_equal(ctx, pt.x.clone(), expected_x);
-            fp_chip.assert_equal(ctx, pt.y.clone(), expected_y);
+        // (1) scalar·G correctness: constrain the computed pubkey to the
+        //     native privkey · G.
+        let expected_x = fp_chip.load_private(ctx, x_fp);
+        let expected_y = fp_chip.load_private(ctx, y_fp);
+        fp_chip.assert_equal(ctx, pt.x.clone(), expected_x);
+        fp_chip.assert_equal(ctx, pt.y.clone(), expected_y);
 
-            // (2) byte-bridge: 32 LE bytes per coordinate.
-            let mut bytes = field_point_to_le_bytes(ctx, &fp_chip, &pt.x);
-            bytes.extend(field_point_to_le_bytes(ctx, &fp_chip, &pt.y));
-            bytes.into_iter().map(|c| *c.value()).collect::<Vec<_>>()
-        });
+        // (2) byte-bridge: 32 LE bytes per coordinate.
+        let mut bytes = field_point_to_le_bytes(ctx, &fp_chip, &pt.x);
+        bytes.extend(field_point_to_le_bytes(ctx, &fp_chip, &pt.y));
+        bytes.into_iter().map(|c| *c.value()).collect::<Vec<_>>()
+    });
 
     // ── Native verification of the extracted bytes ─────────────────────────
     assert_eq!(byte_values.len(), 64, "expected 64 pubkey bytes (32 + 32)");
@@ -120,7 +122,10 @@ fn test_halo2ecc_secp256k1_pubkey_byte_bridge() {
         .iter()
         .map(|f| {
             let v = fe_to_biguint(f);
-            assert!(v < BigUint::from(256u64), "extracted byte >= 256 (range check failed)");
+            assert!(
+                v < BigUint::from(256u64),
+                "extracted byte >= 256 (range check failed)"
+            );
             v.iter_u64_digits().next().unwrap() as u8
         })
         .collect();

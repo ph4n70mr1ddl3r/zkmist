@@ -11,8 +11,8 @@
 
 use ff::PrimeField;
 use halo2_base::{
-    gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
+    gates::circuit::CircuitBuilderStage,
     gates::RangeChip,
     halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner},
@@ -22,7 +22,7 @@ use halo2_base::{
     utils::fs::gen_srs,
 };
 use snark_verifier_sdk::{
-    evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk, evm_verify},
+    evm::{evm_verify, gen_evm_proof_shplonk, gen_evm_verifier_shplonk},
     CircuitExt,
 };
 
@@ -93,10 +93,12 @@ fn test_solidity_verifier_evm_roundtrip() {
     let proof = gen_evm_proof_shplonk(&params, &pk, pb, vec![vec![expected]]);
 
     // Generate + compile the Solidity verifier (calls `solc`).
-    let deployment_code =
-        gen_evm_verifier_shplonk::<PoseidonCircuit>(&params, &vk, vec![1], None);
+    let deployment_code = gen_evm_verifier_shplonk::<PoseidonCircuit>(&params, &vk, vec![1], None);
 
     // On-chain round-trip: deploy the verifier and call it with the proof.
     let gas = evm_verify(deployment_code, vec![vec![expected]], proof).expect("EVM verify failed");
-    eprintln!("axiom Solidity verifier on-chain round-trip OK: gas = {}", gas);
+    eprintln!(
+        "axiom Solidity verifier on-chain round-trip OK: gas = {}",
+        gas
+    );
 }

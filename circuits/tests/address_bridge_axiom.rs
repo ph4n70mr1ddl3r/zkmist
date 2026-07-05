@@ -26,7 +26,9 @@ use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
 use zkmist_circuits::{
     keccak_axiom::keccak256,
-    secp_axiom::{assign_privkey, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS},
+    secp_axiom::{
+        assign_privkey, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS,
+    },
 };
 
 fn native_pubkey(privkey: Fq) -> (Fp, Fp) {
@@ -57,34 +59,31 @@ fn test_address_bridge_in_circuit() {
 
     // In-circuit: privkey → pubkey → LE bytes → BE preimage → keccak → address,
     // with each address byte constrained to the native value.
-    base_test()
-        .k(21)
-        .lookup_bits(8)
-        .run(|ctx, range| {
-            let fp_chip = FpChip::<Fr>::new(range, LIMB_BITS, NUM_LIMBS);
-            let ecc = EccChip::new(&fp_chip);
+    base_test().k(21).lookup_bits(8).run(|ctx, range| {
+        let fp_chip = FpChip::<Fr>::new(range, LIMB_BITS, NUM_LIMBS);
+        let ecc = EccChip::new(&fp_chip);
 
-            let scalar_limbs = assign_privkey(ctx, privkey);
-            let pt = pubkey_from_privkey(ctx, &ecc, scalar_limbs);
+        let scalar_limbs = assign_privkey(ctx, privkey);
+        let pt = pubkey_from_privkey(ctx, &ecc, scalar_limbs);
 
-            // 32 LE bytes per coordinate.
-            let x_le = field_point_to_le_bytes(ctx, &fp_chip, &pt.x);
-            let y_le = field_point_to_le_bytes(ctx, &fp_chip, &pt.y);
+        // 32 LE bytes per coordinate.
+        let x_le = field_point_to_le_bytes(ctx, &fp_chip, &pt.x);
+        let y_le = field_point_to_le_bytes(ctx, &fp_chip, &pt.y);
 
-            // Keccak preimage = x_be ‖ y_be (reverse each LE half).
-            let mut preimage = Vec::with_capacity(64);
-            preimage.extend(x_le.iter().rev());
-            preimage.extend(y_le.iter().rev());
+        // Keccak preimage = x_be ‖ y_be (reverse each LE half).
+        let mut preimage = Vec::with_capacity(64);
+        preimage.extend(x_le.iter().rev());
+        preimage.extend(y_le.iter().rev());
 
-            let hash = keccak256(ctx, range, &preimage);
+        let hash = keccak256(ctx, range, &preimage);
 
-            // Constrain the address bytes (hash[12..32]) to the native address.
-            let gate = range.gate();
-            for (i, &expected) in expected_addr.iter().enumerate() {
-                let got = hash[12 + i];
-                gate.assert_is_const(ctx, &got, &Fr::from(expected as u64));
-            }
-        });
+        // Constrain the address bytes (hash[12..32]) to the native address.
+        let gate = range.gate();
+        for (i, &expected) in expected_addr.iter().enumerate() {
+            let got = hash[12 + i];
+            gate.assert_is_const(ctx, &got, &Fr::from(expected as u64));
+        }
+    });
 
     // If we reach here, MockProver asserted every constraint AND all 20 address
     // bytes matched the native derivation — the bridge is proven sound.

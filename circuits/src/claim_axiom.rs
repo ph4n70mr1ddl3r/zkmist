@@ -42,9 +42,9 @@
 
 use ff::Field;
 use halo2_base::{
+    gates::RangeChip,
     gates::{GateInstructions, RangeInstructions},
     halo2_proofs::halo2curves::bn256::Fr,
-    gates::RangeChip,
     AssignedValue, Context,
 };
 use halo2_ecc::{ecc::EccChip, secp256k1::FpChip};
@@ -54,7 +54,10 @@ use crate::{
     merkle_axiom::verify_merkle_proof,
     nullifier_axiom::compute_nullifier,
     poseidon_axiom::hash_leaf,
-    secp_axiom::{enforce_scalar_less_than_n, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS, NUM_LIMBS},
+    secp_axiom::{
+        enforce_scalar_less_than_n, field_point_to_le_bytes, pubkey_from_privkey, LIMB_BITS,
+        NUM_LIMBS,
+    },
 };
 
 /// Prove one ZKMist V2 claim on the axiom eDSL (positive happy path).
@@ -93,11 +96,15 @@ pub fn prove_claim_to_cells(
     let hash = keccak256(ctx, range, &preimage);
 
     // address = hash[12..32], recomposed as a 20-byte big-endian Fr.
-    let addr_bases: Vec<Fr> = (0..20u32).map(|i| Fr::from(256u64).pow([(19 - i) as u64])).collect();
+    let addr_bases: Vec<Fr> = (0..20u32)
+        .map(|i| Fr::from(256u64).pow([(19 - i) as u64]))
+        .collect();
     let address_fr = gate.inner_product(
         ctx,
         hash[12..32].iter().copied(),
-        addr_bases.iter().map(|c| halo2_base::QuantumCell::Constant(*c)),
+        addr_bases
+            .iter()
+            .map(|c| halo2_base::QuantumCell::Constant(*c)),
     );
 
     // ── 3. leaf = poseidon(address); Merkle proof → root ── (leaf↔address binding)
@@ -110,11 +117,15 @@ pub fn prove_claim_to_cells(
     //    key_mod_p = Σ limb_i · 2^(LIMB_BITS·i)  (= privkey mod p_BN254). The
     //    key cell fed to Poseidon is the scalar's own recomposition, so
     //    nullifier↔scalar binds.
-    let limb_bases: Vec<Fr> = (0..NUM_LIMBS).map(|i| Fr::from(2u64).pow([(i * LIMB_BITS) as u64])).collect();
+    let limb_bases: Vec<Fr> = (0..NUM_LIMBS)
+        .map(|i| Fr::from(2u64).pow([(i * LIMB_BITS) as u64]))
+        .collect();
     let key_mod_p = gate.inner_product(
         ctx,
         privkey_limbs.iter().copied(),
-        limb_bases.iter().map(|c| halo2_base::QuantumCell::Constant(*c)),
+        limb_bases
+            .iter()
+            .map(|c| halo2_base::QuantumCell::Constant(*c)),
     );
     let nullifier = compute_nullifier(ctx, range, key_mod_p);
 

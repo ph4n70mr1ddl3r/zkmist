@@ -9,10 +9,7 @@
 //! and halo2-ecc secp tests are the next sub-steps.
 
 use halo2_base::{
-    gates::RangeChip,
-    halo2_proofs::halo2curves::bn256::Fr,
-    utils::testing::base_test,
-    Context,
+    gates::RangeChip, halo2_proofs::halo2curves::bn256::Fr, utils::testing::base_test, Context,
 };
 
 /// Loads a witness via the axiom `Context` and returns its value — proves the

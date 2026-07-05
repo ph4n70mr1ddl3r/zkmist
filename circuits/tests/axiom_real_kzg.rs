@@ -5,8 +5,8 @@
 //! pipeline (SHPLONK multi-open + Blake2b transcript) runs end-to-end here.
 
 use halo2_base::{
-    gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
+    gates::circuit::CircuitBuilderStage,
     gates::RangeChip,
     halo2_proofs::{
         halo2curves::bn256::Fr,
@@ -22,11 +22,14 @@ fn test_axiom_real_kzg_roundtrip_poseidon() {
     let x = Fr::from(42);
     // bench_builder: gen_srs(k) → keygen_vk → keygen_pk → create_proof →
     // check_proof (asserts the proof verifies against the VK).
-    let stats = base_test().k(12).lookup_bits(8).bench_builder(x, x, |pool, range, x| {
-        let ctx = pool.main();
-        let cell = ctx.load_witness(x);
-        hash_leaf(ctx, range, cell);
-    });
+    let stats = base_test()
+        .k(12)
+        .lookup_bits(8)
+        .bench_builder(x, x, |pool, range, x| {
+            let ctx = pool.main();
+            let cell = ctx.load_witness(x);
+            hash_leaf(ctx, range, cell);
+        });
     eprintln!(
         "axiom real-KZG round-trip OK (Poseidon): proof_size = {} bytes",
         stats.proof_size

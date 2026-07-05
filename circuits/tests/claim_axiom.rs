@@ -10,8 +10,8 @@
 use ff::PrimeField;
 use group::Curve;
 use halo2_base::{
-    gates::circuit::CircuitBuilderStage,
     gates::circuit::builder::RangeCircuitBuilder,
+    gates::circuit::CircuitBuilderStage,
     gates::RangeChip,
     halo2_proofs::{
         halo2curves::{
@@ -21,9 +21,12 @@ use halo2_base::{
         },
         plonk::{keygen_pk, keygen_vk},
     },
-    utils::{biguint_to_fe, fe_to_biguint, fs::gen_srs, modulus, testing::{
-        base_test, check_proof_with_instances, gen_proof_with_instances,
-    }},
+    utils::{
+        biguint_to_fe, fe_to_biguint,
+        fs::gen_srs,
+        modulus,
+        testing::{base_test, check_proof_with_instances, gen_proof_with_instances},
+    },
 };
 use tiny_keccak::{Hasher as KeccakHasher, Keccak};
 
@@ -91,7 +94,11 @@ fn build_valid_claim(depth: usize, claim_idx: usize) -> Claim {
     let mut path_indices = Vec::with_capacity(depth);
     let mut idx = claim_idx;
     for _ in 0..depth {
-        let sib = if idx % 2 == 0 { layer[idx + 1] } else { layer[idx - 1] };
+        let sib = if idx % 2 == 0 {
+            layer[idx + 1]
+        } else {
+            layer[idx - 1]
+        };
         siblings.push(sib);
         path_indices.push(Fr::from((idx % 2) as u64));
         let mut next = Vec::with_capacity(layer.len() / 2);
@@ -113,7 +120,14 @@ fn build_valid_claim(depth: usize, claim_idx: usize) -> Claim {
     r[19] = 0x42;
     let recipient = address_to_fr(&r);
 
-    Claim { privkey, siblings, path_indices, root, nullifier, recipient }
+    Claim {
+        privkey,
+        siblings,
+        path_indices,
+        root,
+        nullifier,
+        recipient,
+    }
 }
 
 #[test]
@@ -121,7 +135,16 @@ fn test_axiom_claim_happy_path() {
     let c = build_valid_claim(4, 5);
     base_test().k(21).lookup_bits(8).run(|ctx, range| {
         let limbs = assign_privkey(ctx, c.privkey);
-        prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices, c.root, c.nullifier, c.recipient);
+        prove_claim(
+            ctx,
+            range,
+            limbs,
+            &c.siblings,
+            &c.path_indices,
+            c.root,
+            c.nullifier,
+            c.recipient,
+        );
     });
 }
 
@@ -129,11 +152,21 @@ fn test_axiom_claim_happy_path() {
 fn test_axiom_claim_rejects_wrong_root() {
     let c = build_valid_claim(4, 5);
     base_test()
-        .k(21).lookup_bits(8).expect_satisfied(false)
+        .k(21)
+        .lookup_bits(8)
+        .expect_satisfied(false)
         .run(|ctx, range| {
             let limbs = assign_privkey(ctx, c.privkey);
-            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
-                        c.root + Fr::from(1u64), c.nullifier, c.recipient);
+            prove_claim(
+                ctx,
+                range,
+                limbs,
+                &c.siblings,
+                &c.path_indices,
+                c.root + Fr::from(1u64),
+                c.nullifier,
+                c.recipient,
+            );
         });
 }
 
@@ -141,11 +174,21 @@ fn test_axiom_claim_rejects_wrong_root() {
 fn test_axiom_claim_rejects_wrong_nullifier() {
     let c = build_valid_claim(4, 5);
     base_test()
-        .k(21).lookup_bits(8).expect_satisfied(false)
+        .k(21)
+        .lookup_bits(8)
+        .expect_satisfied(false)
         .run(|ctx, range| {
             let limbs = assign_privkey(ctx, c.privkey);
-            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
-                        c.root, c.nullifier + Fr::from(1u64), c.recipient);
+            prove_claim(
+                ctx,
+                range,
+                limbs,
+                &c.siblings,
+                &c.path_indices,
+                c.root,
+                c.nullifier + Fr::from(1u64),
+                c.recipient,
+            );
         });
 }
 
@@ -153,11 +196,21 @@ fn test_axiom_claim_rejects_wrong_nullifier() {
 fn test_axiom_claim_rejects_zero_recipient() {
     let c = build_valid_claim(4, 5);
     base_test()
-        .k(21).lookup_bits(8).expect_satisfied(false)
+        .k(21)
+        .lookup_bits(8)
+        .expect_satisfied(false)
         .run(|ctx, range| {
             let limbs = assign_privkey(ctx, c.privkey);
-            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
-                        c.root, c.nullifier, Fr::zero());
+            prove_claim(
+                ctx,
+                range,
+                limbs,
+                &c.siblings,
+                &c.path_indices,
+                c.root,
+                c.nullifier,
+                Fr::zero(),
+            );
         });
 }
 
@@ -169,11 +222,21 @@ fn test_axiom_claim_rejects_key_above_n() {
     let c = build_valid_claim(4, 5);
     let n_plus_1 = secp_n_biguint() + 1u32;
     base_test()
-        .k(21).lookup_bits(8).expect_satisfied(false)
+        .k(21)
+        .lookup_bits(8)
+        .expect_satisfied(false)
         .run(|ctx, range| {
             let limbs = assign_scalar_biguint(ctx, n_plus_1);
-            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
-                        c.root, c.nullifier, c.recipient);
+            prove_claim(
+                ctx,
+                range,
+                limbs,
+                &c.siblings,
+                &c.path_indices,
+                c.root,
+                c.nullifier,
+                c.recipient,
+            );
         });
 }
 
@@ -190,8 +253,16 @@ fn test_axiom_claim_real_kzg_roundtrip() {
         .bench_builder(c.clone(), c, |pool, range, c| {
             let ctx = pool.main();
             let limbs = assign_privkey(ctx, c.privkey);
-            prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices,
-                        c.root, c.nullifier, c.recipient);
+            prove_claim(
+                ctx,
+                range,
+                limbs,
+                &c.siblings,
+                &c.path_indices,
+                c.root,
+                c.nullifier,
+                c.recipient,
+            );
         });
     eprintln!(
         "axiom claim real-KZG round-trip OK: proof_size = {} bytes",
@@ -234,7 +305,9 @@ fn test_axiom_claim_verifies_offchain_tree() {
     // witnesses, exactly as a prover would when filling the circuit.
     let bytes32_to_fr = |b: &[u8; 32]| -> Fr {
         let mut v = Fr::zero();
-        for &x in b { v = v * Fr::from(256u64) + Fr::from(x as u64); }
+        for &x in b {
+            v = v * Fr::from(256u64) + Fr::from(x as u64);
+        }
         v
     };
     let siblings: Vec<Fr> = sib_bytes.iter().map(bytes32_to_fr).collect();
@@ -252,7 +325,16 @@ fn test_axiom_claim_verifies_offchain_tree() {
 
     base_test().k(21).lookup_bits(8).run(|ctx, range| {
         let limbs = assign_privkey(ctx, privkey);
-        prove_claim(ctx, range, limbs, &siblings, &path_indices, root, nullifier, recipient);
+        prove_claim(
+            ctx,
+            range,
+            limbs,
+            &siblings,
+            &path_indices,
+            root,
+            nullifier,
+            recipient,
+        );
     });
 }
 
@@ -275,8 +357,14 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
         let range = RangeChip::new(8, kb.lookup_manager().clone());
         let ctx = kb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) =
-            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        let (root, null, recip) = prove_claim_to_cells(
+            ctx,
+            &range,
+            limbs,
+            &c.siblings,
+            &c.path_indices,
+            c.recipient,
+        );
         kb.assigned_instances[0] = vec![root, null, recip];
     }
     let config_params = kb.calculate_params(Some(9));
@@ -292,12 +380,24 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
         let range = RangeChip::new(8, pb.lookup_manager().clone());
         let ctx = pb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) =
-            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        let (root, null, recip) = prove_claim_to_cells(
+            ctx,
+            &range,
+            limbs,
+            &c.siblings,
+            &c.path_indices,
+            c.recipient,
+        );
         pb.assigned_instances[0] = vec![root, null, recip];
     }
     let proof = gen_proof_with_instances(&params, &pk, pb, &[instances.as_slice()]);
-    check_proof_with_instances(&params, &vk, &proof, &[instances.as_slice()], expect_satisfied);
+    check_proof_with_instances(
+        &params,
+        &vk,
+        &proof,
+        &[instances.as_slice()],
+        expect_satisfied,
+    );
 }
 
 #[test]
@@ -340,13 +440,21 @@ fn test_generate_claim_solidity_verifier() {
         type Config = ();
         type FloorPlanner = SimpleFloorPlanner;
         type Params = ();
-        fn without_witnesses(&self) -> Self { Self }
+        fn without_witnesses(&self) -> Self {
+            Self
+        }
         fn configure(_: &mut ConstraintSystem<Fr>) -> Self::Config {}
-        fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> { Ok(()) }
+        fn synthesize(&self, _: Self::Config, _: impl Layouter<Fr>) -> Result<(), Error> {
+            Ok(())
+        }
     }
     impl CircuitExt<Fr> for ClaimSolCircuit {
-        fn num_instance(&self) -> Vec<usize> { vec![3] }
-        fn instances(&self) -> Vec<Vec<Fr>> { vec![] }
+        fn num_instance(&self) -> Vec<usize> {
+            vec![3]
+        }
+        fn instances(&self) -> Vec<Vec<Fr>> {
+            vec![]
+        }
     }
 
     let c = build_synthetic_claim(26); // PRODUCTION depth-26 (k=21)
@@ -358,8 +466,14 @@ fn test_generate_claim_solidity_verifier() {
         let range = RangeChip::new(8, kb.lookup_manager().clone());
         let ctx = kb.pool(0).main();
         let limbs = assign_privkey(ctx, c.privkey);
-        let (root, null, recip) =
-            prove_claim_to_cells(ctx, &range, limbs, &c.siblings, &c.path_indices, c.recipient);
+        let (root, null, recip) = prove_claim_to_cells(
+            ctx,
+            &range,
+            limbs,
+            &c.siblings,
+            &c.path_indices,
+            c.recipient,
+        );
         kb.assigned_instances[0] = vec![root, null, recip];
     }
     let params = gen_srs(21);
@@ -369,7 +483,10 @@ fn test_generate_claim_solidity_verifier() {
 
     let sol = gen_evm_verifier_sol_code::<ClaimSolCircuit, SHPLONK>(&params, &vk, vec![3]);
     assert!(sol.contains("pragma solidity"), "not a Solidity source");
-    eprintln!("generated claim Halo2Verifier.axiom.sol: {} bytes", sol.len());
+    eprintln!(
+        "generated claim Halo2Verifier.axiom.sol: {} bytes",
+        sol.len()
+    );
 
     // Write next to the (PSE) vendored verifier, for the contract side to pick up.
     let out = std::env::current_dir()
@@ -405,7 +522,11 @@ fn build_synthetic_claim(depth: usize) -> Claim {
         // a valid-Fr sibling (a Poseidon digest is a valid Fr); alternate side
         let sib = native_hash_leaf(Fr::from(1_000_000u64 + i as u64));
         let idx = (i % 2) as u8;
-        let (l, r) = if idx == 1 { (sib, current) } else { (current, sib) };
+        let (l, r) = if idx == 1 {
+            (sib, current)
+        } else {
+            (current, sib)
+        };
         current = native_hash_interior(l, r);
         siblings.push(sib);
         path_indices.push(Fr::from(idx as u64));
@@ -418,7 +539,14 @@ fn build_synthetic_claim(depth: usize) -> Claim {
 
     let mut r = [0u8; 20];
     r[19] = 0x42;
-    Claim { privkey, siblings, path_indices, root, nullifier, recipient: address_to_fr(&r) }
+    Claim {
+        privkey,
+        siblings,
+        path_indices,
+        root,
+        nullifier,
+        recipient: address_to_fr(&r),
+    }
 }
 
 /// Production depth-26 claim: MockProver-satisfied, and reports the cell count
@@ -428,6 +556,15 @@ fn test_axiom_claim_production_depth26() {
     let c = build_synthetic_claim(26);
     base_test().k(21).lookup_bits(8).run(|ctx, range| {
         let limbs = assign_privkey(ctx, c.privkey);
-        prove_claim(ctx, range, limbs, &c.siblings, &c.path_indices, c.root, c.nullifier, c.recipient);
+        prove_claim(
+            ctx,
+            range,
+            limbs,
+            &c.siblings,
+            &c.path_indices,
+            c.root,
+            c.nullifier,
+            c.recipient,
+        );
     });
 }

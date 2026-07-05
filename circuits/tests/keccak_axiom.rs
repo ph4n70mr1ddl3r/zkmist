@@ -21,14 +21,14 @@ use zkmist_circuits::keccak_axiom::keccak256;
 /// Run in-circuit `keccak256(input)` (single block, ≤ 135 bytes), return the 32
 /// hash bytes.
 fn circuit_keccak256(input: &[u8]) -> Vec<u8> {
-    let cells: Vec<Fr> = base_test()
-        .k(19)
-        .lookup_bits(8)
-        .run(|ctx, range| {
-            let input_cells: Vec<_> = input.iter().map(|b| ctx.load_witness(Fr::from(*b as u64))).collect();
-            let hash = keccak256(ctx, range, &input_cells);
-            hash.into_iter().map(|c| *c.value()).collect()
-        });
+    let cells: Vec<Fr> = base_test().k(19).lookup_bits(8).run(|ctx, range| {
+        let input_cells: Vec<_> = input
+            .iter()
+            .map(|b| ctx.load_witness(Fr::from(*b as u64)))
+            .collect();
+        let hash = keccak256(ctx, range, &input_cells);
+        hash.into_iter().map(|c| *c.value()).collect()
+    });
     cells
         .iter()
         .map(|f| {
@@ -42,9 +42,7 @@ fn circuit_keccak256(input: &[u8]) -> Vec<u8> {
 #[test]
 fn test_keccak256_empty_known_vector() {
     // keccak256("") — the canonical empty-input digest.
-    let expected = hex_decode(
-        "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-    );
+    let expected = hex_decode("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
     let got = circuit_keccak256(&[]);
     assert_eq!(got, expected, "keccak256(\"\") mismatch");
 }
@@ -70,12 +68,8 @@ fn test_keccak256_pubkey_to_address() {
     // Close the loop with the Phase-2 byte-bridge: a known pubkey → address.
     // privkey = 1 ⇒ pubkey = G ⇒ address 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf.
     // G coordinates (uncompressed, big-endian):
-    let gx = hex_decode(
-        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-    );
-    let gy = hex_decode(
-        "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
-    );
+    let gx = hex_decode("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    let gy = hex_decode("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8");
     let mut preimage = [0u8; 64];
     preimage[..32].copy_from_slice(&gx);
     preimage[32..].copy_from_slice(&gy);
@@ -83,7 +77,10 @@ fn test_keccak256_pubkey_to_address() {
     let hash = circuit_keccak256(&preimage);
     let addr = &hash[12..32];
     let expected_addr = hex_decode("7e5f4552091a69125d5dfcb7b8c2659029395bdf");
-    assert_eq!(addr, expected_addr, "keccak256(G) address != canonical privkey=1 address");
+    assert_eq!(
+        addr, expected_addr,
+        "keccak256(G) address != canonical privkey=1 address"
+    );
 
     // Cross-check the full hash against tiny_keccak too.
     let mut h = Keccak::v256();

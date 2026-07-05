@@ -35,11 +35,7 @@ use crate::poseidon_axiom::{hash_interior, native_hash_interior};
 pub const TREE_DEPTH: usize = 26;
 
 /// Compute the Merkle root natively (halo2-base Poseidon convention).
-pub fn native_verify_merkle_proof(
-    leaf: Fr,
-    siblings: &[Fr],
-    path_indices: &[Fr],
-) -> Fr {
+pub fn native_verify_merkle_proof(leaf: Fr, siblings: &[Fr], path_indices: &[Fr]) -> Fr {
     assert_eq!(siblings.len(), path_indices.len());
     let mut current = leaf;
     for i in 0..siblings.len() {
@@ -120,7 +116,11 @@ mod tests {
         let mut proof_indices: Vec<Fr> = Vec::with_capacity(depth);
         let mut idx = leaf_index;
         while layer.len() > 1 {
-            let sibling = if idx % 2 == 0 { layer[idx + 1] } else { layer[idx - 1] };
+            let sibling = if idx % 2 == 0 {
+                layer[idx + 1]
+            } else {
+                layer[idx - 1]
+            };
             proof_siblings.push(sibling);
             proof_indices.push(Fr::from((idx % 2) as u64));
             let mut next = Vec::with_capacity(layer.len() / 2);
@@ -135,7 +135,10 @@ mod tests {
         // Run the circuit.
         let circuit_root = base_test().k(12).lookup_bits(8).run(|ctx, range| {
             let leaf_cell = ctx.load_witness(leaf_hashes[leaf_index]);
-            let sib_cells: Vec<_> = proof_siblings.iter().map(|s| ctx.load_witness(*s)).collect();
+            let sib_cells: Vec<_> = proof_siblings
+                .iter()
+                .map(|s| ctx.load_witness(*s))
+                .collect();
             let idx_cells: Vec<_> = proof_indices.iter().map(|i| ctx.load_witness(*i)).collect();
             let root = verify_merkle_proof(ctx, range, leaf_cell, &sib_cells, &idx_cells);
             *root.value()
@@ -144,11 +147,8 @@ mod tests {
         assert_eq!(circuit_root, native_root, "axiom Merkle root mismatch");
 
         // Cross-check native_verify too.
-        let native_check = native_verify_merkle_proof(
-            leaf_hashes[leaf_index],
-            &proof_siblings,
-            &proof_indices,
-        );
+        let native_check =
+            native_verify_merkle_proof(leaf_hashes[leaf_index], &proof_siblings, &proof_indices);
         assert_eq!(native_check, native_root);
     }
 
@@ -172,7 +172,11 @@ mod tests {
         let mut proof_indices: Vec<Fr> = Vec::with_capacity(depth);
         let mut idx = leaf_index;
         while layer.len() > 1 {
-            let sibling = if idx % 2 == 0 { layer[idx + 1] } else { layer[idx - 1] };
+            let sibling = if idx % 2 == 0 {
+                layer[idx + 1]
+            } else {
+                layer[idx - 1]
+            };
             proof_siblings.push(sibling);
             proof_indices.push(Fr::from((idx % 2) as u64));
             let mut next = Vec::with_capacity(layer.len() / 2);
@@ -194,8 +198,10 @@ mod tests {
             .expect_satisfied(false)
             .run(|ctx, range| {
                 let leaf_cell = ctx.load_witness(leaf_hashes[leaf_index]);
-                let sib_cells: Vec<_> =
-                    proof_siblings.iter().map(|s| ctx.load_witness(*s)).collect();
+                let sib_cells: Vec<_> = proof_siblings
+                    .iter()
+                    .map(|s| ctx.load_witness(*s))
+                    .collect();
                 let idx_cells: Vec<_> =
                     proof_indices.iter().map(|i| ctx.load_witness(*i)).collect();
                 let _ = verify_merkle_proof(ctx, range, leaf_cell, &sib_cells, &idx_cells);

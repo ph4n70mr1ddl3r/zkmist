@@ -39,20 +39,32 @@ macro_rules! emit {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: parallel_halo2_root <file> [limit]");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: parallel_halo2_root <file> [limit]");
     let limit: Option<usize> = std::env::args().nth(2).map(|s| s.parse().unwrap());
 
     let addrs = load(&path, limit);
-    emit!("Loaded {} addresses; building depth-{} production tree on {} rayon threads...",
-          addrs.len(), TREE_DEPTH, rayon::current_num_threads());
+    emit!(
+        "Loaded {} addresses; building depth-{} production tree on {} rayon threads...",
+        addrs.len(),
+        TREE_DEPTH,
+        rayon::current_num_threads()
+    );
 
     let t = std::time::Instant::now();
     let (root, _) = build_tree_streaming(&addrs, None);
     let dt = t.elapsed();
 
     emit!("HALO2-BASE production root = 0x{}", hex::encode(root));
-    emit!("build time = {:.1}s on {} cores", dt.as_secs_f64(), rayon::current_num_threads());
+    emit!(
+        "build time = {:.1}s on {} cores",
+        dt.as_secs_f64(),
+        rayon::current_num_threads()
+    );
     emit!("committed KNOWN_MERKLE_ROOT = 0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba");
-    emit!("matches committed? {}",
-          hex::encode(root) == "00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba");
+    emit!(
+        "matches committed? {}",
+        hex::encode(root) == "00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba"
+    );
 }
