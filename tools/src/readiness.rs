@@ -68,7 +68,8 @@ fn find_project_root() -> Option<PathBuf> {
 /// to a hard regression — even if an attacker re-pastes the PINNED-SRS banner
 /// that check `1e` keys off. Set it with:
 ///   sha256sum contracts/src/Halo2Verifier.axiom.sol   # drop the `0x`
-const MAINNET_VERIFIER_SHA256: &str = "";
+const MAINNET_VERIFIER_SHA256: &str =
+    "0f07addf55779f5e451bcf5da1c4c391c063b84844764bc43c351d462ee02345";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

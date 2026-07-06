@@ -220,13 +220,23 @@ fn test_claim_circuit_evm_roundtrip() {
     eprintln!("[roundtrip] generating Solidity verifier + evm_verify...");
     // If ZKMIST_EMIT_VERIFIER=<path> is set, write the verifier .sol there
     // (banner-marked as dev-SRS / wiring-only — NOT mainnet-sound).
-    let emit_path = std::env::var("ZKMIST_EMIT_VERIFIER").ok();
-    let deployment = gen_evm_verifier_shplonk::<AxiomClaimMarker>(
-        &params,
-        &vk,
-        vec![4],
-        emit_path.as_deref().map(std::path::Path::new),
-    );
+    // Resolve a relative emit path against the workspace root (one level
+    // above this crate). `cargo test` runs with cwd = this crate's directory,
+    // so a bare relative path like `contracts/src/Halo2Verifier.axiom.sol`
+    // would otherwise land in `circuits/contracts/...` — silently writing the
+    // wrong file. Absolute paths are used as-is.
+    let emit_path = std::env::var("ZKMIST_EMIT_VERIFIER").ok().map(|raw| {
+        let p = std::path::PathBuf::from(&raw);
+        if p.is_absolute() {
+            p
+        } else {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(raw)
+        }
+    });
+    let deployment =
+        gen_evm_verifier_shplonk::<AxiomClaimMarker>(&params, &vk, vec![4], emit_path.as_deref());
     if let Some(p) = &emit_path {
         let sol = std::fs::read_to_string(p).expect("read emitted verifier");
         let pinned = std::env::var("ZKMIST_USE_PINNED_SRS").as_deref() == Ok("1");
@@ -260,7 +270,7 @@ fn test_claim_circuit_evm_roundtrip() {
             1,
         );
         std::fs::write(p, out).expect("write emitted verifier");
-        eprintln!("[roundtrip] wrote verifier → {p}");
+        eprintln!("[roundtrip] wrote verifier → {}", p.display());
     }
     let gas = evm_verify(deployment, instances, proof).expect("EVM verify failed");
     eprintln!("[roundtrip] ✅ claim circuit on-chain round-trip OK: gas = {gas}");
