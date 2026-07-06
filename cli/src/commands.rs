@@ -815,6 +815,7 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     struct Fixture {
         version: u64,
         tree_depth: u32,
+        chain_id: u64,
         merkle_root: String,
         nullifier: String,
         recipient: String,
@@ -825,6 +826,7 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
     let fixture = Fixture {
         version: PROOF_FORMAT_VERSION,
         tree_depth: TREE_DEPTH as u32,
+        chain_id: crate::constants::CHAIN_ID,
         merkle_root: format!("0x{}", hex::encode(root)),
         nullifier: format!("0x{}", hex::encode(nullifier)),
         recipient: format!("0x{}", hex::encode(recipient)),

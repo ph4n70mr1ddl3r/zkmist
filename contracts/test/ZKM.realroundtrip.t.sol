@@ -85,6 +85,14 @@ contract RealRoundtrip is Test {
         _fixtureJson = vm.readFile(fixturePath);
         bytes32 merkleRoot = vm.parseJsonBytes32(_fixtureJson, ".merkle_root");
 
+        // The chain_id-binding (cross-chain replay fix) makes the proof
+        // chain-specific: `ZKMAirdrop.claim` injects `block.chainid` into the
+        // proof calldata, so this test's chain id MUST equal the chain_id baked
+        // into the fixture's proof (the CLI's CHAIN_ID = 8453 / Base). Foundry
+        // defaults to 31337, so set it from the fixture — this also keeps the
+        // test correct if a fixture is ever generated for another chain.
+        vm.chainId(uint64(vm.parseJsonUint(_fixtureJson, ".chain_id")));
+
         // ── Deploy the REAL contracts (mirrors script/Deploy.s.sol) ────
         // Token minter is immutable, so predict the airdrop address from the
         // deployer nonce and pass it into the token constructor.
