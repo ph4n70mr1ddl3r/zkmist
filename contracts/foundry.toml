@@ -20,3 +20,15 @@ remappings = [
 # that forge fmt cannot reformat. Exclude it.
 [fmt]
 ignore = ["src/Halo2Verifier.axiom.sol"]
+
+# Basescan (Etherscan-family) source verification.
+# Basescan is an Etherscan explorer, and an Etherscan API key is multi-chain —
+# a single key from etherscan.io verifies on Basescan too. Foundry interpolates
+# ${VAR} from the environment, so export ETHERSCAN_API_KEY before running
+# `forge verify-contract ... --chain base` (or the deploy scripts). If unset,
+# the key resolves to empty and verification is skipped/fails — the deploy
+# scripts pass `--etherscan-api-key` explicitly as well, so this table is the
+# convenience path for manual verification.
+[etherscan]
+base = { key = "${ETHERSCAN_API_KEY}", url = "https://api.basescan.org/api" }
+base_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
