@@ -164,7 +164,13 @@ echo -e "  ${GREEN}✓ Build successful${NC}"
 
 echo ""
 echo "Running contract tests..."
-forge test --quiet -vvv
+# `--quiet` and `-vvv` are mutually exclusive in current Foundry, so run
+# quiet first (clean on pass) and only re-spawn with traces on failure.
+if ! forge test --quiet; then
+    echo -e "${RED}Contract tests FAILED — re-running with traces:${NC}"
+    forge test -vvv
+    exit 1
+fi
 echo -e "  ${GREEN}✓ All tests passed${NC}"
 
 # ── Final confirmation (typed, not y/N) ───────────────────────────────
