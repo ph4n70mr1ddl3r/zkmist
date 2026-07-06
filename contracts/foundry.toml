@@ -23,12 +23,16 @@ ignore = ["src/Halo2Verifier.axiom.sol"]
 
 # Basescan (Etherscan-family) source verification.
 # Basescan is an Etherscan explorer, and an Etherscan API key is multi-chain —
-# a single key from etherscan.io verifies on Basescan too. Foundry interpolates
-# ${VAR} from the environment, so export ETHERSCAN_API_KEY before running
-# `forge verify-contract ... --chain base` (or the deploy scripts). If unset,
-# the key resolves to empty and verification is skipped/fails — the deploy
-# scripts pass `--etherscan-api-key` explicitly as well, so this table is the
-# convenience path for manual verification.
+# a single key from etherscan.io verifies on Basescan too.
+#
+# IMPORTANT: use the Etherscan V2 unified endpoint (api.etherscan.io/v2/api),
+# NOT the deprecated V1 chain-specific endpoints (api.basescan.org/api), which
+# now return a deprecation page instead of JSON and break `forge verify-contract`
+# ("Failed to deserialize content: expected value at line 1 column 1"). V2
+# requires chainid as a query param; bake it into the URL per chain. Foundry
+# appends its own query with `&`, so the existing `?chainid=...` is preserved.
+# Foundry interpolates ${VAR} from the environment — export ETHERSCAN_API_KEY
+# before `forge verify-contract ... --chain base` (or run a deploy script).
 [etherscan]
-base = { key = "${ETHERSCAN_API_KEY}", url = "https://api.basescan.org/api" }
-base_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
+base = { key = "${ETHERSCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=8453" }
+base_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=84532" }
