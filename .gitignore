@@ -74,3 +74,7 @@ coverage/
 # Third-party tool artifacts
 .antigravitycli/
 params/
+
+# Local deploy-script output (regenerable; canonical record is
+# contracts/broadcast/Deploy.s.sol/<chainid>/).
+.mainnet-addresses.txt

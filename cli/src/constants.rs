@@ -54,13 +54,13 @@ pub const GITHUB_REPO: &str = "ph4n70mr1ddl3r/zkmist";
 pub const KNOWN_MERKLE_ROOT: &str =
     "0x00cf0fa589ba3f949eec2774dca17df0c00a99497b31d70b76767d4dba38c0ba";
 
-/// ZKMAirdrop contract address on Base.
-/// ⚠️  PLACEHOLDER — must be updated after deploying to Base mainnet.
-/// The CLI will reject proof submission while this is the placeholder address.
-/// After deploying:
-///   1. Update this constant with the deployed airdrop address
-///   2. Rebuild: cargo build --release -p zkmist-cli
-pub const AIRDROP_CONTRACT: &str = "0x000000000000000000000000000000000000dEaD";
+/// ZKMAirdrop contract address on Base mainnet.
+/// Deployed by scripts/mainnet-deploy.sh (broadcast Deploy.s.sol/8453) at
+/// block 48275440 on 2026-07-06. Immutable contract — no upgrade path. The
+/// canonical deployment record is contracts/broadcast/Deploy.s.sol/8453/.
+/// If a new deployment is ever needed, update this constant and rebuild:
+///   cargo build --release -p zkmist-cli
+pub const AIRDROP_CONTRACT: &str = "0x4c750652C84Ce52215c093Bd693f63DefDbAe14a";
 
 /// Nullifier domain separator.
 pub const NULLIFIER_DOMAIN: &[u8; 19] = b"ZKMist_V2_NULLIFIER";
