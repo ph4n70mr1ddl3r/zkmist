@@ -116,7 +116,7 @@ mod tests {
         let mut proof_indices: Vec<Fr> = Vec::with_capacity(depth);
         let mut idx = leaf_index;
         while layer.len() > 1 {
-            let sibling = if idx % 2 == 0 {
+            let sibling = if idx.is_multiple_of(2) {
                 layer[idx + 1]
             } else {
                 layer[idx - 1]
@@ -172,7 +172,7 @@ mod tests {
         let mut proof_indices: Vec<Fr> = Vec::with_capacity(depth);
         let mut idx = leaf_index;
         while layer.len() > 1 {
-            let sibling = if idx % 2 == 0 {
+            let sibling = if idx.is_multiple_of(2) {
                 layer[idx + 1]
             } else {
                 layer[idx - 1]

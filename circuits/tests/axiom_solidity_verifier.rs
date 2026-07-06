@@ -9,7 +9,6 @@
 //! ⚠️ Requires `solc` (0.8.19) on `PATH` — `snark_verifier_sdk::compile_solidity`
 //! shells out to it. On this machine it's installed at `~/.local/bin/solc`.
 
-use ff::PrimeField;
 use halo2_base::{
     gates::circuit::builder::RangeCircuitBuilder,
     gates::circuit::CircuitBuilderStage,

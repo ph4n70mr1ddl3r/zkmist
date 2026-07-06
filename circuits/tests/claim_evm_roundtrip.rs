@@ -69,7 +69,7 @@ impl Circuit<Fr> for AxiomClaimMarker {
 }
 impl CircuitExt<Fr> for AxiomClaimMarker {
     fn num_instance(&self) -> Vec<usize> {
-        vec![3]
+        vec![4]
     }
     fn instances(&self) -> Vec<Vec<Fr>> {
         vec![]
@@ -156,15 +156,22 @@ fn test_claim_circuit_evm_roundtrip() {
     let key_mod_p = bytes_be_to_fr(&(&privkey_big % &modulus::<Fr>()).to_bytes_be());
     let nullifier_fr = native_hash_interior(key_mod_p, domain_field_element());
 
-    let instances = vec![vec![root_fr, nullifier_fr, recipient_fr]];
+    let instances = vec![vec![root_fr, nullifier_fr, recipient_fr, Fr::from(31337)]];
 
     let build = |b: &mut RangeCircuitBuilder<Fr>| {
         let range = RangeChip::new(8, b.lookup_manager().clone());
         let ctx = b.pool(0).main();
         let limbs = assign_privkey(ctx, privkey_fq);
-        let (r, n, rc, _chain_id) =
-            prove_claim_to_cells(ctx, &range, limbs, &siblings_fr, &path_fr, recipient_fr, Fr::from(31337));
-        b.assigned_instances[0] = vec![r, n, rc];
+        let (r, n, rc, _chain_id) = prove_claim_to_cells(
+            ctx,
+            &range,
+            limbs,
+            &siblings_fr,
+            &path_fr,
+            recipient_fr,
+            Fr::from(31337),
+        );
+        b.assigned_instances[0] = vec![r, n, rc, _chain_id];
     };
 
     // ── keygen ──
@@ -217,7 +224,7 @@ fn test_claim_circuit_evm_roundtrip() {
     let deployment = gen_evm_verifier_shplonk::<AxiomClaimMarker>(
         &params,
         &vk,
-        vec![3],
+        vec![4],
         emit_path.as_deref().map(std::path::Path::new),
     );
     if let Some(p) = &emit_path {

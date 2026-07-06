@@ -76,7 +76,12 @@ pub fn prove_claim_to_cells(
     path_indices: &[Fr],
     recipient: Fr,
     chain_id: Fr,
-) -> (AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>, AssignedValue<Fr>) {
+) -> (
+    AssignedValue<Fr>,
+    AssignedValue<Fr>,
+    AssignedValue<Fr>,
+    AssignedValue<Fr>,
+) {
     let gate = range.gate();
 
     // ── 0. K < n_secp256k1 range proof (§5a TRAP) ──
@@ -158,8 +163,15 @@ pub fn prove_claim(
     chain_id: Fr,
 ) {
     let gate = range.gate();
-    let (root, nullifier, _recipient, _chain_id) =
-        prove_claim_to_cells(ctx, range, privkey_limbs, siblings, path_indices, recipient, chain_id);
+    let (root, nullifier, _recipient, _chain_id) = prove_claim_to_cells(
+        ctx,
+        range,
+        privkey_limbs,
+        siblings,
+        path_indices,
+        recipient,
+        chain_id,
+    );
     gate.assert_is_const(ctx, &root, &expected_root);
     gate.assert_is_const(ctx, &nullifier, &expected_nullifier);
 }

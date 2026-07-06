@@ -31,7 +31,7 @@ use halo2_base::{
     utils::{fs::gen_srs, modulus},
 };
 use num_bigint::BigUint;
-use snark_verifier_sdk::evm::{gen_evm_proof_shplonk, gen_evm_verifier_shplonk, gen_evm_verifier_sol_code};
+use snark_verifier_sdk::evm::{gen_evm_proof_shplonk, gen_evm_verifier_sol_code};
 use snark_verifier_sdk::SHPLONK;
 
 /// Cache dir for the KZG SRS (~/.zkmist/cache).
@@ -165,7 +165,7 @@ pub fn generate_v2_proof_axiom(
     let mut recip_padded = [0u8; 32];
     recip_padded[12..32].copy_from_slice(recipient);
     let recipient_fr = bytes_be_to_fr(&recip_padded);
-    let chain_id_fr = Fr::from(crate::constants::CHAIN_ID as u64);
+    let chain_id_fr = Fr::from(crate::constants::CHAIN_ID);
 
     // Nullifier (native, halo2-base convention): poseidon(privkey mod p_BN254, domain).
     let p_bn254: BigUint = modulus::<Fr>();
@@ -261,7 +261,8 @@ pub fn generate_v2_proof_axiom(
     // Forge test against the `gen-roundtrip-fixture` output. Enable for an
     // explicit one-off check: `ZKMIST_GEN_VERIFIER=1 zkmist prove ...`.
     if std::env::var("ZKMIST_GEN_VERIFIER").as_deref() == Ok("1") {
-        let sol_code = gen_evm_verifier_sol_code::<AxiomClaimMarker, SHPLONK>(&params, &vk, vec![4]);
+        let sol_code =
+            gen_evm_verifier_sol_code::<AxiomClaimMarker, SHPLONK>(&params, &vk, vec![4]);
         let path = std::path::Path::new("../contracts/src/Halo2Verifier.axiom.sol");
         std::fs::write(path, sol_code).expect("Failed to write verifier");
         eprintln!("      [axiom] verifier regenerated from VK (ZKMIST_GEN_VERIFIER sanity check)");

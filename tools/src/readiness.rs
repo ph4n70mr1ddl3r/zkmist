@@ -4,8 +4,12 @@
 //!
 //! Checks:
 //!
-//! - 1. Halo2Verifier.sol has real KZG pairing verification (ecPairing precompile)
-//! - 1b. Halo2VerifyingKey.sol has non-zero VK data and correct k-value
+//! - 1. Halo2Verifier.axiom.sol has real KZG pairing verification (ecPairing precompile)
+//! - 1b. Halo2Verifier.axiom.sol has non-zero inline VK data
+//! - 1c. Prover does not generate a random (forgeable) KZG SRS
+//! - 1d. KZG SRS trust root (URL + SHA-256) pinned in constants.rs
+//! - 1e. Halo2Verifier.axiom.sol SRS provenance — PINNED-SRS banner, not DEV-SRS
+//! - 1f. Halo2Verifier.axiom.sol byte-integrity vs pinned SHA-256
 //! - 2. Merkle root matches the known eligibility tree root
 //! - 3. Constants are consistent between CLI and contracts
 //! - 3b. VK k-value matches prover CIRCUIT_K
@@ -28,11 +32,14 @@
 //
 //! A handful of checks are EXPECTED to fail until the operator completes a
 //! documented pre-deploy step — VK regeneration (`1b`), SRS hash pinning
-//! (`1d`), and the post-deploy `AIRDROP_CONTRACT` placeholder (`4`). On a PR
+//! (`1d`), the verifier byte-pin (`1f`, empty until the mainnet artifact is
+//! blessed), and the post-deploy `AIRDROP_CONTRACT` placeholder (`4`). On a PR
 //! (default mode) these are counted as *known blockers* and do NOT fail the
 //! run, so the gate stays green unless something that should be green truly
 //! *regresses*. Under `--strict` (the manual/scheduled deploy gate) every
-//! known blocker also fails the run, so you cannot deploy past them.
+//! known blocker also fails the run, so you cannot deploy past them. A DEV-SRS
+//! verifier (`1e`) is NOT a known blocker — it is a soundness regression that
+//! fails the gate on PRs too (a forgeable verifier must never reach mainnet).
 
 use std::path::{Path, PathBuf};
 
@@ -51,6 +58,17 @@ fn find_project_root() -> Option<PathBuf> {
         dir = dir.parent()?.to_path_buf();
     }
 }
+
+/// SHA-256 (lowercase hex, no `0x`) of the canonical mainnet
+/// `contracts/src/Halo2Verifier.axiom.sol` — the verifier emitted by
+/// `circuits/tests/claim_evm_roundtrip.rs` under `ZKMIST_USE_PINNED_SRS=1`.
+/// Empty until the operator blesses the mainnet artifact; while empty, check
+/// `1f` is a *known blocker*. Once set, ANY change to the committed verifier
+/// (regeneration under a different SRS, a circuit change, tampering) flips `1f`
+/// to a hard regression — even if an attacker re-pastes the PINNED-SRS banner
+/// that check `1e` keys off. Set it with:
+///   sha256sum contracts/src/Halo2Verifier.axiom.sol   # drop the `0x`
+const MAINNET_VERIFIER_SHA256: &str = "";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -257,6 +275,120 @@ fn main() {
             );
             eprintln!("         perpetual powers-of-tau halo2 params file before mainnet.");
             record_known_blocker(&mut failed, &mut known_blockers, strict);
+        }
+    }
+
+    // ── Check 1e: Halo2Verifier.axiom.sol SRS provenance ─────────────
+    // The verifier is only as sound as the SRS its VK was keygen'd under.
+    // `claim_evm_roundtrip.rs` stamps every emitted verifier with a
+    // self-describing banner: "PINNED-SRS VERIFIER" (PSE ceremony SRS) or
+    // "DEV-SRS WIRING-ONLY VERIFIER" (toxic-waste `gen_srs` — forgeable).
+    // A committed DEV-SRS verifier is a SOUNDNESS regression, not a pending
+    // pre-deploy step: production proofs (generated under the pinned SRS via
+    // `load_srs_axiom`) will not even verify against it, and the dev-SRS
+    // trapdoor holder can forge claims. So this is a HARD fail (counts as a
+    // regression on PRs too), unlike the advisory known blockers. Checks 1c/1d
+    // guard the *prover's* SRS; this guards the *verifier's*.
+    eprintln!("[1e/8] Checking Halo2Verifier.axiom.sol SRS provenance...");
+    let verifier_provenance_path = root.join("contracts/src/Halo2Verifier.axiom.sol");
+    match std::fs::read_to_string(&verifier_provenance_path) {
+        Ok(content) => {
+            let is_dev = content.contains("DEV-SRS WIRING-ONLY VERIFIER");
+            let is_pinned = content.contains("PINNED-SRS VERIFIER");
+            if is_dev {
+                eprintln!(
+                    "      ❌ Halo2Verifier.axiom.sol carries the DEV-SRS banner — its VK was"
+                );
+                eprintln!(
+                    "         keygen'd under a toxic-waste `gen_srs` SRS. The trapdoor holder can"
+                );
+                eprintln!(
+                    "         forge claims, and production proofs (pinned ceremony SRS) will not"
+                );
+                eprintln!("         verify against it. Regenerate under the pinned SRS:");
+                eprintln!("           ZKMIST_RUN_CLAIM_ROUNDTRIP=1 ZKMIST_USE_PINNED_SRS=1 \\");
+                eprintln!("             ZKMIST_SRS_FILE=<pinned k23.bin> \\");
+                eprintln!(
+                    "             ZKMIST_EMIT_VERIFIER=contracts/src/Halo2Verifier.axiom.sol \\"
+                );
+                eprintln!(
+                    "             cargo test -p zkmist-circuits --test claim_evm_roundtrip \\"
+                );
+                eprintln!("               test_claim_circuit_evm_roundtrip -- --nocapture");
+                failed += 1;
+            } else if is_pinned {
+                eprintln!("      ✅ Halo2Verifier.axiom.sol carries the PINNED-SRS banner");
+                passed += 1;
+            } else {
+                eprintln!(
+                    "      ❌ Halo2Verifier.axiom.sol has NO SRS-provenance banner (expected"
+                );
+                eprintln!("         'PINNED-SRS VERIFIER' or 'DEV-SRS WIRING-ONLY VERIFIER'). Its");
+                eprintln!(
+                    "         provenance is unknown — regenerate via claim_evm_roundtrip.rs."
+                );
+                failed += 1;
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "      ⚠️  Halo2Verifier.axiom.sol not found at {} ({})",
+                verifier_provenance_path.display(),
+                e
+            );
+            failed += 1;
+        }
+    }
+
+    // ── Check 1f: Halo2Verifier.axiom.sol byte-integrity (pinned SHA-256) ──
+    // Belt-and-suspenders on 1e: the banner is self-describing but editable.
+    // Once the operator blesses the canonical mainnet verifier, pin its
+    // SHA-256 in `MAINNET_VERIFIER_SHA256`; any regeneration (different SRS,
+    // circuit change, tamper) then flips this to a hard regression even if an
+    // attacker re-pastes the PINNED-SRS banner. Empty pin → known blocker
+    // (artifact not yet blessed); mismatch → hard fail.
+    eprintln!("[1f/8] Checking Halo2Verifier.axiom.sol byte-integrity...");
+    let want = MAINNET_VERIFIER_SHA256.trim().to_lowercase();
+    if want.is_empty() {
+        eprintln!("      ⚠️  MAINNET_VERIFIER_SHA256 is empty — the canonical mainnet verifier");
+        eprintln!("         is not byte-pinned yet. After emitting under ZKMIST_USE_PINNED_SRS=1,");
+        eprintln!("         record `sha256sum contracts/src/Halo2Verifier.axiom.sol` in");
+        eprintln!("         MAINNET_VERIFIER_SHA256 (tools/src/readiness.rs).");
+        record_known_blocker(&mut failed, &mut known_blockers, strict);
+    } else {
+        let verifier_integrity_path = root.join("contracts/src/Halo2Verifier.axiom.sol");
+        match std::fs::read(&verifier_integrity_path) {
+            Ok(bytes) => {
+                use sha2::{Digest, Sha256};
+                let got = hex::encode(Sha256::digest(&bytes));
+                if got == want {
+                    eprintln!(
+                        "      ✅ Halo2Verifier.axiom.sol byte-integrity OK (SHA-256 {}…)",
+                        &got[..got.len().min(12)]
+                    );
+                    passed += 1;
+                } else {
+                    eprintln!("      ❌ Halo2Verifier.axiom.sol byte-integrity MISMATCH:");
+                    eprintln!(
+                        "         expected {}…, got {}…",
+                        &want[..want.len().min(12)],
+                        &got[..got.len().min(12)]
+                    );
+                    eprintln!(
+                        "         the committed verifier differs from the blessed mainnet artifact"
+                    );
+                    eprintln!("         (regenerated under a different SRS, a circuit change, or tampered).");
+                    failed += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "      ⚠️  Halo2Verifier.axiom.sol not found at {} ({}) — cannot check byte-integrity",
+                    verifier_integrity_path.display(),
+                    e
+                );
+                skipped += 1;
+            }
         }
     }
 

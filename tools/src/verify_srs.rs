@@ -356,11 +356,17 @@ mod tests {
         // too small — both this test and `load_srs_axiom`'s
         // `srs_k < circuit_k` check must be revisited in lockstep.
         const AXIOM_CIRCUIT_K: u32 = 21;
-        assert!(
-            EXPECTED_K >= AXIOM_CIRCUIT_K,
-            "universal SRS k {} must be >= circuit k {} (else it cannot serve the circuit)",
-            EXPECTED_K,
-            AXIOM_CIRCUIT_K
-        );
+        // Constant-condition tripwire, evaluated at COMPILE time via an inline
+        // `const { assert!(..) }` block (clippy's fix for
+        // `assertions_on_constants`, since both operands are `const`). If the
+        // mirrored circuit k ever exceeds the pinned k=23 SRS the BUILD fails
+        // here — in lockstep with `load_srs_axiom`'s `srs_k < circuit_k`
+        // runtime check.
+        const {
+            assert!(
+                EXPECTED_K >= AXIOM_CIRCUIT_K,
+                "universal SRS k must be >= circuit k (else it cannot serve the circuit)"
+            );
+        };
     }
 }

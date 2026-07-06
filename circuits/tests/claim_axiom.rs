@@ -94,7 +94,7 @@ fn build_valid_claim(depth: usize, claim_idx: usize) -> Claim {
     let mut path_indices = Vec::with_capacity(depth);
     let mut idx = claim_idx;
     for _ in 0..depth {
-        let sib = if idx % 2 == 0 {
+        let sib = if idx.is_multiple_of(2) {
             layer[idx + 1]
         } else {
             layer[idx - 1]
@@ -143,7 +143,9 @@ fn test_axiom_claim_happy_path() {
             &c.path_indices,
             c.root,
             c.nullifier,
-            c.recipient, Fr::from(31337),);
+            c.recipient,
+            Fr::from(31337),
+        );
     });
 }
 
@@ -164,7 +166,9 @@ fn test_axiom_claim_rejects_wrong_root() {
                 &c.path_indices,
                 c.root + Fr::from(1u64),
                 c.nullifier,
-                c.recipient, Fr::from(31337),);
+                c.recipient,
+                Fr::from(31337),
+            );
         });
 }
 
@@ -185,7 +189,9 @@ fn test_axiom_claim_rejects_wrong_nullifier() {
                 &c.path_indices,
                 c.root,
                 c.nullifier + Fr::from(1u64),
-                c.recipient, Fr::from(31337),);
+                c.recipient,
+                Fr::from(31337),
+            );
         });
 }
 
@@ -233,7 +239,9 @@ fn test_axiom_claim_rejects_key_above_n() {
                 &c.path_indices,
                 c.root,
                 c.nullifier,
-                c.recipient, Fr::from(31337),);
+                c.recipient,
+                Fr::from(31337),
+            );
         });
 }
 
@@ -258,7 +266,9 @@ fn test_axiom_claim_real_kzg_roundtrip() {
                 &c.path_indices,
                 c.root,
                 c.nullifier,
-                c.recipient, Fr::from(31337),);
+                c.recipient,
+                Fr::from(31337),
+            );
         });
     eprintln!(
         "axiom claim real-KZG round-trip OK: proof_size = {} bytes",
@@ -329,7 +339,9 @@ fn test_axiom_claim_verifies_offchain_tree() {
             &path_indices,
             root,
             nullifier,
-            recipient, Fr::from(31337),);
+            recipient,
+            Fr::from(31337),
+        );
     });
 }
 
@@ -384,13 +396,13 @@ fn test_offchain_nullifier_matches_circuit() {
 
 // ── Public instances (the on-chain verifier model) ───────────────────────
 //
-// The claim's (merkle_root, nullifier, recipient) are exposed as a public
+// The claim's (merkle_root, nullifier, recipient, chain_id) are exposed as a public
 // instance column. The proof verifies against the correct instance and is
 // REJECTED against a wrong one — exactly what the on-chain verifier (holding
 // the real root / checking the nullifier map) does.
 
 /// Full real-KZG round-trip on the claim circuit exposing 1 instance column
-/// `[root, nullifier, recipient]`, verified against `instances`.
+/// `[root, nullifier, recipient, chain_id]`, verified against `instances`.
 fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: bool) {
     // keygen stage
     let mut kb = RangeCircuitBuilder::from_stage(CircuitBuilderStage::Keygen)
@@ -407,8 +419,10 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient, Fr::from(31337),);
-        kb.assigned_instances[0] = vec![root, null, recip];
+            c.recipient,
+            Fr::from(31337),
+        );
+        kb.assigned_instances[0] = vec![root, null, recip, _chain_id];
     }
     let config_params = kb.calculate_params(Some(9));
     let params = gen_srs(21);
@@ -429,8 +443,10 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient, Fr::from(31337),);
-        pb.assigned_instances[0] = vec![root, null, recip];
+            c.recipient,
+            Fr::from(31337),
+        );
+        pb.assigned_instances[0] = vec![root, null, recip, _chain_id];
     }
     let proof = gen_proof_with_instances(&params, &pk, pb, &[instances.as_slice()]);
     check_proof_with_instances(
@@ -445,7 +461,11 @@ fn claim_instance_roundtrip(c: &Claim, instances: Vec<Fr>, expect_satisfied: boo
 #[test]
 fn test_axiom_claim_public_instances_verify() {
     let c = build_valid_claim(4, 5);
-    claim_instance_roundtrip(&c.clone(), vec![c.root, c.nullifier, c.recipient], true);
+    claim_instance_roundtrip(
+        &c.clone(),
+        vec![c.root, c.nullifier, c.recipient, Fr::from(31337)],
+        true,
+    );
 }
 
 /// A proof verified against a WRONG merkle root is rejected — the on-chain
@@ -455,7 +475,12 @@ fn test_axiom_claim_public_instances_reject_wrong_root() {
     let c = build_valid_claim(4, 5);
     claim_instance_roundtrip(
         &c.clone(),
-        vec![c.root + Fr::from(1u64), c.nullifier, c.recipient],
+        vec![
+            c.root + Fr::from(1u64),
+            c.nullifier,
+            c.recipient,
+            Fr::from(31337),
+        ],
         false,
     );
 }
@@ -475,7 +500,7 @@ fn test_generate_claim_solidity_verifier() {
     };
     use snark_verifier_sdk::{evm::gen_evm_verifier_sol_code, CircuitExt, SHPLONK};
 
-    // CircuitExt marker (num_instance = 3: root, nullifier, recipient;
+    // CircuitExt marker (num_instance = 4: root, nullifier, recipient, chain_id;
     // non-aggregated → accumulator_indices = None).
     struct ClaimSolCircuit;
     impl Circuit<Fr> for ClaimSolCircuit {
@@ -492,7 +517,7 @@ fn test_generate_claim_solidity_verifier() {
     }
     impl CircuitExt<Fr> for ClaimSolCircuit {
         fn num_instance(&self) -> Vec<usize> {
-            vec![3]
+            vec![4]
         }
         fn instances(&self) -> Vec<Vec<Fr>> {
             vec![]
@@ -514,30 +539,45 @@ fn test_generate_claim_solidity_verifier() {
             limbs,
             &c.siblings,
             &c.path_indices,
-            c.recipient, Fr::from(31337),);
-        kb.assigned_instances[0] = vec![root, null, recip];
+            c.recipient,
+            Fr::from(31337),
+        );
+        kb.assigned_instances[0] = vec![root, null, recip, _chain_id];
     }
     let params = gen_srs(21);
     let _config_params = kb.calculate_params(Some(9));
     let vk = keygen_vk(&params, &kb).unwrap();
     drop(kb);
 
-    let sol = gen_evm_verifier_sol_code::<ClaimSolCircuit, SHPLONK>(&params, &vk, vec![3]);
+    let sol = gen_evm_verifier_sol_code::<ClaimSolCircuit, SHPLONK>(&params, &vk, vec![4]);
+    let sol = sol.replacen("pragma solidity 0.8.19;", "pragma solidity ^0.8.19;", 1);
     assert!(sol.contains("pragma solidity"), "not a Solidity source");
     eprintln!(
         "generated claim Halo2Verifier.axiom.sol: {} bytes",
         sol.len()
     );
 
-    // Write next to the (PSE) vendored verifier, for the contract side to pick up.
-    let out = std::env::current_dir()
-        .unwrap()
-        .join("..")
-        .join("contracts")
-        .join("Halo2Verifier.axiom.sol");
-    std::fs::create_dir_all(out.parent().unwrap()).ok();
-    std::fs::write(&out, &sol).expect("write Halo2Verifier.axiom.sol");
-    eprintln!("wrote {}", out.display());
+    // Emit the verifier ONLY when ZKMIST_EMIT_VERIFIER=<path> is set. The
+    // codegen + assertion above always run (so this test still exercises the
+    // verifier-generation pipeline), but the default `cargo test` run no
+    // longer silently overwrites the committed `Halo2Verifier.axiom.sol` with
+    // a DEV-SRS (`gen_srs`) verifier — which is forgeable and also disagrees
+    // with the production prover's pinned PSE ceremony SRS. To (re)generate a
+    // verifier, run e.g.
+    //   ZKMIST_EMIT_VERIFIER=../contracts/src/Halo2Verifier.axiom.sol \
+    //     cargo test -p zkmist-circuits --test claim_axiom \
+    //     test_generate_claim_solidity_verifier -- --nocapture
+    // Note this is still a dev-SRS verifier unless the SRS source is also
+    // changed; the pinned-SRS emit path is `claim_evm_roundtrip.rs` under
+    // ZKMIST_USE_PINNED_SRS=1 (see docs/kzg-srs.md).
+    if let Ok(path) = std::env::var("ZKMIST_EMIT_VERIFIER") {
+        let out = std::path::PathBuf::from(path);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&out, &sol).expect("write Halo2Verifier.axiom.sol");
+        eprintln!("wrote {}", out.display());
+    }
 }
 
 // ── Production depth (TREE_DEPTH = 26) ───────────────────────────────────
@@ -605,6 +645,8 @@ fn test_axiom_claim_production_depth26() {
             &c.path_indices,
             c.root,
             c.nullifier,
-            c.recipient, Fr::from(31337),);
+            c.recipient,
+            Fr::from(31337),
+        );
     });
 }

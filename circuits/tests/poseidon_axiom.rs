@@ -122,8 +122,7 @@ fn native_permute(state: &mut [Fr], mds: &[Vec<Fr>], rc: &[Vec<Fr>], r_f: usize,
 /// slots (the only case ZKMist uses: 1 input @ t=2, 2 inputs @ t=3).
 ///
 /// * `capacity`        — initial `state[0]` (`0` for Circom, `2^64` for halo2-base).
-/// * `squeeze_extra`   — run a second (empty-absorb) permutation after the first,
-///                       as halo2-base does when `len % RATE == 0`.
+/// * `squeeze_extra` — run a second (empty-absorb) permutation after the first, as halo2-base does when `len % RATE == 0`.
 /// * `out_idx`         — digest state index (`0` for Circom, `1` for halo2-base).
 fn native_hash<const T: usize, const RATE: usize, const R_F: usize, const R_P: usize>(
     inputs: &[Fr],
