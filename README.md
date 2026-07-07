@@ -123,6 +123,12 @@ zkmist submit ~/.zkmist/proofs/zkmist_proof_*.json
 zkmist verify ~/.zkmist/proofs/zkmist_proof_*.json
 ```
 
+Runs the real on-chain `Halo2Verifier` (the exact Base bytecode) inside a local
+EVM (revm) via `forge test` — a pass means `submit` will succeed, with no
+transaction broadcast. Requires the source tree + Foundry (unlike `prove`/
+`submit`, which ship standalone); install Foundry from
+<https://book.getfoundry.sh>.
+
 ---
 
 ## Project Structure

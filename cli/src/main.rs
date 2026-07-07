@@ -67,7 +67,12 @@ enum Commands {
         key_file: Option<String>,
     },
 
-    /// Verify proof locally: validates the Halo2-KZG proof cryptographically.
+    /// Verify proof locally: runs the real on-chain Halo2Verifier in revm.
+    ///
+    /// Deploys the committed `Halo2Verifier.axiom.sol` (the exact Base bytecode)
+    /// via `forge test` and runs `claim()` against the proof — a pass means
+    /// `submit` will succeed, with no transaction broadcast. Requires the
+    /// source tree + Foundry (unlike `prove`/`submit`).
     Verify {
         /// Path to proof.json
         proof_file: String,

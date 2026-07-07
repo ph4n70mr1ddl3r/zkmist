@@ -873,12 +873,128 @@ pub fn cmd_gen_roundtrip_fixture(out_path: &str) -> Result<(), String> {
 
 // ── Command: verify ──────────────────────────────────────────────────────
 
-pub fn cmd_verify(_proof_file: &str) -> Result<(), String> {
-    // The PSE Rust-side verifier was removed with the PSE stack. On-chain
-    // verification (ZKMAirdrop.claim → axiom Halo2Verifier) is authoritative;
-    // for off-chain checks use `RUN_REAL_ROUNDTRIP=1 forge test --match-contract
-    // RealRoundtrip`.
-    Err("local proof verification is on-chain only (the PSE verifier was removed)".into())
+pub fn cmd_verify(proof_file: &str) -> Result<(), String> {
+    use std::process::Command;
+
+    // ── 1. Load + pre-validate the proof (mirrors `submit`'s checks) ────
+    // Rejects obvious garbage (wrong version, corrupt hex, implausible byte
+    // length) BEFORE spending time compiling/running the verifier in forge.
+    let content = std::fs::read_to_string(proof_file)
+        .map_err(|e| format!("Failed to read {}: {}", proof_file, e))?;
+    let proof: ProofFile =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse proof file: {}", e))?;
+
+    eprintln!("Verifying proof locally via the on-chain Halo2Verifier (revm):");
+    eprintln!("  File:      {}", proof_file);
+    eprintln!("  Nullifier: 0x{}", proof.nullifier);
+    eprintln!("  Recipient: 0x{}", proof.recipient);
+    eprintln!("  Chain ID:  {}", proof.chain_id);
+
+    if proof.chain_id != CHAIN_ID {
+        return Err(format!(
+            "Proof chain ID ({}) doesn't match expected ({})",
+            proof.chain_id, CHAIN_ID
+        ));
+    }
+    if proof.proof_format_version != PROOF_FORMAT_VERSION {
+        return Err(format!(
+            "Proof format version {} doesn't match expected {}. \
+             Regenerate the proof with the current CLI version.",
+            proof.proof_format_version, PROOF_FORMAT_VERSION
+        ));
+    }
+    let proof_bytes_len = hex::decode(&proof.proof)
+        .map_err(|e| format!("Invalid proof hex: {}", e))?
+        .len();
+    if !(PROOF_LENGTH_MIN..=PROOF_LENGTH_MAX).contains(&proof_bytes_len) {
+        return Err(format!(
+            "Proof length {} bytes is outside expected range [{}, {}]. \
+             The proof may be corrupted or generated with wrong parameters.",
+            proof_bytes_len, PROOF_LENGTH_MIN, PROOF_LENGTH_MAX
+        ));
+    }
+
+    // ── 2. Locate the Foundry project ──────────────────────────────────
+    // The on-chain axiom Halo2Verifier is Solidity-only (the PSE Rust verifier
+    // was removed), so `verify` runs it in `forge test`'s local EVM (revm) via
+    // contracts/test/ZKM.verify.t.sol.
+    let contracts_dir = find_contracts_dir()?;
+    eprintln!("  Contracts: {}", contracts_dir.display());
+
+    // ── 3. Stage the proof under contracts/fixtures/ ───────────────────
+    // foundry.toml grants `vm.readFile` read access only to the project root
+    // (`./`), so a proof in ~/.zkmist/proofs/ can't be read directly. Copy it
+    // under fixtures/ (gitignored) and pass a path relative to the project.
+    let fixtures_dir = contracts_dir.join("fixtures");
+    std::fs::create_dir_all(&fixtures_dir)
+        .map_err(|e| format!("Failed to create {}: {}", fixtures_dir.display(), e))?;
+    let staged_name = format!(".verify-{}.json", std::process::id());
+    let staged_path = fixtures_dir.join(&staged_name);
+    std::fs::write(&staged_path, &content)
+        .map_err(|e| format!("Failed to stage proof into {}: {}", staged_path.display(), e))?;
+
+    // ── 4. Run the ProofVerifier test in forge (revm) ──────────────────
+    let merkle_root = std::env::var("ZKMIST_MERKLE_ROOT")
+        .unwrap_or_else(|_| KNOWN_MERKLE_ROOT.to_string());
+    let rel_proof = format!("fixtures/{}", staged_name);
+    eprintln!("  Merkle root: {}", merkle_root);
+    eprintln!("  Running: forge test --match-contract ProofVerifier ...");
+    eprintln!("  (first run compiles the verifier; subsequent runs are cached)");
+
+    let output = Command::new("forge")
+        .current_dir(&contracts_dir)
+        .args(["test", "--match-contract", "ProofVerifier", "-vvv"])
+        .env("PROOF_FILE", &rel_proof)
+        .env("MERKLE_ROOT", &merkle_root)
+        .output();
+
+    // Always remove the staged copy (best-effort).
+    let _ = std::fs::remove_file(&staged_path);
+
+    let output = output.map_err(|e| {
+        format!(
+            "Failed to run `forge` (is Foundry installed?): {}\n\
+             Install: https://book.getfoundry.sh/getting-started/installation",
+            e
+        )
+    })?;
+
+    // ── 5. Report ──────────────────────────────────────────────────────
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stderr}\n{stdout}");
+
+    if output.status.success() && stdout.contains("[PASS]") {
+        eprintln!();
+        eprintln!("  \u{2705} Proof is VALID \u{2014} the real Halo2Verifier accepts it.");
+        eprintln!("     `zkmist submit {}` will succeed on Base.", proof_file);
+        Ok(())
+    } else {
+        let hint = if combined.contains("Invalid proof") {
+            "The on-chain verifier REJECTED the proof (\"Invalid proof\"). Possible causes:\n  \
+             \u{2022} wrong Merkle root (override: ZKMIST_MERKLE_ROOT=0x...)\n  \
+             \u{2022} proof generated for a different chain_id / VK / SRS\n  \
+             \u{2022} proof bytes corrupted or tampered"
+        } else if combined.contains("Already claimed") {
+            "A proof with this nullifier already claimed in the local EVM run.\n\
+             This should not happen for a fresh `verify`; re-run, or check on-chain\n\
+             via `zkmist submit` (the contract is the source of truth)."
+        } else {
+            "forge did not report a PASS. See the forge output below for the revert reason."
+        };
+        Err(format!(
+            "Proof verification FAILED.\n{}\n\n--- forge output (tail) ---\n{}",
+            hint,
+            tail_lines(&combined, 40)
+        ))
+    }
+}
+
+/// Last `n` lines of a string (concise error reporting for forge output).
+fn tail_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
 }
 
 // ── Command: check ───────────────────────────────────────────────────────

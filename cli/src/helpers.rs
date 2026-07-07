@@ -44,6 +44,48 @@ pub fn _guest_hash_path() -> PathBuf {
     zkmist_dir().join("guest.sha256")
 }
 
+/// Locate the Foundry project directory (`contracts/`, the dir holding
+/// `foundry.toml`) used by `zkmist verify` to run the real on-chain
+/// `Halo2Verifier` via `forge test` in a local EVM (revm).
+///
+/// Search order:
+///   1. Walk upward from the current working directory for `contracts/foundry.toml`.
+///   2. Fall back to the compile-time workspace path (`<cli crate>/../contracts`).
+///
+/// Returns an error with install guidance if neither exists — `verify` requires
+/// the source tree (cloned with `--recursive`), unlike `submit`/`prove` which
+/// ship in the standalone release binary.
+pub fn find_contracts_dir() -> Result<PathBuf, String> {
+    // 1. Walk up from cwd looking for `contracts/foundry.toml`.
+    let mut dir = std::env::current_dir().map_err(|e| format!("current_dir: {e}"))?;
+    loop {
+        if dir.join("contracts").join("foundry.toml").exists() {
+            return Ok(dir.join("contracts"));
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => break,
+        }
+    }
+
+    // 2. Compile-time fallback: `<cli crate>/../contracts`.
+    let fallback = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("contracts");
+    if fallback.join("foundry.toml").exists() {
+        return Ok(fallback);
+    }
+
+    Err(
+        "Could not locate the Foundry project (contracts/foundry.toml). `zkmist verify` \
+         runs the on-chain Halo2Verifier via `forge test`, so it needs the zkmist source \
+         tree (cloned with --recursive). Clone the repo and run from inside it, or check \
+         a proof on-chain with `zkmist submit`. \
+         Install Foundry: https://book.getfoundry.sh/getting-started/installation"
+            .to_string(),
+    )
+}
+
 // ── Address / key helpers ────────────────────────────────────────────────
 
 /// Parse a hex Ethereum address (with or without 0x prefix) into 20 bytes.

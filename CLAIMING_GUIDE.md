@@ -474,7 +474,7 @@ If you want to run a relayer for others or yourself:
 
 ### 8.5 General Tips
 
-- **Run `zkmist verify proof.json` before submitting.** This validates everything locally without spending gas. If verification passes, the on-chain submission should succeed.
+- **Run `zkmist verify proof.json` before submitting.** This runs the real on-chain `Halo2Verifier` in a local EVM (revm) via `forge test`, so it validates everything cryptographically without spending gas. If verification passes, the on-chain submission should succeed. Requires the source tree + Foundry (unlike `prove`/`submit`).
 - **Keep your proof file safe.** Anyone who has it can submit the claim (though they can't change the recipient). If you accidentally submit it twice, the second attempt will fail with "Already claimed."
 - **Check `zkmist status` regularly.** If claims are approaching 1M, submit sooner rather than later to avoid the cap being reached.
 
@@ -569,7 +569,7 @@ cargo build --release -p zkmist-cli
 # 4. Generate proof (~1–2 min)
 ./target/release/zkmist prove
 
-# 5. Verify locally (optional, recommended)
+# 5. Verify locally (optional, recommended; requires source tree + Foundry)
 ./target/release/zkmist verify ./zkmist_proof_*.json
 
 # 6. Submit (requires ETH on Base for gas)
